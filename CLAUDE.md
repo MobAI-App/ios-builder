@@ -135,7 +135,18 @@ internal/
 - **Run Correlation**: `run-name` carries the build ID so concurrent builds cannot adopt each
   other's runs
 - **Flutter Detection**: Auto-detects Flutter projects, runs `flutter pub get`, uses `Runner` scheme
-- **DerivedData Caching**: Single static cache key for incremental builds
+- **DerivedData Caching**: `restore` keys on `github.run_id` and only the prefix in `restore-keys`
+  ever hits, so every run must pair with a `cache/save` step or later builds stay cold. `ios-share`
+  saves before it shares the simulator, since that step blocks until the session ends.
+- **Scheme Selection**: `xcodebuild -list -json` plus the scheme named after the workspace/project;
+  taking the first scheme picks a package or pod scheme in package-heavy repos
+- **Product Selection**: the built `.app` comes from `-showBuildSettings -json` (the target whose
+  `PRODUCT_TYPE` is an application), because the product name often differs from the scheme name
+  and a repo can have several app targets
+- **Missing xcconfig**: a gitignored `*.xcconfig` with a committed `*.xcconfig.template` (either
+  suffix order) is copied into place before the build; anything still referenced by the project and
+  absent fails the job by name instead of as xcodebuild's opaque "Unable to open base configuration
+  reference file". Pods/Flutter-generated configs are skipped — they appear later in the job.
 - **MobAI Integration**: HTTP/WebSocket API for device control, app install, debug launch
 - **Flutter Custom Devices**: Auto-configures `~/.config/flutter/custom_devices.json` for `mobai-ios` device
 - **Debug URL Capture**: WebSocket stream captures VM Service URL from app launch
@@ -166,9 +177,9 @@ The embedded workflow template (`internal/workflow/templates/ios-build.yml`):
 - Dispatch runs the workflow from the **default branch**, so edits to the workflow file itself
   only take effect once pushed there — unlike app sources, which come from the snapshot ref
 - Checks out `snapshot_ref` over the default-branch checkout when set
-- Runs on `macos-14`
+- Runs on `macos-latest`
 - Detects Flutter projects (checks for `pubspec.yaml`)
-- Caches DerivedData with static key for fast incremental builds
+- Restores and saves DerivedData for fast incremental builds
 - Auto-detects workspace/project and scheme
 - Flutter: uses `Runner` scheme, runs `flutter pub get`
 - Installs CocoaPods if Podfile exists
