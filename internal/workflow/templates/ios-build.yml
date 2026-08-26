@@ -51,7 +51,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # The dispatch always runs the workflow from the default branch, so the
       # sources come from a snapshot ref pushed by the CLI instead.
@@ -71,7 +71,7 @@ jobs:
           xcode-version: latest-stable
 
       - name: Restore DerivedData cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         id: cache-deriveddata
         with:
           path: DerivedData
@@ -93,6 +93,28 @@ jobs:
           else
             echo "type=native" >> $GITHUB_OUTPUT
           fi
+
+      # A gitignored *.xcconfig next to a committed template is a common iOS
+      # convention. The snapshot then carries the template but not the config,
+      # and xcodebuild fails with "Unable to open base configuration reference
+      # file", which says nothing about which file is missing.
+      - name: Materialize missing xcconfig files
+        run: |
+          set -e
+          find . -path ./DerivedData -prune -o -type f \
+            \( -name '*.xcconfig.template' -o -name '*.xcconfig.example' \
+               -o -name '*.xcconfig.sample' -o -name '*.template.xcconfig' \
+               -o -name '*.example.xcconfig' -o -name '*.sample.xcconfig' \) -print \
+          | while IFS= read -r template; do
+              case "$template" in
+                *.xcconfig.template|*.xcconfig.example|*.xcconfig.sample) target="${template%.*}" ;;
+                *) target="$(dirname "$template")/$(basename "$template" | sed -E 's/\.(template|example|sample)\.xcconfig$/.xcconfig/')" ;;
+              esac
+              if [ ! -f "$target" ]; then
+                cp "$template" "$target"
+                echo "::warning::$target was missing (gitignored?); copied $template over it. Any placeholder values in it are what the build sees."
+              fi
+            done
 
       - name: Generate Xcode project (XcodeGen)
         env:
@@ -121,6 +143,35 @@ jobs:
             xcodegen generate
           fi
 
+      # Whatever the previous step could not fill in is named here, instead of
+      # surfacing as xcodebuild's "Unable to open base configuration reference".
+      - name: Check base configuration files
+        env:
+          IOS_PATH: ${{ inputs.ios_path }}
+        run: |
+          set -e
+          MISSING=""
+          for pbx in $(find "$IOS_PATH" -maxdepth 2 -name project.pbxproj -not -path '*/Pods.xcodeproj/*'); do
+            for id in $(grep -o 'baseConfigurationReference = [A-Za-z0-9]*' "$pbx" | awk '{print $3}' | sort -u); do
+              ref=$(grep -m1 "^[[:space:]]*$id .*isa = PBXFileReference" "$pbx" || true)
+              name=$(printf '%s' "$ref" | sed -n 's/.*[ \t]path = "\{0,1\}\([^";]*\)"\{0,1\};.*/\1/p')
+              [ -n "$name" ] || continue
+              base=$(basename "$name")
+              # CocoaPods writes its xcconfigs during pod install and Flutter
+              # writes Generated.xcconfig during pub get — both happen later in
+              # this job, so they are legitimately absent right now.
+              case "$name" in *Pods/*|*"Target Support Files"*) continue ;; esac
+              case "$base" in Pods-*|Generated.xcconfig) continue ;; esac
+              if [ -z "$(find . -name "$base" -print -quit)" ]; then
+                MISSING="$MISSING $base"
+              fi
+            done
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::The project has base configuration files that are not in the repository:$MISSING. They are probably gitignored — commit them, or commit a <name>.xcconfig.template next to each so the build can fill them in."
+            exit 1
+          fi
+
       - name: Setup Flutter
         if: steps.detect.outputs.type == 'flutter'
         uses: subosito/flutter-action@v2
@@ -135,13 +186,13 @@ jobs:
 
       - name: Setup Node.js
         if: steps.detect.outputs.type == 'reactnative' || steps.detect.outputs.type == 'expo'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
 
       - name: Restore node_modules cache
         if: steps.detect.outputs.type == 'reactnative' || steps.detect.outputs.type == 'expo'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         id: node-modules-cache
         with:
           path: node_modules
@@ -155,17 +206,17 @@ jobs:
 
       - name: Setup JDK
         if: steps.detect.outputs.type == 'kmp'
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: ${{ inputs.jdk_version || '17' }}
 
       - name: Setup Gradle
         if: steps.detect.outputs.type == 'kmp'
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Restore Pods cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         id: pods-cache
         with:
           path: |
@@ -254,12 +305,34 @@ jobs:
           # Determine scheme (only needed for native projects)
           if [ -z "$SCHEME" ] && [ "$PROJECT_TYPE" = "native" ]; then
             if [ -n "$WORKSPACE" ]; then
-              SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list 2>/dev/null | grep -A 100 "Schemes:" | tail -n +2 | grep -v -E "^[[:space:]]*Pods-" | head -1 | xargs)
-              if [ -z "$SCHEME" ]; then
-                SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list 2>/dev/null | grep -A 100 "Schemes:" | tail -n +2 | head -1 | xargs)
-              fi
-            elif [ -n "$PROJECT" ]; then
-              SCHEME=$(xcodebuild -project "$PROJECT" -list 2>/dev/null | grep -A 100 "Schemes:" | tail -n +2 | head -1 | xargs)
+              TARGET_FLAG=-workspace
+              TARGET_PATH=$WORKSPACE
+              BASE=$(basename "$WORKSPACE" .xcworkspace)
+            else
+              TARGET_FLAG=-project
+              TARGET_PATH=$PROJECT
+              BASE=$(basename "$PROJECT" .xcodeproj)
+            fi
+
+            SCHEMES=$(xcodebuild "$TARGET_FLAG" "$TARGET_PATH" -list -json 2>/dev/null | jq -r '(.workspace // .project).schemes[]?' || true)
+            if [ -z "$SCHEMES" ]; then
+              SCHEMES=$(xcodebuild "$TARGET_FLAG" "$TARGET_PATH" -list 2>/dev/null | sed -n '/Schemes:/,$p' | tail -n +2 | sed 's/^[[:space:]]*//' | sed '/^$/d' || true)
+            fi
+            echo "Schemes:"
+            printf '%s\n' "$SCHEMES" | sed 's/^/  /'
+
+            # In a workspace, the scheme list also holds package and pod
+            # schemes, and they sort ahead of the app as often as not. The
+            # scheme named after the project is the app in nearly every repo.
+            SCHEME=$(printf '%s\n' "$SCHEMES" | grep -Fx "$BASE" | head -1 || true)
+            if [ -z "$SCHEME" ]; then
+              SCHEME=$(printf '%s\n' "$SCHEMES" | grep -v '^Pods-' | while IFS= read -r s; do
+                [ -n "$s" ] || continue
+                # A scheme that belongs to a local Swift package is not the app.
+                [ -z "$(find . -maxdepth 4 -path "*/$s/Package.swift" -print -quit)" ] || continue
+                printf '%s\n' "$s"
+                break
+              done)
             fi
             echo "Building with scheme: $SCHEME (configuration: $CONFIGURATION)"
           fi
@@ -451,8 +524,31 @@ jobs:
               # Flutter outputs to build/ios/iphoneos/
               APP_PATH=$(find "${GITHUB_WORKSPACE}/build/ios/iphoneos" -name "*.app" -type d | head -1)
             else
-              # Native and React Native/Expo use DerivedData
-              APP_PATH=$(find "$DERIVED_DATA_PATH/Build/Products/${CONFIGURATION}-iphoneos" -name "*.app" -type d | head -1)
+              # Native and React Native/Expo use DerivedData. Ask the project
+              # which bundle this scheme produces: the first .app under
+              # Build/Products is the wrong one whenever the repo has more than
+              # one app target.
+              if [ -n "$WORKSPACE" ]; then
+                TARGET_FLAG=-workspace
+                TARGET_PATH=$WORKSPACE
+              else
+                TARGET_FLAG=-project
+                TARGET_PATH=$PROJECT
+              fi
+              APP_PATH=$(xcodebuild "$TARGET_FLAG" "$TARGET_PATH" \
+                -scheme "$SCHEME" \
+                -configuration "$CONFIGURATION" \
+                -destination 'generic/platform=iOS' \
+                -derivedDataPath "$DERIVED_DATA_PATH" \
+                -showBuildSettings -json 2>/dev/null \
+                | jq -r 'map(.buildSettings)
+                         | map(select(.PRODUCT_TYPE == "com.apple.product-type.application"
+                                      and (.TARGET_BUILD_DIR | contains("-iphoneos"))))
+                         | map(.TARGET_BUILD_DIR + "/" + .FULL_PRODUCT_NAME)
+                         | first // empty' || true)
+              if [ ! -d "$APP_PATH" ]; then
+                APP_PATH=$(find "$DERIVED_DATA_PATH/Build/Products/${CONFIGURATION}-iphoneos" -maxdepth 1 -name "*.app" -type d -print -quit 2>/dev/null || true)
+              fi
             fi
 
             if [ -z "$APP_PATH" ]; then
@@ -470,16 +566,24 @@ jobs:
           fi
 
       - name: Upload IPA artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ipa
           path: build/*.ipa
           retention-days: 7
           if-no-files-found: error
 
-      - name: Save DerivedData cache
-        uses: actions/cache/save@v4
+      # Flutter builds through its own tree, so DerivedData can be absent and a
+      # save would fail on a path that never existed.
+      - name: Check for DerivedData
+        id: dd
         if: always()
+        run: |
+          if [ -d DerivedData ]; then echo "exists=yes" >> $GITHUB_OUTPUT; fi
+
+      - name: Save DerivedData cache
+        uses: actions/cache/save@v6
+        if: always() && steps.dd.outputs.exists == 'yes'
         with:
           path: DerivedData
           key: deriveddata-${{ github.run_id }}
