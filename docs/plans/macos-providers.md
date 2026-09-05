@@ -108,9 +108,9 @@ Xcode commands under macOS Bash (including paths/spelling requiring quoting).
 Tests also exercise independent logins, setup preservation, provider payloads,
 status handling, artifact redirects/downloads, and real Git snapshot lifecycle.
 
-Live Codemagic/Bitrise builds and MobAI sessions were not run: this repository
-does not contain configured provider apps or an iOS smoke-test project. The PR
-must retain this validation limitation until those integrations are exercised.
+Live unsigned Codemagic and Bitrise builds and IPA downloads have now passed
+on Numbra; see the results below. Signed builds and MobAI sessions still need
+provider secrets and live validation.
 
 
 ### Numbra onboarding: token prompt fix
