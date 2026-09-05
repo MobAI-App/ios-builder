@@ -2,13 +2,14 @@
 
 Build and develop iOS apps from Windows, Linux, or any platform.
 
-Builder is a CLI tool for iOS development without a Mac. It uses GitHub Actions for remote builds and [MobAI](https://mobai.run) for on-device development.
+Builder is a CLI tool for iOS development without a Mac. It uses GitHub Actions (default), Codemagic, or Bitrise for remote builds and [MobAI](https://mobai.run) for on-device development.
 
 ![Builder Demo](assets/ios-builder-demo.gif)
 
 ## Features
 
-- **Build from anywhere**: Build any iOS app (native, Flutter, React Native) via GitHub Actions
+- **Build from anywhere**: Build iOS apps via GitHub Actions, Codemagic, or Bitrise
+- **Independent provider logins**: Stay signed in to all three and choose where each build runs
 - **Try it on a simulator**: Use your build on an iOS simulator from Windows or Linux
 - **Flutter & React Native dev tools**: Hot reload on real iOS devices from Windows/Linux
 - **Simple setup**: One command to add the workflow to your repo
@@ -70,6 +71,27 @@ MobAI app under Account → API Keys, then:
 ```bash
 gh secret set MOBAI_API_KEY
 ```
+
+## Additional macOS Providers
+
+GitHub Actions remains the default, so existing commands continue to work. Add
+Codemagic and Bitrise without logging out of GitHub. First follow the
+[app creation and repository connection guide](docs/provider-setup.md) to create
+each provider app, authorize GitHub access, and find its app ID:
+
+```bash
+builder auth codemagic
+builder auth bitrise
+builder auth status
+builder init --provider codemagic --app-id YOUR_APP_ID --branch main
+builder init --provider bitrise --app-id YOUR_APP_SLUG --branch main
+builder ios build --provider codemagic
+builder ios build --provider bitrise
+```
+
+Commit the generated workflows and shared runner script to the configured branch
+and connect the same repository to each provider before building. See
+[provider setup, signing, simulator sessions, and free allowances](docs/providers.md).
 
 ## Supported Frameworks
 
@@ -208,6 +230,10 @@ hostname.exe
 | `flutter.watch.debounce` | Debounce delay in ms | `100` |
 
 ## Code Signing
+
+For Codemagic and Bitrise, follow the [signing and MobAI secrets guide](docs/provider-secrets.md)
+for dashboard instructions, file encoding, and verification. The `signing setup`
+command below uploads to GitHub Actions only.
 
 By default, builds are unsigned. Signed builds need a signing certificate and a
 provisioning profile — and despite what many guides claim, **you do not need a
@@ -459,9 +485,11 @@ app that is already installed.
 
 ## Build Limits
 
-GitHub Actions free tier:
-- 2,000 minutes/month (macOS uses 10x multiplier = ~200 effective minutes)
-- Approximately 15-20 builds per month
+Free allowances belong to each provider account and depend on the plan and
+machine. Codemagic personal accounts include 500 macOS M2 minutes per month;
+Bitrise Hobby includes 300 credits. GitHub has separate allowances for private
+repositories and free standard runners for public repositories. See the
+[current allowance links and switching guidance](docs/providers.md#free-allowances).
 
 ## License
 

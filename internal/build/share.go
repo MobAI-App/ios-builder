@@ -16,6 +16,7 @@ const ShareWorkflowFile = "ios-share.yml"
 
 // ShareOptions configures a simulator session.
 type ShareOptions struct {
+	Provider string // Override the configured CI provider
 	// Duration is how long the simulator stays available while unused. Using
 	// it keeps it open past this.
 	Duration time.Duration
@@ -25,8 +26,11 @@ type ShareOptions struct {
 
 // ShareResult describes a started session.
 type ShareResult struct {
-	WorkflowURL string
-	RunID       int64
+	WorkflowURL   string
+	RunID         int64
+	ProviderRunID string // String ID used by Codemagic and Bitrise
+	BuildID       string
+	Submitted     bool // True when the provider accepted a session, before readiness is known
 }
 
 // shareStepName is the workflow step that publishes the simulator. Reaching it
@@ -40,6 +44,16 @@ const sharePublishGrace = 30 * time.Second
 // Share builds the working tree for the simulator and publishes it to the
 // account's MobAI app, then returns while the job outlives the command.
 func (c *Coordinator) Share(ctx context.Context, opts ShareOptions) (*ShareResult, error) {
+	name, err := c.config.ProviderName(opts.Provider)
+	if err != nil {
+		return nil, err
+	}
+	if name != "github" || c.provider != nil {
+		return c.shareRemote(ctx, opts)
+	}
+	if c.github == nil {
+		return nil, fmt.Errorf("GitHub client is required")
+	}
 	if opts.Timeout == 0 {
 		opts.Timeout = DefaultTimeout // building can take a while before sharing starts
 	}
@@ -64,7 +78,7 @@ func (c *Coordinator) Share(ctx context.Context, opts ShareOptions) (*ShareResul
 		return nil, fmt.Errorf("failed to push snapshot: %w", err)
 	}
 	// The snapshot ref is left in place: the job checks it out and runs long
-	// after this returns. The next build prunes old refs.
+	// after this returns. It can be deleted once the job has finished.
 	c.progress.Complete(PhaseSnapshot, fmt.Sprintf("Pushed %s", sha[:7]))
 
 	c.progress.Update(PhaseTriggering, "Starting the simulator session...")

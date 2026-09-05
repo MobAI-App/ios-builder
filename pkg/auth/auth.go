@@ -30,3 +30,9 @@ func GetToken() (string, error) {
 func Logout() error {
 	return auth.Logout()
 }
+
+func GetProviderToken(provider string) (string, error) { return auth.GetProviderToken(provider) }
+func StoreProviderToken(provider, token string) error {
+	return auth.StoreProviderToken(provider, token)
+}
+func LogoutProvider(provider string) error { return auth.LogoutProvider(provider) }
