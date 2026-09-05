@@ -231,6 +231,10 @@ hostname.exe
 
 ## Code Signing
 
+For Codemagic and Bitrise, follow the [signing and MobAI secrets guide](docs/provider-secrets.md)
+for dashboard instructions, file encoding, and verification. The `signing setup`
+command below uploads to GitHub Actions only.
+
 By default, builds are unsigned. Signed builds need a signing certificate and a
 provisioning profile — and despite what many guides claim, **you do not need a
 Mac to create either one**. The `.p12` certificate is normally created through

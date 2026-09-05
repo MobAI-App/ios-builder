@@ -142,6 +142,8 @@ same build may consume different minutes on each provider.
 
 ### Signing
 
+See [step-by-step signing and MobAI secret setup](provider-secrets.md).
+
 `builder signing setup` continues to upload signing secrets to **GitHub**.
 For Codemagic/Bitrise, separately configure these secrets on that provider:
 
@@ -154,6 +156,8 @@ signing for a particular build. The runner installs a temporary signing keychain
 and removes it on exit. The CSR and P12 commands remain usable for all providers.
 
 ## Simulator sessions
+
+First [create a MobAI key and add it to each provider](provider-secrets.md#3-create-the-mobai-api-key).
 
 ```sh
 builder ios share --provider codemagic

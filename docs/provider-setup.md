@@ -141,8 +141,9 @@ not transferred by these commands.
 | `IOS_PROVISIONING_PROFILE` | Base64 provisioning profile matching the app |
 | `MOBAI_API_KEY` | MobAI simulator sharing |
 
-Use Codemagic's `builder` group and Bitrise's project Secrets settings. Then
-follow [signing](providers.md#signing) or [simulator sharing](providers.md#simulator-sessions).
+Follow the [signing and MobAI secret setup guide](provider-secrets.md) for
+file preparation, base64/clipboard commands, exact dashboard steps for both
+providers, creating the MobAI key, and signed-build/simulator verification.
 
 ## Common setup problems
 
