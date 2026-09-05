@@ -27,9 +27,13 @@ func newAPI(token, header string) apiClient {
 type APIError struct {
 	StatusCode int
 	retryAfter time.Duration
+	message    string
 }
 
 func (e *APIError) Error() string {
+	if e.message != "" {
+		return e.message
+	}
 	if e.StatusCode == 0 {
 		return "CI API request failed; check connectivity and the provider dashboard"
 	}
@@ -52,10 +56,17 @@ func DispatchRejected(err error) bool {
 }
 
 func (a apiClient) request(ctx context.Context, method, endpoint string, body, dest any) error {
+	if method != http.MethodGet {
+		return a.requestOnce(ctx, method, endpoint, body, dest)
+	}
+	return a.retryRead(ctx, func() error { return a.requestOnce(ctx, method, endpoint, body, dest) })
+}
+
+func (a apiClient) retryRead(ctx context.Context, read func() error) error {
 	for attempt := 0; ; attempt++ {
-		err := a.requestOnce(ctx, method, endpoint, body, dest)
+		err := read()
 		var apiErr *APIError
-		if err == nil || method != http.MethodGet || attempt >= 3 || !errors.As(err, &apiErr) {
+		if err == nil || attempt >= 3 || !errors.As(err, &apiErr) {
 			return err
 		}
 		code := apiErr.StatusCode
@@ -125,6 +136,9 @@ func (a apiClient) requestOnce(ctx context.Context, method, endpoint string, bod
 			return ctx.Err()
 		}
 		return &APIError{}
+	}
+	if !json.Valid(responseData) {
+		return &APIError{message: "invalid CI API response"}
 	}
 	if err := json.Unmarshal(responseData, dest); err != nil {
 		return fmt.Errorf("invalid CI API response")

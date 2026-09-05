@@ -23,6 +23,7 @@ func response(r *http.Request, code int, body string) *http.Response {
 
 func TestCodemagicContract(t *testing.T) {
 	c := NewCodemagic(config.CIConfig{AppID: "app", Branch: "release"}, "secret")
+	c.api.retryDelay = time.Millisecond
 	c.api.http.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Header.Get("x-auth-token") != "secret" {
 			t.Fatal("missing API auth")
@@ -80,6 +81,7 @@ func TestCodemagicStates(t *testing.T) {
 	} {
 		t.Run(tt.state, func(t *testing.T) {
 			c := NewCodemagic(config.CIConfig{}, "token")
+			c.api.retryDelay = time.Millisecond
 			c.api.http.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
 				return response(r, 200, `{"data":{"status":"`+tt.state+`"}}`), nil
 			})
@@ -94,6 +96,7 @@ func TestCodemagicStates(t *testing.T) {
 func TestBitriseTriggerFormatsAndLiteralInputs(t *testing.T) {
 	for _, body := range []string{`{"build_slug":"run","status":"ok"}`, `{"results":[{"build_slug":"run","status":"ok"}]}`} {
 		b := NewBitrise(config.CIConfig{AppID: "app", Branch: "main"}, "secret")
+		b.api.retryDelay = time.Millisecond
 		b.api.http.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
 			if r.Header.Get("Authorization") != "secret" || r.URL.Path != "/v0.1/apps/app/builds" {
 				t.Fatal("wrong request")
@@ -126,6 +129,7 @@ func TestBitriseTriggerFormatsAndLiteralInputs(t *testing.T) {
 
 func TestBitriseArtifactsPaginationAndDownload(t *testing.T) {
 	b := NewBitrise(config.CIConfig{AppID: "app"}, "secret")
+	b.api.retryDelay = time.Millisecond
 	calls := 0
 	b.api.http.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
 		calls++
@@ -170,6 +174,7 @@ func TestBitriseUnsignedArtifactNames(t *testing.T) {
 	for _, name := range []string{"app.ipa", "app.ipa.zip", "logs.zip"} {
 		t.Run(name, func(t *testing.T) {
 			b := NewBitrise(config.CIConfig{AppID: "app"}, "secret")
+			b.api.retryDelay = time.Millisecond
 			b.api.http.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
 				if strings.HasSuffix(r.URL.Path, "/artifacts") {
 					return response(r, 200, `{"data":[{"slug":"artifact","title":"`+name+`","file_size_bytes":9}]}`), nil
@@ -196,6 +201,7 @@ func TestBitriseAbortStates(t *testing.T) {
 	for _, state := range []string{"0", "1", "2", "3", "4", "null", "5"} {
 		t.Run(state, func(t *testing.T) {
 			b := NewBitrise(config.CIConfig{AppID: "app"}, "secret")
+			b.api.retryDelay = time.Millisecond
 			b.api.http.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
 				if strings.HasSuffix(r.URL.Path, "/artifacts") {
 					return response(r, 200, `{"data":[]}`), nil
@@ -331,6 +337,7 @@ func TestDispatchRejectionClassification(t *testing.T) {
 
 func TestBitriseCompletedRunDoesNotRequireArtifactsToCancel(t *testing.T) {
 	b := NewBitrise(config.CIConfig{AppID: "app"}, "secret")
+	b.api.retryDelay = time.Millisecond
 	b.api.http.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Method != "GET" || strings.Contains(r.URL.Path, "artifacts") {
 			t.Fatalf("completed run required artifact API or abort: %s %s", r.Method, r.URL.Path)
@@ -365,5 +372,60 @@ func TestAPIReadRetriesInterruptedResponseBody(t *testing.T) {
 	var result struct{ Status string }
 	if err := a.request(context.Background(), "GET", "https://api.example/builds/run", nil, &result); err != nil || result.Status != "finished" || calls != 2 {
 		t.Fatalf("response read recovery: calls=%d result=%+v err=%v", calls, result, err)
+	}
+}
+
+func TestMalformedStatusRecovers(t *testing.T) {
+	for _, provider := range []string{"codemagic", "bitrise"} {
+		for _, malformed := range []string{"<html>maintenance</html>", `{}`, `{"data":{}}`, `{"data":{"status":`} {
+			t.Run(provider+"/"+malformed, func(t *testing.T) {
+				var p Provider
+				c := NewCodemagic(config.CIConfig{}, "token")
+				b := NewBitrise(config.CIConfig{}, "token")
+				c.api.retryDelay, b.api.retryDelay = time.Millisecond, time.Millisecond
+				calls := 0
+				transport := transportFunc(func(r *http.Request) (*http.Response, error) {
+					calls++
+					if calls == 1 {
+						return response(r, 200, malformed), nil
+					}
+					if provider == "codemagic" {
+						return response(r, 200, `{"data":{"status":"finished"}}`), nil
+					}
+					return response(r, 200, `{"data":{"status":1}}`), nil
+				})
+				c.api.http.Transport, b.api.http.Transport = transport, transport
+				p = c
+				if provider == "bitrise" {
+					p = b
+				}
+				status, err := p.Status(context.Background(), Run{ID: "run"})
+				if err != nil || !status.Success || calls != 2 {
+					t.Fatalf("calls=%d status=%+v err=%v", calls, status, err)
+				}
+			})
+		}
+	}
+}
+
+func TestBitriseAbortReservesTimeAfterRateLimitedStatus(t *testing.T) {
+	b := NewBitrise(config.CIConfig{AppID: "app"}, "secret")
+	aborts := 0
+	b.api.http.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/abort") {
+			if r.Context().Err() != nil {
+				t.Fatal("abort received expired context")
+			}
+			aborts++
+			return response(r, 200, ""), nil
+		}
+		resp := response(r, 429, "")
+		resp.Header.Set("Retry-After", "3600")
+		return resp, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := b.Cancel(ctx, Run{ID: "run"}); err != nil || aborts != 1 {
+		t.Fatalf("aborts=%d err=%v", aborts, err)
 	}
 }

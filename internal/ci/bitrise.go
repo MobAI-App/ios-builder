@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/MobAI-App/ios-builder/internal/config"
 )
@@ -63,18 +64,26 @@ func (b *Bitrise) Start(ctx context.Context, req Request) (Run, error) {
 	}
 	return Run{ID: i.ID, URL: "https://app.bitrise.io/build/" + url.PathEscape(i.ID)}, nil
 }
-func (b *Bitrise) Status(ctx context.Context, run Run) (Status, error) {
+func (b *Bitrise) Status(ctx context.Context, run Run) (status Status, err error) {
+	err = b.api.retryRead(ctx, func() error {
+		var readErr error
+		status, readErr = b.statusOnce(ctx, run)
+		return readErr
+	})
+	return status, err
+}
+func (b *Bitrise) statusOnce(ctx context.Context, run Run) (Status, error) {
 	var result struct {
 		Data struct {
 			Status *int   `json:"status"`
 			Text   string `json:"status_text"`
 		} `json:"data"`
 	}
-	if err := b.api.request(ctx, "GET", b.runURL(run), nil, &result); err != nil {
+	if err := b.api.requestOnce(ctx, "GET", b.runURL(run), nil, &result); err != nil {
 		return Status{}, err
 	}
 	if result.Data.Status == nil || *result.Data.Status < 0 || *result.Data.Status > 4 {
-		return Status{}, fmt.Errorf("Bitrise returned an unknown build status")
+		return Status{}, &APIError{message: "Bitrise returned an unknown build status"}
 	}
 	code := *result.Data.Status
 	s := Status{State: result.Data.Text, Done: code != 0, Success: code == 1}
@@ -138,7 +147,15 @@ func (b *Bitrise) Download(ctx context.Context, run Run, a Artifact, w io.Writer
 }
 func (b *Bitrise) Cancel(ctx context.Context, run Run) error {
 	// Aborting an already completed build is an API error, so check first.
-	s, err := b.Status(ctx, run)
+	// Reserve most of the cancellation deadline for the abort request. A
+	// rate-limited or stalled status endpoint must not consume the entire budget.
+	probeTimeout := 5 * time.Second
+	if deadline, ok := ctx.Deadline(); ok {
+		probeTimeout = min(probeTimeout, time.Until(deadline)/4)
+	}
+	probeCtx, stop := context.WithTimeout(ctx, probeTimeout)
+	s, err := b.Status(probeCtx, run)
+	stop()
 	if err == nil && s.Done {
 		return nil
 	}

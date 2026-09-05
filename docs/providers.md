@@ -197,11 +197,13 @@ Explicit request/access rejections (such as an invalid app ID or denied access)
 clean up the snapshot immediately. Timeouts and other uncertain dispatch outcomes
 still retain it.
 
-Transient API read failures (network errors, HTTP 408/429 and 5xx) receive up to
+Transient API read failures (network errors, malformed responses, HTTP 408/429 and 5xx) receive up to
 three retries with exponential backoff. Builder honors `Retry-After` and the
 command deadline. Persistent failures still stop the command and attempt to
 cancel a running build. Bitrise artifact retrieval happens after completion,
 so an artifact API failure does not trigger cancellation of a completed run.
+Bitrise cancellation reserves time for the abort request even if its preliminary
+status check is unavailable or rate-limited.
 
 ## Free allowances
 

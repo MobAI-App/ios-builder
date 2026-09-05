@@ -33,7 +33,15 @@ func (c *Codemagic) Start(ctx context.Context, req Request) (Run, error) {
 	}
 	return Run{ID: result.BuildID, URL: "https://codemagic.io/app/" + url.PathEscape(c.config.AppID) + "/build/" + url.PathEscape(result.BuildID)}, nil
 }
-func (c *Codemagic) Status(ctx context.Context, run Run) (Status, error) {
+func (c *Codemagic) Status(ctx context.Context, run Run) (status Status, err error) {
+	err = c.api.retryRead(ctx, func() error {
+		var readErr error
+		status, readErr = c.statusOnce(ctx, run)
+		return readErr
+	})
+	return status, err
+}
+func (c *Codemagic) statusOnce(ctx context.Context, run Run) (Status, error) {
 	var result struct {
 		Data struct {
 			Status    string `json:"status"`
@@ -44,7 +52,7 @@ func (c *Codemagic) Status(ctx context.Context, run Run) (Status, error) {
 			} `json:"artifacts"`
 		} `json:"data"`
 	}
-	if err := c.api.request(ctx, "GET", c.statusURL+"/builds/"+url.PathEscape(run.ID), nil, &result); err != nil {
+	if err := c.api.requestOnce(ctx, "GET", c.statusURL+"/builds/"+url.PathEscape(run.ID), nil, &result); err != nil {
 		return Status{}, err
 	}
 	s := Status{State: result.Data.Status}
@@ -55,7 +63,7 @@ func (c *Codemagic) Status(ctx context.Context, run Run) (Status, error) {
 		s.Done = true
 	case "initializing", "queued", "preparing", "fetching", "testing", "building", "publishing", "finishing":
 	default:
-		return Status{}, fmt.Errorf("Codemagic returned an unknown build status")
+		return Status{}, &APIError{message: "Codemagic returned an unknown build status"}
 	}
 	for _, a := range result.Data.Artifacts {
 		s.Artifacts = append(s.Artifacts, Artifact{Name: a.Name, URL: a.URL, Size: a.Size})
