@@ -126,6 +126,10 @@ func (c *Coordinator) buildRemote(ctx context.Context, opts BuildOptions) (*Buil
 	c.progress.Update(PhaseTriggering, "Triggering "+p.Name()+" build...")
 	run, err := p.Start(ctx, ci.Request{Workflow: cfgCI.BuildWorkflow, Variables: v})
 	if err != nil {
+		if ci.DispatchRejected(err) {
+			c.deleteSnapshot(ctx, opts.Remote, ref)
+			return nil, fmt.Errorf("%s dispatch rejected: %w", p.Name(), err)
+		}
 		// A lost response can still mean the job was accepted. Retain its source
 		// ref and never dispatch a second build behind the user's back.
 		return nil, fmt.Errorf("%s dispatch: %w; snapshot %s retained; check the provider dashboard before retrying", p.Name(), err, ref)
@@ -151,6 +155,12 @@ func (c *Coordinator) buildRemote(ctx context.Context, opts BuildOptions) (*Buil
 	terminal = true
 	if !status.Success {
 		return nil, fmt.Errorf("%s build ended: %s (logs: %s)", p.Name(), status.State, run.URL)
+	}
+	if lister, ok := p.(ci.ArtifactLister); ok {
+		status.Artifacts, err = lister.Artifacts(ctx, run)
+		if err != nil {
+			return nil, fmt.Errorf("%s artifacts: %w (logs: %s)", p.Name(), err, run.URL)
+		}
 	}
 	artifact, err := findIPA(status.Artifacts, buildID)
 	if err != nil {
@@ -284,6 +294,10 @@ func (c *Coordinator) shareRemote(ctx context.Context, opts ShareOptions) (*Shar
 	v["DURATION"] = opts.Duration.String()
 	run, err := p.Start(ctx, ci.Request{Workflow: cfgCI.ShareWorkflow, Variables: v})
 	if err != nil {
+		if ci.DispatchRejected(err) {
+			c.deleteSnapshot(ctx, opts.Remote, ref)
+			return nil, fmt.Errorf("%s dispatch rejected: %w", p.Name(), err)
+		}
 		return nil, fmt.Errorf("%s dispatch: %w; snapshot %s retained; check the dashboard before retrying", p.Name(), err, ref)
 	}
 	if ctx.Err() != nil {

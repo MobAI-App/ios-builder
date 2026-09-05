@@ -3,10 +3,13 @@ package ci
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/MobAI-App/ios-builder/internal/config"
 )
@@ -149,7 +152,11 @@ func TestBitriseArtifactsPaginationAndDownload(t *testing.T) {
 	})
 	run := Run{ID: "run"}
 	s, err := b.Status(context.Background(), run)
-	if err != nil || !s.Success || len(s.Artifacts) != 2 {
+	if err != nil || !s.Success {
+		t.Fatalf("status: %+v %v", s, err)
+	}
+	s.Artifacts, err = b.Artifacts(context.Background(), run)
+	if err != nil || len(s.Artifacts) != 2 {
 		t.Fatalf("%+v %v", s, err)
 	}
 	var out strings.Builder
@@ -169,7 +176,8 @@ func TestBitriseUnsignedArtifactNames(t *testing.T) {
 				}
 				return response(r, 200, `{"data":{"status":1}}`), nil
 			})
-			s, err := b.Status(context.Background(), Run{ID: "run"})
+			items, err := b.Artifacts(context.Background(), Run{ID: "run"})
+			s := Status{Artifacts: items}
 			if err != nil || len(s.Artifacts) != 1 {
 				t.Fatalf("status: %+v %v", s, err)
 			}
@@ -245,5 +253,117 @@ func TestArtifactRedirectsRemainUnauthenticated(t *testing.T) {
 		if _, err := downloadURL(context.Background(), url, io.Discard, transport); err == nil {
 			t.Fatal("accepted unsafe URL")
 		}
+	}
+}
+
+func TestAPIReadRetriesAndSingleDispatch(t *testing.T) {
+	for _, code := range []int{0, 408, 429, 500, 502, 503, 504, 401, 403, 404} {
+		for _, method := range []string{"GET", "POST"} {
+			t.Run(fmt.Sprintf("%s/%d", method, code), func(t *testing.T) {
+				a := newAPI("secret", "Authorization")
+				a.retryDelay = time.Millisecond
+				calls := 0
+				a.http.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
+					calls++
+					if calls == 1 {
+						if code == 0 {
+							return nil, errors.New("temporary network error with private data")
+						}
+						return response(r, code, "private response"), nil
+					}
+					return response(r, 200, `{"data":"ok"}`), nil
+				})
+				var result struct{ Data string }
+				err := a.request(context.Background(), method, "https://api.example/builds", nil, &result)
+				retry := method == "GET" && (code == 0 || code == 408 || code == 429 || code >= 500)
+				if retry {
+					if err != nil || calls != 2 || result.Data != "ok" {
+						t.Fatalf("calls=%d result=%+v err=%v", calls, result, err)
+					}
+				} else if err == nil || calls != 1 || strings.Contains(err.Error(), "private") {
+					t.Fatalf("calls=%d err=%v", calls, err)
+				}
+			})
+		}
+	}
+}
+
+func TestAPIReadRetryLimitAndCancellation(t *testing.T) {
+	a := newAPI("secret", "Authorization")
+	a.retryDelay = time.Millisecond
+	calls := 0
+	a.http.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return response(r, 503, ""), nil
+	})
+	if err := a.request(context.Background(), "GET", "https://api.example/builds", nil, nil); err == nil || calls != 4 {
+		t.Fatalf("retry limit: calls=%d err=%v", calls, err)
+	}
+	calls = 0
+	a.http.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		resp := response(r, 429, "")
+		resp.Header.Set("Retry-After", "3600")
+		return resp, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := a.request(ctx, "GET", "https://api.example/builds", nil, nil); !errors.Is(err, context.DeadlineExceeded) || calls != 1 {
+		t.Fatalf("ignored Retry-After/context: calls=%d err=%v", calls, err)
+	}
+	future := time.Now().Add(time.Minute).UTC().Format(http.TimeFormat)
+	if delay := retryAfter(future); delay < 58*time.Second || delay > time.Minute {
+		t.Fatalf("HTTP-date delay: %s", delay)
+	}
+}
+
+func TestDispatchRejectionClassification(t *testing.T) {
+	for _, code := range []int{0, 302, 400, 401, 402, 403, 404, 405, 408, 409, 422, 429, 500, 503} {
+		want := code == 400 || code == 401 || code == 402 || code == 403 || code == 404 || code == 405 || code == 422
+		if got := DispatchRejected(fmt.Errorf("dispatch: %w", &APIError{StatusCode: code})); got != want {
+			t.Fatalf("status %d: %v", code, got)
+		}
+	}
+	if DispatchRejected(errors.New("unknown outcome")) {
+		t.Fatal("unknown error treated as rejection")
+	}
+}
+
+func TestBitriseCompletedRunDoesNotRequireArtifactsToCancel(t *testing.T) {
+	b := NewBitrise(config.CIConfig{AppID: "app"}, "secret")
+	b.api.http.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != "GET" || strings.Contains(r.URL.Path, "artifacts") {
+			t.Fatalf("completed run required artifact API or abort: %s %s", r.Method, r.URL.Path)
+		}
+		return response(r, 200, `{"data":{"status":1}}`), nil
+	})
+	if err := b.Cancel(context.Background(), Run{ID: "run"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type failedResponseBody struct{ closed bool }
+
+func (*failedResponseBody) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+func (b *failedResponseBody) Close() error           { b.closed = true; return nil }
+
+func TestAPIReadRetriesInterruptedResponseBody(t *testing.T) {
+	a := newAPI("secret", "Authorization")
+	a.retryDelay = time.Millisecond
+	failed := &failedResponseBody{}
+	calls := 0
+	a.http.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		resp := response(r, 200, `{"status":"finished"}`)
+		if calls == 1 {
+			resp.Body = failed
+		} else if !failed.closed {
+			t.Fatal("previous body not closed before retry")
+		}
+		return resp, nil
+	})
+	var result struct{ Status string }
+	if err := a.request(context.Background(), "GET", "https://api.example/builds/run", nil, &result); err != nil || result.Status != "finished" || calls != 2 {
+		t.Fatalf("response read recovery: calls=%d result=%+v err=%v", calls, result, err)
 	}
 }

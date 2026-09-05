@@ -32,3 +32,9 @@ type Provider interface {
 	Download(context.Context, Run, Artifact, io.Writer) (int64, error)
 	Cancel(context.Context, Run) error
 }
+
+// ArtifactLister separates artifact API availability from the run's terminal state.
+// Providers whose status response includes artifacts need not implement it.
+type ArtifactLister interface {
+	Artifacts(context.Context, Run) ([]Artifact, error)
+}

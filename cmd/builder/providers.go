@@ -63,7 +63,17 @@ func runProviderInit(cmd *cobra.Command) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	ciCfg := config.CIConfig{AppID: appID, Branch: branch, BuildWorkflow: "ios-build", ShareWorkflow: "ios-share"}
+	ciCfg := cfg.Codemagic
+	if name == "bitrise" {
+		ciCfg = cfg.Bitrise
+	}
+	ciCfg.AppID, ciCfg.Branch = appID, branch
+	if ciCfg.BuildWorkflow == "" {
+		ciCfg.BuildWorkflow = "ios-build"
+	}
+	if ciCfg.ShareWorkflow == "" {
+		ciCfg.ShareWorkflow = "ios-share"
+	}
 	if name == "codemagic" {
 		cfg.Codemagic = ciCfg
 	} else {
@@ -76,12 +86,19 @@ func runProviderInit(cmd *cobra.Command) error {
 	if setDefault {
 		cfg.Provider = name
 	}
-	paths, err := workflow.WriteProviderFiles(".", name)
-	if err != nil {
-		return err
+	var paths []string
+	customWorkflows := ciCfg.BuildWorkflow != "ios-build" || ciCfg.ShareWorkflow != "ios-share"
+	if !customWorkflows {
+		paths, err = workflow.WriteProviderFiles(".", name)
+		if err != nil {
+			return err
+		}
 	}
 	if err := mgr.Save(cfg); err != nil {
 		return err
+	}
+	if customWorkflows {
+		fmt.Println("Preserved custom workflow names and CI files. Merge any runner/workflow updates manually (see docs/providers.md).")
 	}
 	for _, p := range paths {
 		fmt.Printf("Created/updated: %s\n", p)

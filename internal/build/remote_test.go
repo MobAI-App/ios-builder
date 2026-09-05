@@ -4,8 +4,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,7 +66,13 @@ func TestRemoteSnapshotLifecycle(t *testing.T) {
 		failPolling, retained bool
 	}{
 		{"success", nil, nil, false, false},
+		{"transient poll recovers", nil, nil, false, false},
+		{"artifact failure after completion", nil, nil, false, false},
 		{"ambiguous dispatch", errors.New("lost response"), nil, false, true},
+		{"rejected dispatch", &ci.APIError{StatusCode: 404}, nil, false, false},
+		{"ambiguous server failure", &ci.APIError{StatusCode: 503}, nil, false, true},
+		{"rejected share", &ci.APIError{StatusCode: 403}, nil, false, false},
+		{"ambiguous share", &ci.APIError{StatusCode: 408}, nil, false, true},
 		{"poll failure cancelled", nil, nil, true, false},
 		{"unconfirmed cancellation", nil, errors.New("cancel failed"), true, true},
 	} {
@@ -115,8 +123,49 @@ func TestRemoteSnapshotLifecycle(t *testing.T) {
 			p := &fakeProvider{startErr: tt.startErr, cancelErr: tt.cancelErr, failPolling: tt.failPolling, payload: buf.Bytes(), statuses: []ci.Status{{Done: true, Success: true, State: "finished", Artifacts: []ci.Artifact{{Name: "app.ipa"}}}}}
 			cfg := &config.Config{Project: "App", GitHub: config.GitHubConfig{Owner: "owner", Repo: "repo"}, Codemagic: config.CIConfig{AppID: "app", Branch: "main"}}
 			c := NewCoordinatorWithProvider(cfg, p, io.Discard)
-			result, err := c.Build(context.Background(), BuildOptions{OutputDir: filepath.Join(dir, "dist")})
-			if tt.name == "success" {
+			if tt.name == "artifact failure after completion" {
+				c.provider = &failedArtifactProvider{p}
+			}
+			if tt.name == "transient poll recovers" {
+				original := http.DefaultTransport
+				defer func() { http.DefaultTransport = original }()
+				polls := 0
+				http.DefaultTransport = buildTransportFunc(func(r *http.Request) (*http.Response, error) {
+					code, body := 200, ""
+					switch {
+					case r.Method == "POST" && r.URL.Path == "/builds":
+						var req struct {
+							Environment struct{ Variables map[string]string }
+						}
+						if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+							t.Fatal(err)
+						}
+						p.request.Variables = req.Environment.Variables
+						body = `{"buildId":"run"}`
+					case r.Method == "GET" && r.URL.Path == "/api/v3/builds/run":
+						polls++
+						if polls == 1 {
+							code = 503
+						} else {
+							body = `{"data":{"status":"finished","artifacts":[{"name":"app.ipa","short_lived_download_url":"https://storage.example/app.ipa"}]}}`
+						}
+					case r.Method == "GET" && r.URL.Host == "storage.example":
+						body = string(p.payload)
+					default:
+						t.Fatalf("unexpected request/cancellation: %s %s", r.Method, r.URL)
+					}
+					return &http.Response{StatusCode: code, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+				})
+				c.provider = ci.NewCodemagic(cfg.Codemagic, "test-token")
+			}
+
+			var result *BuildResult
+			if strings.HasSuffix(tt.name, "share") {
+				_, err = c.Share(context.Background(), ShareOptions{})
+			} else {
+				result, err = c.Build(context.Background(), BuildOptions{OutputDir: filepath.Join(dir, "dist")})
+			}
+			if tt.name == "success" || tt.name == "transient poll recovers" {
 				if err != nil || result == nil {
 					t.Fatalf("build: %+v %v", result, err)
 				}
@@ -131,6 +180,9 @@ func TestRemoteSnapshotLifecycle(t *testing.T) {
 			refs := git(dir, "--git-dir="+remote, "for-each-ref", "--format=%(refname)")
 			if strings.Contains(refs, ref) != tt.retained {
 				t.Fatalf("retained=%v refs=%s", tt.retained, refs)
+			}
+			if tt.name == "artifact failure after completion" && p.cancelCalled {
+				t.Fatal("completed build was cancelled due to artifact error")
 			}
 			if tt.failPolling && !p.cancelCalled {
 				t.Fatal("remote run was not cancelled")
@@ -216,4 +268,14 @@ func TestSaveRemoteIPAAtomicAndValidated(t *testing.T) {
 			}
 		})
 	}
+}
+
+type buildTransportFunc func(*http.Request) (*http.Response, error)
+
+func (f buildTransportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type failedArtifactProvider struct{ *fakeProvider }
+
+func (*failedArtifactProvider) Artifacts(context.Context, ci.Run) ([]ci.Artifact, error) {
+	return nil, errors.New("artifact service unavailable")
 }

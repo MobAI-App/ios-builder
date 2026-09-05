@@ -7,13 +7,15 @@ import (
 )
 
 type (
-	Provider  = ci.Provider
-	Request   = ci.Request
-	Run       = ci.Run
-	Status    = ci.Status
-	Artifact  = ci.Artifact
-	Codemagic = ci.Codemagic
-	Bitrise   = ci.Bitrise
+	Provider       = ci.Provider
+	ArtifactLister = ci.ArtifactLister
+	APIError       = ci.APIError
+	Request        = ci.Request
+	Run            = ci.Run
+	Status         = ci.Status
+	Artifact       = ci.Artifact
+	Codemagic      = ci.Codemagic
+	Bitrise        = ci.Bitrise
 )
 
 func NewCodemagic(cfg config.CIConfig, token string) *Codemagic { return ci.NewCodemagic(cfg, token) }

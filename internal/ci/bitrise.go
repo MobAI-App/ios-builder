@@ -81,11 +81,10 @@ func (b *Bitrise) Status(ctx context.Context, run Run) (Status, error) {
 	if s.State == "" {
 		s.State = fmt.Sprintf("status %d", code)
 	}
-	// Bitrise artifacts may be uploaded while the build is running, but the IPA
-	// flow waits for successful completion before fetching its artifact list.
-	if !s.Success {
-		return s, nil
-	}
+	return s, nil
+}
+func (b *Bitrise) Artifacts(ctx context.Context, run Run) ([]Artifact, error) {
+	var items []Artifact
 	next := ""
 	seen := map[string]bool{}
 	for {
@@ -104,7 +103,7 @@ func (b *Bitrise) Status(ctx context.Context, run Run) (Status, error) {
 			endpoint += "&next=" + url.QueryEscape(next)
 		}
 		if err := b.api.request(ctx, "GET", endpoint, nil, &artifacts); err != nil {
-			return Status{}, err
+			return nil, err
 		}
 		for _, a := range artifacts.Data {
 			// Unsigned IPAs are uploaded as generic ZIPs to avoid Bitrise's
@@ -113,18 +112,18 @@ func (b *Bitrise) Status(ctx context.Context, run Run) (Status, error) {
 			if strings.HasSuffix(a.Name, ".ipa.zip") {
 				a.Name = strings.TrimSuffix(a.Name, ".zip")
 			}
-			s.Artifacts = append(s.Artifacts, Artifact{ID: a.ID, Name: a.Name, Size: a.Size})
+			items = append(items, Artifact{ID: a.ID, Name: a.Name, Size: a.Size})
 		}
 		next = artifacts.Paging.Next
 		if next == "" {
 			break
 		}
 		if seen[next] {
-			return Status{}, fmt.Errorf("Bitrise artifact pagination repeated a cursor")
+			return nil, fmt.Errorf("Bitrise artifact pagination repeated a cursor")
 		}
 		seen[next] = true
 	}
-	return s, nil
+	return items, nil
 }
 func (b *Bitrise) Download(ctx context.Context, run Run, a Artifact, w io.Writer) (int64, error) {
 	var result struct {
