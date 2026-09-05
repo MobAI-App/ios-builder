@@ -15,8 +15,8 @@ builder auth status
 ```
 
 GitHub keeps its browser/device-code login. Codemagic and Bitrise prompt for a
-personal API token with masked input, validate it against the provider, and save
-it. Create a token in [Codemagic's account settings](https://docs.codemagic.io/rest-api/codemagic-rest-api/)
+personal API token with hidden input (paste once, then press Enter), validate it
+against the provider, and save it. Create a token in [Codemagic's account settings](https://docs.codemagic.io/rest-api/codemagic-rest-api/)
 or [Bitrise's personal access token settings](https://docs.bitrise.io/en/bitrise-ci/api/authenticating-with-the-bitrise-api).
 Each login has its own credential entry. Logging in does not change the default
 provider or remove any other login. `auth status` reports local availability;

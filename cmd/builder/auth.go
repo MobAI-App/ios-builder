@@ -9,7 +9,6 @@ import (
 
 	"github.com/MobAI-App/ios-builder/internal/auth"
 	"github.com/MobAI-App/ios-builder/internal/ci"
-	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 )
 
@@ -37,7 +36,7 @@ func init() {
 	authCmd.AddCommand(authLogoutCmd)
 	for _, name := range []string{"codemagic", "bitrise"} {
 		cmd := &cobra.Command{Use: name, Short: "Authenticate with " + name, Args: cobra.NoArgs, RunE: runAuthProvider}
-		cmd.Flags().Bool("token-stdin", false, "Read API token from stdin instead of a masked prompt")
+		cmd.Flags().Bool("token-stdin", false, "Read API token from stdin instead of a hidden-input prompt")
 		authCmd.AddCommand(cmd)
 	}
 	authCmd.AddCommand(&cobra.Command{Use: "status", Short: "Show login availability for all providers", Args: cobra.NoArgs, RunE: runAuthStatus})
@@ -88,9 +87,8 @@ func runAuthProvider(cmd *cobra.Command, _ []string) error {
 		token = strings.TrimSpace(string(data))
 	} else {
 		fmt.Printf("Create a personal API token in your %s account settings.\n", name)
-		prompt := promptui.Prompt{Label: "API token", Mask: '*'}
 		var err error
-		token, err = prompt.Run()
+		token, err = readProviderToken(cmd.Context(), cmd.InOrStdin(), cmd.ErrOrStderr())
 		if err != nil {
 			return err
 		}

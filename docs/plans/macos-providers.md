@@ -111,3 +111,18 @@ status handling, artifact redirects/downloads, and real Git snapshot lifecycle.
 Live Codemagic/Bitrise builds and MobAI sessions were not run: this repository
 does not contain configured provider apps or an iOS smoke-test project. The PR
 must retain this validation limitation until those integrations are exercised.
+
+
+### Numbra onboarding: token prompt fix
+
+A user reported repeated masked prompt redraws while pasting a Bitrise token.
+Provider login now displays one static prompt and accepts hidden input with
+`x/term`, with terminal mode changes owned by the calling goroutine. Cancellation
+restores the terminal before returning; the CLI exits if input is canceled.
+
+Claude Fable 5.1 at high effort reviewed the written fix design (no source or
+credentials were sent). Its cancellation-race concern led to establishing raw
+mode before starting the reader; the reader never changes OS terminal settings.
+Unix PTY regression tests cover a 330-character paste in a 40-column terminal,
+empty input, Ctrl+C, Ctrl+D, SIGINT, no token echo/redraw, and restored terminal
+settings. Full race tests, vet, and lint passed locally.
