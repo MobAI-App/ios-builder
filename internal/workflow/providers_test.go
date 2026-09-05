@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"text/template"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -183,5 +184,42 @@ fi
 	git(source, "push", "origin", "--delete", ref)
 	if out, err := run(sha); err == nil {
 		t.Fatalf("accepted missing remote ref: %s", out)
+	}
+}
+
+func TestBitriseSSHActivationRequiresKey(t *testing.T) {
+	data, err := GetTemplate("bitrise.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Workflows map[string]struct {
+			Steps []map[string]struct {
+				RunIf string `yaml:"run_if"`
+			}
+		}
+	}
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	for name, workflow := range config.Workflows {
+		gate := workflow.Steps[0]["activate-ssh-key@4"].RunIf
+		for _, key := range []string{"", "test-private-key"} {
+			tmpl, err := template.New("run_if").Funcs(template.FuncMap{"getenv": func(string) string { return key }}).Parse(gate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var output strings.Builder
+			if err := tmpl.Execute(&output, nil); err != nil {
+				t.Fatal(err)
+			}
+			want := "false"
+			if key != "" {
+				want = "true"
+			}
+			if output.String() != want {
+				t.Fatalf("%s: SSH activation = %q, want %s", name, output.String(), want)
+			}
+		}
 	}
 }

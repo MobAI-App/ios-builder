@@ -126,3 +126,25 @@ mode before starting the reader; the reader never changes OS terminal settings.
 Unix PTY regression tests cover a 330-character paste in a 40-column terminal,
 empty input, Ctrl+C, Ctrl+D, SIGINT, no token echo/redraw, and restored terminal
 settings. Full race tests, vet, and lint passed locally.
+
+### Live provider setup and onboarding guide
+
+Numbra completed unsigned builds and IPA downloads on Codemagic (2m19s) and
+Bitrise (26s). Both archives were checked for bundle ID `run.mobai.numbra`.
+Bitrise's API-created app also needed its GitHub connection completed in the
+web UI before repository YAML mode could be enabled. The new
+`docs/provider-setup.md` guide covers app creation, this separate authorization,
+app IDs, API tokens, branch selection, secrets, and first builds, with links
+from README, provider docs, and CLI setup output.
+
+Live testing fixed unconditional Bitrise SSH activation for public HTTPS
+repositories and unsigned IPA upload failures: unsigned IPAs are uploaded as
+`.ipa.zip` generic artifacts (no extra archive layer), normalized by the adapter,
+and validated as IPAs before saving. Artifact public pages and group
+notifications are disabled. Tests cover the SSH condition and artifact names.
+Claude Fable 5.1/high reviewed the written Bitrise setup-fix design without
+source access. Its claim that machine_type_id is absent from the dispatch API
+was checked against the official current schema, which does include it.
+Bitrise nevertheless reported g2.mac.large despite the medium request; account
+runner/credit behavior remains a documented limitation. Signed builds and
+simulator sharing on these providers still need secrets and live validation.

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/url"
 	"sort"
+	"strings"
 
 	"github.com/MobAI-App/ios-builder/internal/config"
 )
@@ -106,6 +107,12 @@ func (b *Bitrise) Status(ctx context.Context, run Run) (Status, error) {
 			return Status{}, err
 		}
 		for _, a := range artifacts.Data {
+			// Unsigned IPAs are uploaded as generic ZIPs to avoid Bitrise's
+			// provisioning-profile parser. The file is already the IPA, without
+			// an extra ZIP wrapper; normal IPA validation still checks its bytes.
+			if strings.HasSuffix(a.Name, ".ipa.zip") {
+				a.Name = strings.TrimSuffix(a.Name, ".zip")
+			}
 			s.Artifacts = append(s.Artifacts, Artifact{ID: a.ID, Name: a.Name, Size: a.Size})
 		}
 		next = artifacts.Paging.Next

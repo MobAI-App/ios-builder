@@ -7,8 +7,12 @@ meta:
     machine_type_id: g2.mac.medium
 workflows:
   ios-build:
+    meta:
+      bitrise.io:
+        machine_type_id: g2.mac.medium
     steps:
-      - activate-ssh-key@4: {}
+      - activate-ssh-key@4:
+          run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
       - git-clone@8: {}
       - script@1:
           title: Build IPA from snapshot
@@ -21,11 +25,23 @@ workflows:
                 cp .builder/ci/runner.sh "$HOME/.ios-builder-ci/runner.sh"
                 bash "$HOME/.ios-builder-ci/runner.sh" build
                 mkdir -p "$BITRISE_DEPLOY_DIR"
-                cp "build/$BUILD_ID.ipa" "$BITRISE_DEPLOY_DIR/"
-      - deploy-to-bitrise-io@2: {}
+                # Bitrise's installable-IPA uploader requires a provisioning
+                # profile. Send unsigned IPAs as generic ZIP artifacts instead;
+                # the bytes are unchanged and Builder restores the .ipa name.
+                artifact_name="$BUILD_ID.ipa"
+                if [ "${USE_SIGNING:-false}" != true ]; then artifact_name="$artifact_name.zip"; fi
+                cp "build/$BUILD_ID.ipa" "$BITRISE_DEPLOY_DIR/$artifact_name"
+      - deploy-to-bitrise-io@2:
+          inputs:
+            - is_enable_public_page: "false"
+            - notify_user_groups: "none"
   ios-share:
+    meta:
+      bitrise.io:
+        machine_type_id: g2.mac.medium
     steps:
-      - activate-ssh-key@4: {}
+      - activate-ssh-key@4:
+          run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
       - git-clone@8: {}
       - script@1:
           title: Build and share simulator

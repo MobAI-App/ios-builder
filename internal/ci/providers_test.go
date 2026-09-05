@@ -159,6 +159,31 @@ func TestBitriseArtifactsPaginationAndDownload(t *testing.T) {
 	}
 }
 
+func TestBitriseUnsignedArtifactNames(t *testing.T) {
+	for _, name := range []string{"app.ipa", "app.ipa.zip", "logs.zip"} {
+		t.Run(name, func(t *testing.T) {
+			b := NewBitrise(config.CIConfig{AppID: "app"}, "secret")
+			b.api.http.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(r.URL.Path, "/artifacts") {
+					return response(r, 200, `{"data":[{"slug":"artifact","title":"`+name+`","file_size_bytes":9}]}`), nil
+				}
+				return response(r, 200, `{"data":{"status":1}}`), nil
+			})
+			s, err := b.Status(context.Background(), Run{ID: "run"})
+			if err != nil || len(s.Artifacts) != 1 {
+				t.Fatalf("status: %+v %v", s, err)
+			}
+			want := name
+			if name == "app.ipa.zip" {
+				want = "app.ipa"
+			}
+			if s.Artifacts[0].Name != want || s.Artifacts[0].ID != "artifact" || s.Artifacts[0].Size != 9 {
+				t.Fatalf("artifact metadata changed: %+v", s.Artifacts[0])
+			}
+		})
+	}
+}
+
 func TestBitriseAbortStates(t *testing.T) {
 	for _, state := range []string{"0", "1", "2", "3", "4", "null", "5"} {
 		t.Run(state, func(t *testing.T) {

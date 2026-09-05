@@ -43,6 +43,10 @@ token separately if you want to stop using it.
 
 ## Configure a project
 
+Start with the [step-by-step app creation and repository connection guide](provider-setup.md).
+It includes dashboard links, API-token instructions, app-ID lookup, YAML selection,
+and a first unsigned build. Login and repository authorization are separate steps.
+
 Initialize GitHub as usual, then add the other providers:
 
 ```sh
@@ -91,7 +95,10 @@ will not pick up these files. Select a macOS Xcode stack in the app settings.
 The workflow requests `g2.mac.medium`. Disable any automatically generated push
 triggers if you only want builds explicitly started by Builder. Add secrets in
 the app's Secrets settings. Keep the app's total build timeout at 90 minutes or
-less; IPA/script limits are also included in the generated workflow.
+less; IPA/script limits are also included in the generated workflow. Unsigned
+IPAs are stored as generic `.ipa.zip` artifacts to avoid Bitrise's installable-app
+metadata checks; Builder downloads and validates the unchanged IPA bytes and
+saves them with the usual `.ipa` extension.
 
 ## Choose where to build
 

@@ -75,7 +75,9 @@ gh secret set MOBAI_API_KEY
 ## Additional macOS Providers
 
 GitHub Actions remains the default, so existing commands continue to work. Add
-Codemagic and Bitrise without logging out of GitHub:
+Codemagic and Bitrise without logging out of GitHub. First follow the
+[app creation and repository connection guide](docs/provider-setup.md) to create
+each provider app, authorize GitHub access, and find its app ID:
 
 ```bash
 builder auth codemagic
