@@ -31,8 +31,8 @@ var verbose bool
 
 var rootCmd = &cobra.Command{
 	Use:   "builder",
-	Short: "Build iOS apps remotely using GitHub Actions",
-	Long: `Builder sets up GitHub Actions workflows to build iOS apps remotely.
+	Short: "Build iOS apps remotely using macOS CI providers",
+	Long: `Builder builds iOS apps using GitHub Actions (default), Codemagic, or Bitrise.
 Perfect for developers on Windows/Linux who need to build iOS IPAs.`,
 	SilenceUsage: true,
 	Version:      version,
@@ -258,6 +258,10 @@ func detectGitHubRepo(remoteName string) (owner, repo string, err error) {
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
+	provider, _ := cmd.Flags().GetString("provider")
+	if provider != "" && provider != "github" {
+		return runProviderInit(cmd)
+	}
 	fmt.Println("Builder - iOS Build Setup")
 	fmt.Println()
 
@@ -383,26 +387,26 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Created: %s\n", sharePath)
 
 	// Save config
-	cfg := &config.Config{
-		Project:  projectName,
-		Platform: "ios",
-		GitHub: config.GitHubConfig{
-			Owner: githubOwner,
-			Repo:  repoName,
-		},
-		IOS: config.IOSConfig{
-			Path:   iosPath,
-			Scheme: scheme,
-		},
-		Flutter: config.FlutterConfig{
-			Version: flutterVersion,
-		},
-		ReactNative: config.ReactNativeConfig{
-			Expo: isExpoProject(),
-		},
-		KMP: config.KMPConfig{
-			JDKVersion: jdkVersion,
-		},
+	cfg, err := config.NewManager().Load()
+	if err != nil && err != config.ErrConfigNotFound {
+		return err
+	}
+	if cfg == nil {
+		cfg = &config.Config{Provider: "github"}
+	}
+	cfg.Project, cfg.Platform = projectName, "ios"
+	cfg.GitHub = config.GitHubConfig{Owner: githubOwner, Repo: repoName}
+	cfg.IOS.Path, cfg.IOS.Scheme = iosPath, scheme
+	if flutterVersion != "" {
+		cfg.Flutter.Version = flutterVersion
+	}
+	cfg.ReactNative.Expo = isExpoProject()
+	if jdkVersion != "" {
+		cfg.KMP.JDKVersion = jdkVersion
+	}
+	setDefault, _ := cmd.Flags().GetBool("set-default")
+	if setDefault {
+		cfg.Provider = "github"
 	}
 
 	fmt.Println("Creating builder.json...")
@@ -490,21 +494,23 @@ var iosCmd = &cobra.Command{
 var iosBuildCmd = &cobra.Command{
 	Use:   "build",
 	Short: "Trigger a remote iOS build",
-	Long:  `Triggers the iOS build workflow on GitHub Actions and downloads the IPA artifact.`,
+	Long:  `Triggers an iOS build on the selected provider (GitHub Actions by default) and downloads the IPA artifact.`,
 	RunE:  runIOSBuild,
 }
 
 var iosShareCmd = &cobra.Command{
 	Use:   "share",
 	Short: "Try this build on a simulator, from the MobAI app",
-	Long: `Builds the working tree for the iOS simulator on GitHub Actions and makes that
+	Long: `Builds the working tree for the iOS simulator on the selected provider and makes that
 simulator usable from the MobAI app, so a build can be tried by hand without a
 Mac.
 
 The simulator appears in MobAI under CI Devices. It stays available while it is
 being used and closes once it is released there, or left unused for a while.
 
-Requires MobAI Pro and a MOBAI_API_KEY secret in the repository.`,
+Requires MobAI Pro and a MOBAI_API_KEY secret on the selected provider.
+GitHub Actions is the default. Codemagic/Bitrise return a submitted session and
+workflow URL; the simulator appears in MobAI once its build and bridge start.`,
 	RunE: runIOSShare,
 }
 
@@ -534,17 +540,23 @@ func init() {
 	initCmd.Flags().String("ios-path", "", "Path to iOS project (e.g., 'ios' for React Native)")
 	initCmd.Flags().String("scheme", "", "Xcode scheme to build (auto-detected if empty)")
 	initCmd.Flags().StringP("remote", "r", "origin", "Git remote name to use for GitHub repository")
+	initCmd.Flags().String("provider", "", "CI provider to configure (default github)")
+	initCmd.Flags().String("app-id", "", "Codemagic app ID or Bitrise app slug")
+	initCmd.Flags().String("branch", "", "Committed branch containing the provider workflow")
+	initCmd.Flags().Bool("set-default", false, "Make this provider the project default")
 
 	// iOS build command flags
 	iosBuildCmd.Flags().StringP("output", "o", "dist", "Output directory for IPA")
 	iosBuildCmd.Flags().Duration("timeout", 30*time.Minute, "Build timeout")
 	iosBuildCmd.Flags().Bool("unsigned", false, "Build unsigned IPA (skip code signing even if configured)")
 	iosBuildCmd.Flags().StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
+	iosBuildCmd.Flags().String("provider", "", "Override CI provider (default github or builder.json provider)")
 	iosCmd.AddCommand(iosBuildCmd)
 
 	// iOS share command flags
 	iosShareCmd.Flags().Duration("duration", 30*time.Minute, "How long the simulator stays available while unused")
 	iosShareCmd.Flags().StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
+	iosShareCmd.Flags().String("provider", "", "Override CI provider (default github or builder.json provider)")
 	iosCmd.AddCommand(iosShareCmd)
 }
 
@@ -562,13 +574,24 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	unsigned, _ := cmd.Flags().GetBool("unsigned")
 	remote, _ := cmd.Flags().GetString("remote")
+	provider, _ := cmd.Flags().GetString("provider")
 
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
+	name, err := cfg.ProviderName(provider)
+	if err != nil {
+		return err
+	}
+	if name != "github" {
+		var stop context.CancelFunc
+		ctx, stop = signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+		defer stop()
+	}
 	return runBuild(ctx, cfg, build.BuildOptions{
+		Provider:  provider,
 		OutputDir: outputDir,
 		Timeout:   timeout,
 		Unsigned:  unsigned,
@@ -587,6 +610,7 @@ func runIOSShare(cmd *cobra.Command, args []string) error {
 
 	duration, _ := cmd.Flags().GetDuration("duration")
 	remote, _ := cmd.Flags().GetString("remote")
+	provider, _ := cmd.Flags().GetString("provider")
 
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -598,11 +622,12 @@ func runIOSShare(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	ghClient, err := getGitHubClient()
+	ghClient, err := clientForProvider(cfg, provider)
 	if err != nil {
 		return err
 	}
 	result, err := build.NewCoordinator(cfg, ghClient).Share(ctx, build.ShareOptions{
+		Provider: provider,
 		Duration: duration,
 		Remote:   remote,
 	})
@@ -611,6 +636,15 @@ func runIOSShare(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Println()
+	if result.Submitted {
+		name, _ := cfg.ProviderName(provider)
+		fmt.Println("Simulator session submitted. The build and bridge must start before it appears in MobAI under CI Devices.")
+		fmt.Println("The workflow is limited to 90 minutes including setup/build; idle duration is not a guaranteed session length.")
+		fmt.Printf("Workflow: %s\n", result.WorkflowURL)
+		fmt.Printf("Cancel: builder ios cancel --provider %s --run-id %s\n", name, result.ProviderRunID)
+		fmt.Printf("After the run finishes, remove its snapshot: git push %s --delete refs/ios-builder/jobs/%s\n", remote, result.BuildID)
+		return nil
+	}
 	fmt.Println("Simulator ready. Open MobAI and find it under CI Devices.")
 	fmt.Println("It closes when you stop its bridge there, or after being left unused.")
 	fmt.Printf("Workflow: %s\n", result.WorkflowURL)
@@ -619,7 +653,7 @@ func runIOSShare(cmd *cobra.Command, args []string) error {
 }
 
 func runBuild(ctx context.Context, cfg *config.Config, opts build.BuildOptions) error {
-	ghClient, err := getGitHubClient()
+	ghClient, err := clientForProvider(cfg, opts.Provider)
 	if err != nil {
 		return err
 	}

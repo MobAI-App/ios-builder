@@ -17,6 +17,7 @@ var ErrConfigNotFound = config.ErrConfigNotFound
 type (
 	Config            = config.Config
 	GitHubConfig      = config.GitHubConfig
+	CIConfig          = config.CIConfig
 	IOSConfig         = config.IOSConfig
 	FlutterConfig     = config.FlutterConfig
 	WatchConfig       = config.WatchConfig

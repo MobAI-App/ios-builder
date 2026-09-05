@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/MobAI-App/ios-builder/internal/ci"
 	"github.com/MobAI-App/ios-builder/internal/config"
 	"github.com/MobAI-App/ios-builder/internal/github"
 	"github.com/MobAI-App/ios-builder/internal/snapshot"
@@ -34,6 +35,7 @@ type Coordinator struct {
 	config   *config.Config
 	github   *github.Client
 	progress *Progress
+	provider ci.Provider
 }
 
 // NewCoordinator creates a new build coordinator that reports progress on stdout
@@ -54,6 +56,7 @@ func NewCoordinatorWithOutput(cfg *config.Config, gh *github.Client, w io.Writer
 
 // BuildOptions contains options for a build
 type BuildOptions struct {
+	Provider  string // Override the configured CI provider
 	OutputDir string
 	Timeout   time.Duration
 	Unsigned  bool   // Skip code signing even if configured
@@ -71,6 +74,16 @@ type BuildResult struct {
 
 // Build triggers a remote build and downloads the IPA artifact
 func (c *Coordinator) Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
+	name, err := c.config.ProviderName(opts.Provider)
+	if err != nil {
+		return nil, err
+	}
+	if name != "github" || c.provider != nil {
+		return c.buildRemote(ctx, opts)
+	}
+	if c.github == nil {
+		return nil, fmt.Errorf("GitHub client is required")
+	}
 	startTime := time.Now()
 
 	// Set default timeout
@@ -206,7 +219,9 @@ func (c *Coordinator) showRunningStep(ctx context.Context, runID int64) {
 
 func (c *Coordinator) deleteSnapshot(ctx context.Context, remote, ref string) {
 	// The build context is already cancelled once Build returns on timeout.
-	if err := snapshot.Delete(context.WithoutCancel(ctx), remote, ref); err != nil {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	if err := snapshot.Delete(cleanupCtx, remote, ref); err != nil {
 		c.progress.Warn(fmt.Sprintf("could not delete snapshot ref %s: %v", ref, err))
 	}
 }

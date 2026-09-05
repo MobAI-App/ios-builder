@@ -10,6 +10,7 @@ import (
 	"io"
 
 	"github.com/MobAI-App/ios-builder/internal/build"
+	"github.com/MobAI-App/ios-builder/pkg/ci"
 	"github.com/MobAI-App/ios-builder/pkg/config"
 	"github.com/MobAI-App/ios-builder/pkg/github"
 )
@@ -39,6 +40,12 @@ type (
 // NewCoordinator creates a build coordinator that reports progress on stdout.
 func NewCoordinator(cfg *config.Config, gh *github.Client) *Coordinator {
 	return build.NewCoordinator(cfg, gh)
+}
+
+// NewCoordinatorWithProvider supplies an external CI provider without changing
+// existing GitHub constructors. The provider may carry an explicit API token.
+func NewCoordinatorWithProvider(cfg *config.Config, provider ci.Provider, w io.Writer) *Coordinator {
+	return build.NewCoordinatorWithProvider(cfg, provider, w)
 }
 
 // NewCoordinatorWithOutput creates a coordinator that renders progress to w.
