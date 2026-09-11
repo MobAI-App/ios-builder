@@ -508,7 +508,7 @@ Mac.
 The simulator appears in MobAI under CI Devices. It stays available while it is
 being used and closes once it is released there, or left unused for a while.
 
-Requires MobAI Pro and a MOBAI_API_KEY secret on the selected provider.
+Free with any MobAI account; needs a MOBAI_API_KEY secret on the selected provider.
 GitHub Actions is the default. Codemagic/Bitrise return a submitted session and
 workflow URL; the simulator appears in MobAI once its build and bridge start.`,
 	RunE: runIOSShare,

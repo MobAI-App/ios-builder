@@ -168,8 +168,8 @@ builder ios share --provider bitrise --duration 20m
 builder ios cancel --provider bitrise --run-id RUN_SLUG
 ```
 
-Set `MOBAI_API_KEY` as a secret on the chosen provider. MobAI Pro is required,
-as for GitHub sharing. For the new providers, `ios share` returns **submitted**
+Set `MOBAI_API_KEY` as a secret on the chosen provider. Any MobAI account will
+do, as for GitHub sharing. For the new providers, `ios share` returns **submitted**
 and a workflow URL. The simulator appears under MobAI's CI Devices once its
 build and bridge start; acceptance by the CI service does not establish
 readiness. Inspect the workflow URL for setup/build/bridge failures. Existing
