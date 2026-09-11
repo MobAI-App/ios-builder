@@ -72,6 +72,22 @@ MobAI app under Account → API Keys, then:
 gh secret set MOBAI_API_KEY
 ```
 
+### Triggering from git only
+
+Where the GitHub API is not reachable, both workflows can also be started by
+pushing a tag. Commit the tree you want built, then:
+
+```bash
+git tag ios-build/my-build && git push origin ios-build/my-build   # IPA build
+git tag ios-share/my-build && git push origin ios-share/my-build   # simulator
+```
+
+The run is named after the tag. Build settings come from `builder.json` in the
+tagged commit (`ios.path`, `ios.scheme`, `ios.signing`, `ios.configuration`,
+`flutter.version`, `kmp.jdkVersion`), the simulator stays available for the
+default 30 minutes, and the tag is deleted when the run ends. The IPA is
+attached to the run as an artifact.
+
 ## Additional macOS Providers
 
 GitHub Actions remains the default, so existing commands continue to work. Add
