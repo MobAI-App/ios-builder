@@ -63,10 +63,12 @@ Builds the working tree for the iOS simulator and makes that simulator usable
 from the [MobAI](https://mobai.run) app, so you can tap through a build without
 a Mac. It shows up under CI Devices, stays available while you are using it, and
 closes when you release it there or leave it unused (30 minutes by default, use
-`--duration` to change).
+`--duration` to change). A coding agent connected to MobAI (Claude Code, Codex,
+Cursor) can drive the simulator the same way.
 
-Needs MobAI Pro and a `MOBAI_API_KEY` repository secret. Create the key in the
-MobAI app under Account → API Keys, then:
+Free with any MobAI account, on [MobAI 3.0 or later](https://mobai.run). Needs
+a `MOBAI_API_KEY` repository secret: create the key in the MobAI app under
+Account → API Keys, then:
 
 ```bash
 gh secret set MOBAI_API_KEY
@@ -144,7 +146,7 @@ builder update                # Update builder to the latest release
 builder ios build             # Trigger build and download IPA to ./dist/
 builder ios build --unsigned  # Build without code signing (if signing is configured)
 
-# Simulator (requires MobAI Pro)
+# Simulator (free, needs a MOBAI_API_KEY secret)
 builder ios share             # Try the build on a simulator in the MobAI app
 builder ios share --duration 1h  # Keep it available longer while unused
 

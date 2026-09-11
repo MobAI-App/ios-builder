@@ -83,7 +83,7 @@ field, and do not base64-encode them.
 
 Open the [MobAI app](https://mobai.run), go to **Account → API Keys**, create an
 API key, and copy its value. Save it under `MOBAI_API_KEY` in each provider using
-the next two sections. MobAI Pro is required for CI simulator sharing.
+the next two sections. CI simulator sharing is free with any MobAI account.
 
 This is your MobAI account key. It is separate from the Codemagic/Bitrise API
 tokens used by `builder auth`, and from a host's `MOBAI_TOKEN`. If you only want
@@ -167,5 +167,5 @@ the provider's total build timeout. See [session lifecycle](providers.md#simulat
 
 If the runner reports a missing `MOBAI_API_KEY`, check the Codemagic group import
 or Bitrise Secrets entry. For authentication failures, check that the key is
-current and belongs to the intended MobAI Pro account. When rotating a key or
+current and belongs to the intended MobAI account. When rotating a key or
 renewing signing files, update the secret values on both providers.
