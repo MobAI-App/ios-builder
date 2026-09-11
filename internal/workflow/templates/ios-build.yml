@@ -1,7 +1,14 @@
 name: iOS Build
-run-name: iOS Build ${{ inputs.build_id }}
+run-name: iOS Build ${{ inputs.build_id || github.ref_name }}
 
 on:
+  # Pushing a tag named ios-build/<build-id> starts the same job without the
+  # GitHub API, for environments where only git access is available. A push
+  # event runs the workflow file from the tagged commit, and the parameters
+  # come from builder.json there. The tag is deleted when the job ends.
+  push:
+    tags:
+      - 'ios-build/*'
   workflow_dispatch:
     inputs:
       build_id:
@@ -47,6 +54,8 @@ on:
 jobs:
   build:
     runs-on: macos-latest
+    permissions:
+      contents: write # deletes the trigger tag
     timeout-minutes: 30
 
     steps:
@@ -64,6 +73,40 @@ jobs:
           git fetch --depth=1 origin "+$SNAPSHOT_REF:refs/heads/snapshot"
           git checkout --force snapshot
           echo "Building $(git rev-parse --short HEAD)"
+
+      # Dispatch inputs arrive with their declared defaults. A tag push has no
+      # inputs, so the values come from builder.json in the tagged commit and
+      # the build id is the tag name after the prefix.
+      - name: Resolve parameters
+        id: params
+        env:
+          IN_BUILD_ID: ${{ inputs.build_id }}
+          IN_IOS_PATH: ${{ inputs.ios_path }}
+          IN_SCHEME: ${{ inputs.scheme }}
+          IN_USE_SIGNING: ${{ inputs.use_signing }}
+          IN_CONFIGURATION: ${{ inputs.configuration }}
+          IN_FLUTTER_VERSION: ${{ inputs.flutter_version }}
+          IN_JDK_VERSION: ${{ inputs.jdk_version }}
+        run: |
+          set -e
+          param() { # name dispatch-value jq-path default
+            local v=""
+            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+              v="$2"
+            elif [ -f builder.json ]; then
+              v=$(jq -r "$3 // empty" builder.json)
+            fi
+            v="${v:-$4}"
+            echo "$1=$v" >> "$GITHUB_OUTPUT"
+            echo "$1=$v"
+          }
+          param build_id         "$IN_BUILD_ID" '""' "${GITHUB_REF_NAME##*/}"
+          param ios_path         "$IN_IOS_PATH" '.ios.path' '.'
+          param scheme           "$IN_SCHEME" '.ios.scheme' ''
+          param use_signing      "$IN_USE_SIGNING" '.ios.signing' 'false'
+          param configuration    "$IN_CONFIGURATION" '.ios.configuration' 'Debug'
+          param flutter_version  "$IN_FLUTTER_VERSION" '.flutter.version' ''
+          param jdk_version      "$IN_JDK_VERSION" '.kmp.jdkVersion' '17'
 
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1
@@ -118,7 +161,7 @@ jobs:
 
       - name: Generate Xcode project (XcodeGen)
         env:
-          IOS_PATH: ${{ inputs.ios_path }}
+          IOS_PATH: ${{ steps.params.outputs.ios_path }}
         run: |
           set -e
           cd "$IOS_PATH"
@@ -147,7 +190,7 @@ jobs:
       # surfacing as xcodebuild's "Unable to open base configuration reference".
       - name: Check base configuration files
         env:
-          IOS_PATH: ${{ inputs.ios_path }}
+          IOS_PATH: ${{ steps.params.outputs.ios_path }}
         run: |
           set -e
           MISSING=""
@@ -176,8 +219,8 @@ jobs:
         if: steps.detect.outputs.type == 'flutter'
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ inputs.flutter_version || '' }}
-          channel: ${{ inputs.flutter_version && 'stable' || 'stable' }}
+          flutter-version: ${{ steps.params.outputs.flutter_version || '' }}
+          channel: stable
           cache: true
 
       - name: Flutter pub get
@@ -209,7 +252,7 @@ jobs:
         uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: ${{ inputs.jdk_version || '17' }}
+          java-version: ${{ steps.params.outputs.jdk_version || '17' }}
 
       - name: Setup Gradle
         if: steps.detect.outputs.type == 'kmp'
@@ -220,14 +263,14 @@ jobs:
         id: pods-cache
         with:
           path: |
-            ${{ inputs.ios_path }}/Pods
+            ${{ steps.params.outputs.ios_path }}/Pods
             ~/.cocoapods/repos
-          key: pods-${{ runner.os }}-${{ hashFiles(format('{0}/Podfile.lock', inputs.ios_path)) }}
+          key: pods-${{ runner.os }}-${{ hashFiles(format('{0}/Podfile.lock', steps.params.outputs.ios_path)) }}
           restore-keys: |
             pods-${{ runner.os }}-
 
       - name: Install certificate and provisioning profile
-        if: inputs.use_signing
+        if: steps.params.outputs.use_signing == 'true'
         env:
           IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
           IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
@@ -279,12 +322,12 @@ jobs:
 
       - name: Build IPA
         env:
-          BUILD_ID: ${{ inputs.build_id }}
-          IOS_PATH: ${{ inputs.ios_path }}
-          SCHEME: ${{ inputs.scheme }}
+          BUILD_ID: ${{ steps.params.outputs.build_id }}
+          IOS_PATH: ${{ steps.params.outputs.ios_path }}
+          SCHEME: ${{ steps.params.outputs.scheme }}
           PROJECT_TYPE: ${{ steps.detect.outputs.type }}
-          USE_SIGNING: ${{ inputs.use_signing }}
-          CONFIGURATION: ${{ inputs.configuration }}
+          USE_SIGNING: ${{ steps.params.outputs.use_signing }}
+          CONFIGURATION: ${{ steps.params.outputs.configuration }}
         run: |
           set -e
 
@@ -589,7 +632,7 @@ jobs:
           key: deriveddata-${{ github.run_id }}
 
       - name: Cleanup signing
-        if: always() && inputs.use_signing
+        if: always() && steps.params.outputs.use_signing == 'true'
         run: |
           if [ -n "$KEYCHAIN_PATH" ] && [ -f "$KEYCHAIN_PATH" ]; then
             security delete-keychain "$KEYCHAIN_PATH" || true
@@ -598,12 +641,12 @@ jobs:
       - name: Build summary
         if: always()
         env:
-          USE_SIGNING: ${{ inputs.use_signing }}
-          CONFIGURATION: ${{ inputs.configuration }}
+          USE_SIGNING: ${{ steps.params.outputs.use_signing }}
+          CONFIGURATION: ${{ steps.params.outputs.configuration }}
         run: |
           echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Build ID:** ${{ inputs.build_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build ID:** ${{ steps.params.outputs.build_id }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Configuration:** $CONFIGURATION" >> $GITHUB_STEP_SUMMARY
           echo "- **DerivedData Cache:** ${{ steps.cache-deriveddata.outputs.cache-hit == 'true' && 'Hit' || 'Miss' }}" >> $GITHUB_STEP_SUMMARY
@@ -618,3 +661,9 @@ jobs:
             IPA_PATH=$(find build -name "*.ipa" -type f | head -1)
             echo "- **IPA Size:** $(ls -lh "$IPA_PATH" | awk '{print $5}')" >> $GITHUB_STEP_SUMMARY
           fi
+
+      # The tag exists only to start this run, so it leaves with it. Deleting
+      # a tag fires no push event, so this cannot start another run.
+      - name: Delete trigger tag
+        if: always() && github.ref_type == 'tag'
+        run: git push origin ":refs/tags/$GITHUB_REF_NAME"

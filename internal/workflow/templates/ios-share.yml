@@ -1,5 +1,5 @@
 name: iOS Simulator
-run-name: iOS Simulator ${{ inputs.build_id }}
+run-name: iOS Simulator ${{ inputs.build_id || github.ref_name }}
 
 # Builds the app for the simulator and then makes that simulator usable from
 # the MobAI app, so the build can be tried by hand from a machine that is not a
@@ -10,6 +10,13 @@ run-name: iOS Simulator ${{ inputs.build_id }}
 # ios-build.yml applies here.
 
 on:
+  # Pushing a tag named ios-share/<build-id> starts the same job without the
+  # GitHub API, for environments where only git access is available. A push
+  # event runs the workflow file from the tagged commit, and the parameters
+  # come from builder.json there. The tag is deleted when the job ends.
+  push:
+    tags:
+      - 'ios-share/*'
   workflow_dispatch:
     inputs:
       build_id:
@@ -50,6 +57,8 @@ on:
 jobs:
   simulator:
     runs-on: macos-latest
+    permissions:
+      contents: write # deletes the trigger tag
     # Bounds the session: a simulator nobody released must not hold a runner
     # indefinitely. Comfortably above the default duration.
     timeout-minutes: 90
@@ -69,6 +78,38 @@ jobs:
           git fetch --depth=1 origin "+$SNAPSHOT_REF:refs/heads/snapshot"
           git checkout --force snapshot
           echo "Building $(git rev-parse --short HEAD)"
+
+      # Dispatch inputs arrive with their declared defaults. A tag push has no
+      # inputs, so the values come from builder.json in the tagged commit and
+      # the build id is the tag name after the prefix.
+      - name: Resolve parameters
+        id: params
+        env:
+          IN_BUILD_ID: ${{ inputs.build_id }}
+          IN_IOS_PATH: ${{ inputs.ios_path }}
+          IN_SCHEME: ${{ inputs.scheme }}
+          IN_DURATION: ${{ inputs.duration }}
+          IN_FLUTTER_VERSION: ${{ inputs.flutter_version }}
+          IN_JDK_VERSION: ${{ inputs.jdk_version }}
+        run: |
+          set -e
+          param() { # name dispatch-value jq-path default
+            local v=""
+            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+              v="$2"
+            elif [ -f builder.json ]; then
+              v=$(jq -r "$3 // empty" builder.json)
+            fi
+            v="${v:-$4}"
+            echo "$1=$v" >> "$GITHUB_OUTPUT"
+            echo "$1=$v"
+          }
+          param build_id         "$IN_BUILD_ID" '""' "${GITHUB_REF_NAME##*/}"
+          param ios_path         "$IN_IOS_PATH" '.ios.path' '.'
+          param scheme           "$IN_SCHEME" '.ios.scheme' ''
+          param duration         "$IN_DURATION" '""' '30m'
+          param flutter_version  "$IN_FLUTTER_VERSION" '.flutter.version' ''
+          param jdk_version      "$IN_JDK_VERSION" '.kmp.jdkVersion' '17'
 
       # Starts the simulator booting in the background (cached, so later runs
       # boot fast) while the app builds.
@@ -129,7 +170,7 @@ jobs:
 
       - name: Generate Xcode project (XcodeGen)
         env:
-          IOS_PATH: ${{ inputs.ios_path }}
+          IOS_PATH: ${{ steps.params.outputs.ios_path }}
         run: |
           set -e
           cd "$IOS_PATH"
@@ -156,7 +197,7 @@ jobs:
       # surfacing as xcodebuild's "Unable to open base configuration reference".
       - name: Check base configuration files
         env:
-          IOS_PATH: ${{ inputs.ios_path }}
+          IOS_PATH: ${{ steps.params.outputs.ios_path }}
         run: |
           set -e
           MISSING=""
@@ -185,7 +226,7 @@ jobs:
         if: steps.detect.outputs.type == 'flutter'
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ inputs.flutter_version || '' }}
+          flutter-version: ${{ steps.params.outputs.flutter_version || '' }}
           channel: stable
           cache: true
 
@@ -210,7 +251,7 @@ jobs:
         uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: ${{ inputs.jdk_version || '17' }}
+          java-version: ${{ steps.params.outputs.jdk_version || '17' }}
 
       - name: Setup Gradle
         if: steps.detect.outputs.type == 'kmp'
@@ -219,8 +260,8 @@ jobs:
       - name: Build for the simulator
         id: build
         env:
-          IOS_PATH: ${{ inputs.ios_path }}
-          SCHEME: ${{ inputs.scheme }}
+          IOS_PATH: ${{ steps.params.outputs.ios_path }}
+          SCHEME: ${{ steps.params.outputs.scheme }}
           PROJECT_TYPE: ${{ steps.detect.outputs.type }}
         run: |
           set -e
@@ -359,6 +400,12 @@ jobs:
           mobai-ci share \
             --device "$MOBAI_SIM_UDID" \
             --app "${{ steps.build.outputs.app_path }}" \
-            --duration "${{ inputs.duration }}" \
-            --label "${{ github.repository }} · ${{ inputs.build_id }}" \
+            --duration "${{ steps.params.outputs.duration }}" \
+            --label "${{ github.repository }} · ${{ steps.params.outputs.build_id }}" \
             --wait-device 4m --startup-timeout 5m
+
+      # The tag exists only to start this run, so it leaves with it. Deleting
+      # a tag fires no push event, so this cannot start another run.
+      - name: Delete trigger tag
+        if: always() && github.ref_type == 'tag'
+        run: git push origin ":refs/tags/$GITHUB_REF_NAME"

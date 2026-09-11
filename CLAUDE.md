@@ -177,6 +177,13 @@ The embedded workflow template (`internal/workflow/templates/ios-build.yml`):
 - Dispatch runs the workflow from the **default branch**, so edits to the workflow file itself
   only take effect once pushed there — unlike app sources, which come from the snapshot ref
 - Checks out `snapshot_ref` over the default-branch checkout when set
+- Also triggered by pushing a tag `ios-build/<build-id>` (`ios-share/<build-id>` for the share
+  workflow) for environments without GitHub API access. Push events run the workflow file from
+  the tagged commit, `inputs` are empty, so a `Resolve parameters` step reads `ios_path`, `scheme`,
+  `use_signing`, `configuration`, `flutter_version` and `jdk_version` from `builder.json` in the
+  tagged tree; every later step reads `steps.params.outputs.*`, never `inputs.*`. The job deletes
+  the tag when it ends (`permissions: contents: write`). Any other workflow in the repo with an
+  unfiltered `on: push` also fires on these tags.
 - Runs on `macos-latest`
 - Detects Flutter projects (checks for `pubspec.yaml`)
 - Restores and saves DerivedData for fast incremental builds
