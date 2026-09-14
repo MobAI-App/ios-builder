@@ -220,36 +220,12 @@ builder signing setup         # Upload code signing secrets to GitHub
 | `mobai.url` | MobAI API URL | `http://localhost:8686` |
 | `mobai.device_id` | Preferred device ID (uses first available if empty) | `""` |
 
-**WSL users**: MobAI runs on Windows, so you need to:
-
-1. In MobAI, go to **Integrations → API server** and enable **Allow external connections**
-2. Get your Windows hostname and use it with `.local` suffix:
-
-```bash
-# Get Windows hostname from WSL
-hostname.exe
-```
-
-```json
-{
-  "mobai": {
-    "url": "http://YOUR-PC-NAME.local:8686"
-  }
-}
-```
-
-If MobAI has an API token set, put it in `.env` in the directory you run builder
-from (or export it):
-
-```bash
-MOBAI_ACCESS_KEY=your-mobai-api-token
-```
-
-Without it every call from WSL fails with `invalid or missing API token`.
-
-Builder claims the device before using it, which MobAI requires from WSL. If you
-started the device's bridge in the MobAI app, stop it there first: MobAI won't
-let a client from WSL take over a bridge the app is already running.
+**WSL users**: MobAI runs on Windows, and WSL has its own network by default. On
+Windows 11, turn on
+[mirrored networking](https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking)
+and builder reaches MobAI on the default `http://localhost:8686`. See
+[Using Builder from WSL](docs/wsl.md) for the steps, and for the setup without
+mirrored networking.
 
 ### Flutter File Watcher
 
