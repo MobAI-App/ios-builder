@@ -156,6 +156,10 @@ internal/
   `builder mobai` processes share one lease. Long-running commands run `KeepLease`, since MobAI
   renews only on requests. Builder never releases: MobAI refuses network claims on a running
   bridge nobody holds, so a release would lock the next WSL run out
+- **MobAI Access Key**: MobAI with an API token set rejects every non-loopback call but health with
+  401. The client reads `MOBAI_ACCESS_KEY` from the environment, else `.env` in the working
+  directory, and sends it as `X-API-Key` on requests and the debug WebSocket. Flutter runs the
+  custom device commands from the project directory, so they find the same `.env`
 - **Flutter Custom Devices**: Auto-configures `~/.config/flutter/custom_devices.json` for `mobai-ios` device
 - **Debug URL Capture**: WebSocket stream captures VM Service URL from app launch
 - **React Native Metro**: Auto-starts Metro bundler, passes Metro URL to app via environment variables

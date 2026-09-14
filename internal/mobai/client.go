@@ -23,6 +23,7 @@ const (
 type Client struct {
 	httpClient *http.Client
 	baseURL    string
+	accessKey  string // MobAI API token, required from other hosts, see accessKey
 
 	mu    sync.Mutex
 	lease lease // device claim sent with every request, see Claim
@@ -36,6 +37,7 @@ func NewClient(baseURL string) *Client {
 	return &Client{
 		httpClient: &http.Client{},
 		baseURL:    strings.TrimSuffix(baseURL, "/"),
+		accessKey:  accessKey(),
 	}
 }
 
@@ -58,6 +60,9 @@ func (c *Client) request(ctx context.Context, method, path string, body any) (*h
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.accessKey != "" {
+		req.Header.Set(accessKeyHeader, c.accessKey)
 	}
 	if token := c.currentLease().token; token != "" {
 		req.Header.Set(leaseTokenHeader, token)
@@ -163,6 +168,9 @@ func (c *Client) DebugStream(ctx context.Context, deviceID, bundleID string, con
 	path := fmt.Sprintf("/api/v1/devices/%s/debug?bundleId=%s", deviceID, url.QueryEscape(bundleID))
 
 	header := http.Header{}
+	if c.accessKey != "" {
+		header.Set(accessKeyHeader, c.accessKey)
+	}
 	if token := c.currentLease().token; token != "" {
 		header.Set(leaseTokenHeader, token)
 	}
