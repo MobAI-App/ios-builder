@@ -238,6 +238,19 @@ hostname.exe
 }
 ```
 
+If MobAI has an API token set, put it in `.env` in the directory you run builder
+from (or export it):
+
+```bash
+MOBAI_ACCESS_KEY=your-mobai-api-token
+```
+
+Without it every call from WSL fails with `invalid or missing API token`.
+
+Builder claims the device before using it, which MobAI requires from WSL. If you
+started the device's bridge in the MobAI app, stop it there first: MobAI won't
+let a client from WSL take over a bridge the app is already running.
+
 ### Flutter File Watcher
 
 | Field | Description | Default |

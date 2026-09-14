@@ -61,7 +61,7 @@ type DebugOutput struct {
 type APIError struct {
 	Error   string `json:"error"`
 	Message string `json:"message,omitempty"`
-	Code    int    `json:"code,omitempty"`
+	Code    string `json:"code,omitempty"` // e.g. CLAIM_REQUIRED, DEVICE_IN_USE
 }
 
 func (e *APIError) String() string {

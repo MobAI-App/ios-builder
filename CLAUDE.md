@@ -148,6 +148,18 @@ internal/
   absent fails the job by name instead of as xcodebuild's opaque "Unable to open base configuration
   reference file". Pods/Flutter-generated configs are skipped — they appear later in the job.
 - **MobAI Integration**: HTTP/WebSocket API for device control, app install, debug launch
+- **MobAI Device Claims**: every command that drives a device (`dev *` sessions, `mobai install`,
+  `mobai run-debug`, `mobai forward`) calls `mobai.Client.Claim` first, and the client sends the
+  lease as `X-Lease-Token` on every request and the debug WebSocket. MobAI demands it from network
+  callers (WSL) and from local ones when its "Require device claim" setting is on. The claim ID is
+  stable per install (`ios-builder/mobai-client-id` in the user config dir), so Flutter's separate
+  `builder mobai` processes share one lease. Long-running commands run `KeepLease`, since MobAI
+  renews only on requests. Builder never releases: MobAI refuses network claims on a running
+  bridge nobody holds, so a release would lock the next WSL run out
+- **MobAI Access Key**: MobAI with an API token set rejects every non-loopback call but health with
+  401. The client reads `MOBAI_ACCESS_KEY` from the environment, else `.env` in the working
+  directory, and sends it as `X-API-Key` on requests and the debug WebSocket. Flutter runs the
+  custom device commands from the project directory, so they find the same `.env`
 - **Flutter Custom Devices**: Auto-configures `~/.config/flutter/custom_devices.json` for `mobai-ios` device
 - **Debug URL Capture**: WebSocket stream captures VM Service URL from app launch
 - **React Native Metro**: Auto-starts Metro bundler, passes Metro URL to app via environment variables
