@@ -125,6 +125,10 @@ func runMobaiInstall(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
+	if err := client.Claim(ctx, deviceID); err != nil {
+		return err
+	}
+
 	req := mobai.InstallAppRequest{Path: args[0]}
 	_, err = client.InstallApp(ctx, deviceID, req)
 	if err != nil {
@@ -144,6 +148,11 @@ func runMobaiRunDebug(cmd *cobra.Command, args []string) error {
 
 	bundleID := args[0]
 	ctx := context.Background()
+
+	if err := client.Claim(ctx, deviceID); err != nil {
+		return err
+	}
+	go client.KeepLease(ctx)
 
 	outputChan, conn, err := client.DebugStream(ctx, deviceID, bundleID, nil)
 	if err != nil {
@@ -181,6 +190,10 @@ func runMobaiForward(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	if err := client.Claim(ctx, deviceID); err != nil {
+		return err
+	}
+
 	resp, err := client.ForwardPort(ctx, deviceID, mobai.PortForwardRequest{
 		DevicePort: devicePort,
 		HostPort:   hostPort,
@@ -188,6 +201,9 @@ func runMobaiForward(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("forward failed: %w", err)
 	}
+
+	// The forward lasts as long as this process, which makes no more requests.
+	go client.KeepLease(context.Background())
 
 	// On WSL, start a TCP proxy to forward localhost -> Windows host
 	if isWSL() {

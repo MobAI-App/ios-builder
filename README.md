@@ -238,6 +238,10 @@ hostname.exe
 }
 ```
 
+Builder claims the device before using it, which MobAI requires from WSL. If you
+started the device's bridge in the MobAI app, stop it there first: MobAI won't
+let a client from WSL take over a bridge the app is already running.
+
 ### Flutter File Watcher
 
 | Field | Description | Default |

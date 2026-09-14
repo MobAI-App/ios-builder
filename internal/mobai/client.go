@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/gorilla/websocket"
 )
@@ -22,6 +23,9 @@ const (
 type Client struct {
 	httpClient *http.Client
 	baseURL    string
+
+	mu    sync.Mutex
+	lease lease // device claim sent with every request, see Claim
 }
 
 // NewClient creates a new MobAI API client
@@ -55,6 +59,9 @@ func (c *Client) request(ctx context.Context, method, path string, body any) (*h
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	if token := c.currentLease().token; token != "" {
+		req.Header.Set(leaseTokenHeader, token)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -62,6 +69,27 @@ func (c *Client) request(ctx context.Context, method, path string, body any) (*h
 	}
 
 	return resp, nil
+}
+
+// ResponseError is an error response from the MobAI API.
+type ResponseError struct {
+	StatusCode int
+	Code       string // MobAI's machine-readable reason, e.g. CLAIM_REQUIRED
+	Message    string
+}
+
+func (e *ResponseError) Error() string {
+	return fmt.Sprintf("API error (status %d): %s", e.StatusCode, e.Message)
+}
+
+func newResponseError(statusCode int, body []byte) *ResponseError {
+	e := &ResponseError{StatusCode: statusCode, Message: strings.TrimSpace(string(body))}
+	var apiErr APIError
+	if json.Unmarshal(body, &apiErr) == nil && apiErr.String() != "" {
+		e.Code = apiErr.Code
+		e.Message = apiErr.String()
+	}
+	return e
 }
 
 // do performs a request and decodes the response into result
@@ -78,11 +106,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, result any) 
 	}
 
 	if resp.StatusCode >= 400 {
-		var apiErr APIError
-		if err := json.Unmarshal(respBody, &apiErr); err != nil {
-			return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
-		}
-		return fmt.Errorf("API error: %s", apiErr.String())
+		return newResponseError(resp.StatusCode, respBody)
 	}
 
 	if result != nil && len(respBody) > 0 {
@@ -138,8 +162,18 @@ func (c *Client) DebugStream(ctx context.Context, deviceID, bundleID string, con
 
 	path := fmt.Sprintf("/api/v1/devices/%s/debug?bundleId=%s", deviceID, url.QueryEscape(bundleID))
 
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL+path, nil)
+	header := http.Header{}
+	if token := c.currentLease().token; token != "" {
+		header.Set(leaseTokenHeader, token)
+	}
+
+	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, wsURL+path, header)
 	if err != nil {
+		// A refused handshake carries MobAI's JSON error, such as CLAIM_REQUIRED.
+		if resp != nil && resp.StatusCode >= 400 {
+			body, _ := io.ReadAll(resp.Body)
+			return nil, nil, fmt.Errorf("websocket connect: %w", newResponseError(resp.StatusCode, body))
+		}
 		return nil, nil, fmt.Errorf("websocket connect: %w", err)
 	}
 

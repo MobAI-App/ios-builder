@@ -107,6 +107,8 @@ func (s *Session) Start(ctx context.Context) error {
 	if err := s.connectDevice(ctx); err != nil {
 		return err
 	}
+	go s.mobai.KeepLease(ctx)
+
 	if !s.skipInstall {
 		if err := s.installApp(ctx); err != nil {
 			return err
@@ -190,7 +192,7 @@ func (s *Session) connectDevice(ctx context.Context) error {
 
 	s.deviceID = device.ID
 	fmt.Printf("Using device: %s\n", device.Name)
-	return nil
+	return s.mobai.Claim(ctx, s.deviceID)
 }
 
 func (s *Session) installApp(ctx context.Context) error {
