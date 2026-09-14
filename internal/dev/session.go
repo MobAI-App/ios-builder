@@ -201,6 +201,9 @@ func (s *Session) installApp(ctx context.Context) error {
 		return fmt.Errorf("get absolute path: %w", err)
 	}
 
+	// Read the IPA from the local path; on WSL absPath becomes a Windows path
+	// that only MobAI can open.
+	ipaBundleID := extractBundleIDFromIPA(absPath)
 	absPath = toWindowsPathIfWSL(absPath)
 
 	req := mobai.InstallAppRequest{Path: absPath}
@@ -238,8 +241,7 @@ func (s *Session) installApp(ctx context.Context) error {
 
 	s.bundleID = resp.Data.BundleID
 	if s.bundleID == "" {
-		detected := extractBundleIDFromIPA(absPath)
-		bundlePrompt := promptui.Prompt{Label: "Bundle ID", Default: detected}
+		bundlePrompt := promptui.Prompt{Label: "Bundle ID", Default: guessBundleID(resp, ipaBundleID, req.Resign)}
 		s.bundleID, err = bundlePrompt.Run()
 		if err != nil {
 			return err
@@ -248,6 +250,16 @@ func (s *Session) installApp(ctx context.Context) error {
 
 	fmt.Printf("Installed: %s\n", s.bundleID)
 	return nil
+}
+
+// guessBundleID suggests the bundle ID an install left on the device when
+// MobAI's response doesn't name it: the IPA's own ID, with the team ID appended
+// when the app was re-signed and MobAI reported the team.
+func guessBundleID(resp *mobai.InstallAppResponse, ipaBundleID string, resigned bool) string {
+	if resigned && ipaBundleID != "" && resp.Data.TeamID != "" {
+		return ipaBundleID + "." + resp.Data.TeamID
+	}
+	return ipaBundleID
 }
 
 func extractBundleIDFromIPA(ipaPath string) string {
