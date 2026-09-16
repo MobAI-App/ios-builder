@@ -25,6 +25,36 @@ snapshot_checkout() {
   echo "Building snapshot $SNAPSHOT_SHA"
 }
 
+# A managed Expo project keeps no ios/ directory in git; `expo prebuild`
+# generates it from app.json / app.config.js. An ejected project already has
+# one and must keep it. CI=1 stops prebuild from prompting, which on a runner
+# would mean waiting for the job timeout.
+expo_prebuild() {
+  if [ -n "$(find "$IOS_PATH" -maxdepth 1 \( -name '*.xcodeproj' -o -name '*.xcworkspace' \) -print -quit 2>/dev/null)" ]; then
+    echo "$IOS_PATH already holds an Xcode project (ejected Expo); skipping prebuild"
+    return 0
+  fi
+  bundle_id=$(npx expo config --type public --json 2>/dev/null | jq -r '.ios.bundleIdentifier // empty' || true)
+  if [ -z "$bundle_id" ]; then
+    for manifest in app.json app.config.json; do
+      if [ -f "$manifest" ]; then
+        bundle_id=$(jq -r '(.expo.ios.bundleIdentifier // .ios.bundleIdentifier) // empty' "$manifest" 2>/dev/null || true)
+        if [ -n "$bundle_id" ]; then break; fi
+      fi
+    done
+  fi
+  if [ -z "$bundle_id" ]; then
+    echo "This managed Expo project has no ios.bundleIdentifier; set expo.ios.bundleIdentifier in app.json or app.config.js, since 'expo prebuild' cannot run unattended without it" >&2
+    exit 1
+  fi
+  echo "Prebuilding $bundle_id into $IOS_PATH"
+  CI=1 npx expo prebuild --platform ios --no-install
+  if [ -z "$(find "$IOS_PATH" -maxdepth 1 -name '*.xcodeproj' -print -quit 2>/dev/null)" ]; then
+    echo "'expo prebuild' produced no Xcode project in $IOS_PATH; set ios.path in builder.json if it lands elsewhere" >&2
+    exit 1
+  fi
+}
+
 prepare() {
   if [ -f pubspec.yaml ]; then
     project_type=flutter
@@ -67,7 +97,7 @@ prepare() {
     elif [ -f package-lock.json ]; then npm ci
     else npm install
     fi
-    if [ "$project_type" = expo ]; then npx expo prebuild --platform ios --no-install; fi
+    if [ "$project_type" = expo ]; then expo_prebuild; fi
   elif [ "$project_type" = kmp ]; then
     if ! [[ "$JDK_VERSION" =~ ^[0-9]+$ ]]; then echo "JDK_VERSION must be a major version" >&2; exit 1; fi
     if JAVA_HOME=$(/usr/libexec/java_home -v "$JDK_VERSION" 2>/dev/null); then

@@ -122,6 +122,12 @@ func isExpoProject() bool {
 	return strings.Contains(string(data), `"expo"`)
 }
 
+// expoManagedFramework names a managed Expo project: one that depends on Expo
+// but keeps no Xcode project in git, because `expo prebuild` generates it. The
+// runner runs that prebuild, so the iOS path is still "ios" — that is where
+// prebuild puts the project.
+const expoManagedFramework = "Expo (managed)"
+
 // kmpPluginRe matches a declaration of the Kotlin Multiplatform Gradle plugin,
 // in the Kotlin DSL (`kotlin("multiplatform")`) or Groovy/plugin-id form. It
 // must stay in step with the detection in the workflow template: a project the
@@ -216,6 +222,12 @@ func detectIOSPath() (string, string) {
 		}
 	}
 
+	// No Xcode project anywhere, but the app depends on Expo: a managed
+	// project, whose ios/ directory the runner generates with `expo prebuild`.
+	if isExpoProject() {
+		return "ios", expoManagedFramework
+	}
+
 	return "", ""
 }
 
@@ -296,6 +308,10 @@ func runInit(cmd *cobra.Command, args []string) error {
 		detectedPath, framework := detectIOSPath()
 		if detectedPath != "" {
 			fmt.Printf("Detected %s project (iOS at '%s')\n", framework, detectedPath)
+			if framework == expoManagedFramework {
+				fmt.Printf("There is no '%s' directory yet; the build generates it on the runner with 'expo prebuild'.\n", detectedPath)
+				fmt.Println("app.json / app.config.js must set ios.bundleIdentifier, or prebuild cannot run unattended.")
+			}
 			confirmPrompt := promptui.Prompt{
 				Label:     "Use this path",
 				IsConfirm: true,
