@@ -125,7 +125,7 @@ func (c *Config) ResolveProfile(name string) (BuildSettings, error) {
 // EnvJSON encodes the profile's environment as a JSON object, which is how it
 // travels to the runner: workflow inputs and CI variables are strings, and JSON
 // survives values with spaces, quotes and newlines. Empty when there is none.
-func (s BuildSettings) EnvJSON() string {
+func (s *BuildSettings) EnvJSON() string {
 	if len(s.Env) == 0 {
 		return ""
 	}
@@ -138,7 +138,7 @@ func (s BuildSettings) EnvJSON() string {
 // keeping the workflow under GitHub's limit of ten inputs. Empty when no
 // profile is selected, so older workflow files keep receiving the inputs they
 // declare.
-func (s BuildSettings) ProfileInput() string {
+func (s *BuildSettings) ProfileInput() string {
 	if s.Profile == "" {
 		return ""
 	}

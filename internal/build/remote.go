@@ -65,7 +65,7 @@ func (c *Coordinator) remote(override string) (ci.Provider, config.CIConfig, err
 // profile's env travels as one JSON object in BUILD_ENV, which the runner
 // exports before installing dependencies; DISTRIBUTION is passed through for
 // the export step. Both are only set when the profile provides them.
-func (c *Coordinator) inputs(buildID, ref, sha string, s config.BuildSettings) map[string]string {
+func (c *Coordinator) inputs(buildID, ref, sha string, s *config.BuildSettings) map[string]string {
 	v := map[string]string{"BUILD_ID": buildID, "SNAPSHOT_REF": ref, "SNAPSHOT_SHA": sha,
 		"IOS_PATH": c.config.IOS.Path, "SCHEME": s.Scheme,
 		"CONFIGURATION": s.Configuration, "FLUTTER_VERSION": c.config.Flutter.Version,
@@ -92,7 +92,7 @@ func (c *Coordinator) inputs(buildID, ref, sha string, s config.BuildSettings) m
 	return v
 }
 
-func (c *Coordinator) pushSnapshot(ctx context.Context, remote, buildID string, s config.BuildSettings, provider string) (string, string, error) {
+func (c *Coordinator) pushSnapshot(ctx context.Context, remote, buildID string, s *config.BuildSettings, provider string) (string, string, error) {
 	c.progress.Start(buildID)
 	c.progress.Settings(s, provider)
 	c.progress.Update(PhaseSnapshot, "Snapshotting working tree...")
@@ -108,11 +108,14 @@ func (c *Coordinator) pushSnapshot(ctx context.Context, remote, buildID string, 
 	return ref, sha, nil
 }
 
-func (c *Coordinator) buildRemote(ctx context.Context, opts BuildOptions, s config.BuildSettings) (*BuildResult, error) {
+func (c *Coordinator) buildRemote(ctx context.Context, opts *BuildOptions, s *config.BuildSettings) (*BuildResult, error) {
 	p, cfgCI, err := c.remote(s.Provider)
 	if err != nil {
 		return nil, err
 	}
+	// Defaults below are filled in on a copy: opts belongs to the caller.
+	o := *opts
+	opts = &o
 	if opts.Timeout < 0 {
 		return nil, fmt.Errorf("timeout must be positive")
 	}
@@ -274,7 +277,7 @@ func saveRemoteIPA(ctx context.Context, p ci.Provider, run ci.Run, a ci.Artifact
 	return dest, n, nil
 }
 
-func (c *Coordinator) shareRemote(ctx context.Context, opts ShareOptions, s config.BuildSettings) (*ShareResult, error) {
+func (c *Coordinator) shareRemote(ctx context.Context, opts ShareOptions, s *config.BuildSettings) (*ShareResult, error) {
 	p, cfgCI, err := c.remote(s.Provider)
 	if err != nil {
 		return nil, err

@@ -73,7 +73,7 @@ func (p *Progress) Start(buildID string) {
 // Settings prints what the job will run with, before anything is dispatched,
 // so a wrong profile or flag is visible without opening the provider's logs.
 // It completes the header that Start begins.
-func (p *Progress) Settings(s config.BuildSettings, provider string) {
+func (p *Progress) Settings(s *config.BuildSettings, provider string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 

@@ -128,7 +128,8 @@ func TestProfileEncodings(t *testing.T) {
 	if strings.Contains(s.ProfileInput(), "\n") {
 		t.Fatal("profile input must be a single line")
 	}
-	if got := (BuildSettings{Profile: "development"}).ProfileInput(); !strings.Contains(got, `"env":{}`) {
+	noEnv := BuildSettings{Profile: "development"}
+	if got := noEnv.ProfileInput(); !strings.Contains(got, `"env":{}`) {
 		t.Fatalf("env should be an object even when empty: %s", got)
 	}
 }

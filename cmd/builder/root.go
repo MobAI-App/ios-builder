@@ -471,7 +471,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	if buildErr == nil {
 		fmt.Println()
-		return runBuild(context.Background(), cfg, build.BuildOptions{
+		return runBuild(context.Background(), cfg, &build.BuildOptions{
 			OutputDir: "dist",
 			Timeout:   30 * time.Minute,
 			Remote:    remoteName,
@@ -611,7 +611,7 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 		ctx, stop = signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer stop()
 	}
-	return runBuild(ctx, cfg, build.BuildOptions{
+	return runBuild(ctx, cfg, &build.BuildOptions{
 		Provider:  provider,
 		Profile:   profile,
 		OutputDir: outputDir,
@@ -680,7 +680,7 @@ func runIOSShare(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runBuild(ctx context.Context, cfg *config.Config, opts build.BuildOptions) error {
+func runBuild(ctx context.Context, cfg *config.Config, opts *build.BuildOptions) error {
 	ghClient, err := clientForProvider(cfg, opts.Provider)
 	if err != nil {
 		return err

@@ -67,29 +67,29 @@ type BuildOptions struct {
 
 // settings applies the selected profile, then the command flags, over
 // builder.json. The returned name is the provider that will run the job.
-func (c *Coordinator) settings(profile, provider string, unsigned bool) (config.BuildSettings, string, error) {
+func (c *Coordinator) settings(profile, provider string, unsigned bool) (*config.BuildSettings, string, error) {
 	s, err := c.config.ResolveProfile(profile)
 	if err != nil {
-		return s, "", err
+		return nil, "", err
 	}
 	if provider != "" {
 		s.Provider = provider
 	}
 	name, err := c.config.ProviderName(s.Provider)
 	if err != nil {
-		return s, "", err
+		return nil, "", err
 	}
 	if unsigned {
 		s.Signing = false
 	}
-	return s, name, nil
+	return &s, name, nil
 }
 
 // workflowInputs maps the settings onto the workflow_dispatch inputs both
 // GitHub workflows share. Empty values are left out so the declared defaults
 // apply, and `profile` is only sent when one is selected: a workflow file from
 // before profiles rejects a dispatch carrying an input it does not declare.
-func (c *Coordinator) workflowInputs(buildID, ref string, s config.BuildSettings) map[string]string {
+func (c *Coordinator) workflowInputs(buildID, ref string, s *config.BuildSettings) map[string]string {
 	inputs := map[string]string{
 		"build_id":     buildID,
 		"snapshot_ref": ref,
@@ -116,7 +116,7 @@ func (c *Coordinator) workflowInputs(buildID, ref string, s config.BuildSettings
 
 // buildInputs are the ios-build.yml inputs: the shared ones plus signing and
 // configuration, which the simulator workflow has no use for.
-func (c *Coordinator) buildInputs(buildID, ref string, s config.BuildSettings) map[string]string {
+func (c *Coordinator) buildInputs(buildID, ref string, s *config.BuildSettings) map[string]string {
 	inputs := c.workflowInputs(buildID, ref, s)
 	if s.Signing {
 		inputs["use_signing"] = "true"
@@ -148,7 +148,10 @@ type BuildResult struct {
 }
 
 // Build triggers a remote build and downloads the IPA artifact
-func (c *Coordinator) Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
+func (c *Coordinator) Build(ctx context.Context, opts *BuildOptions) (*BuildResult, error) {
+	// Defaults below are filled in on a copy: opts belongs to the caller.
+	o := *opts
+	opts = &o
 	settings, name, err := c.settings(opts.Profile, opts.Provider, opts.Unsigned)
 	if err != nil {
 		return nil, err

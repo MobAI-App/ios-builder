@@ -148,7 +148,7 @@ func TestSettingsPrinted(t *testing.T) {
 	var out bytes.Buffer
 	p := NewProgress(&out)
 	p.Start("abcdef12")
-	p.Settings(config.BuildSettings{Profile: "preview", Configuration: "Release", Signing: true, Env: map[string]string{"B": "2", "A": "1"}, Distribution: "ad-hoc"}, "github")
+	p.Settings(&config.BuildSettings{Profile: "preview", Configuration: "Release", Signing: true, Env: map[string]string{"B": "2", "A": "1"}, Distribution: "ad-hoc"}, "github")
 	for _, want := range []string{"Profile:       preview", "Configuration: Release", "Scheme:        (auto-detected)", "Signing:       signed", "Provider:      github", "Env:           A, B", "Distribution:  ad-hoc"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q in:\n%s", want, out.String())
