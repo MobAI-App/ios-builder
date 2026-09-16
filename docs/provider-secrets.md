@@ -105,10 +105,13 @@ On Linux with `xclip` installed, replace `pbcopy` with
 [Convert]::ToBase64String([IO.File]::ReadAllBytes('C:\signing\Numbra.mobileprovision')) | Set-Clipboard
 ```
 
-The password variable must exist, even for a P12 with an empty password. If the
-provider UI does not accept an empty secret, create a password-protected P12 and
-use its password. Do not put quotes around passwords or API keys in the value
-field, and do not base64-encode them.
+A suffixed set needs all three variables, password included: the build fails
+naming whichever is missing rather than falling back to the unsuffixed names.
+Builder always protects the P12 it makes with a password; for one you made
+yourself without one, create a password-protected P12 instead. Only the
+unsuffixed `IOS_CERTIFICATE_PASSWORD` of an earlier setup may be empty or
+absent. Do not put quotes around passwords or API keys in the value field, and
+do not base64-encode them.
 
 ## 3. Create the MobAI API key
 

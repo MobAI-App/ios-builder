@@ -183,19 +183,24 @@ signing_set() {
 # Picks the secrets of the set the build profile's distribution names
 # (IOS_CERTIFICATE_<SET> and friends) into IOS_CERTIFICATE,
 # IOS_CERTIFICATE_PASSWORD and IOS_PROVISIONING_PROFILE, falling back to those
-# unsuffixed names when the set is absent. SIGNING_SET_USED says which it was.
-# Same function in ios-build.yml.
+# unsuffixed names when the set is absent. A set needs all three (builder
+# signing setup always writes a password); only the unsuffixed password may be
+# empty, as before signing sets. SIGNING_SET_USED says which it was. Same
+# function in ios-build.yml.
 select_signing_set() {
   local cert="IOS_CERTIFICATE_$SIGNING_SET" pass="IOS_CERTIFICATE_PASSWORD_$SIGNING_SET" prof="IOS_PROVISIONING_PROFILE_$SIGNING_SET"
-  if [ -n "${!cert:-}" ] || [ -n "${!prof:-}" ]; then
-    if [ -z "${!cert:-}" ] || [ -z "${!prof:-}" ]; then
-      fail "Signing set $SIGNING_SET is incomplete: set both $cert and $prof (and $pass)."
-    fi
+  if [ -n "${!cert:-}${!pass:-}${!prof:-}" ]; then
+    local missing="" name
+    for name in "$cert" "$pass" "$prof"; do
+      [ -n "${!name:-}" ] || missing="${missing:+$missing, }$name"
+    done
+    [ -z "$missing" ] || fail "Signing set $SIGNING_SET is incomplete: missing $missing. builder signing setup --type ${DISTRIBUTION:-development} writes all three."
     IOS_CERTIFICATE="${!cert}"
-    IOS_CERTIFICATE_PASSWORD="${!pass:-}"
+    IOS_CERTIFICATE_PASSWORD="${!pass}"
     IOS_PROVISIONING_PROFILE="${!prof}"
     SIGNING_SET_USED="$SIGNING_SET"
   elif [ -n "${IOS_CERTIFICATE:-}" ] && [ -n "${IOS_PROVISIONING_PROFILE:-}" ]; then
+    IOS_CERTIFICATE_PASSWORD="${IOS_CERTIFICATE_PASSWORD:-}"
     SIGNING_SET_USED=legacy
   else
     fail "No signing secrets for distribution ${DISTRIBUTION:-development}: set $cert, $pass and $prof (builder signing setup --type ${DISTRIBUTION:-development} does), or the unsuffixed IOS_CERTIFICATE, IOS_CERTIFICATE_PASSWORD and IOS_PROVISIONING_PROFILE."
@@ -222,26 +227,15 @@ check_signing_set() {
 install_signing() {
   SIGNING_SET=$(signing_set "$DISTRIBUTION") || fail "DISTRIBUTION \"$DISTRIBUTION\" must be development, ad-hoc, app-store or enterprise"
   select_signing_set
-  : "${IOS_CERTIFICATE_PASSWORD=}"
   signing_dir=$(mktemp -d "$ci_dir/signing.XXXXXX")
-  keychain_path="$signing_dir/signing.keychain-db"
-  keychain_password=$(openssl rand -base64 32)
   trap cleanup_signing EXIT
-  security create-keychain -p "$keychain_password" "$keychain_path"
-  security set-keychain-settings -lut 7200 "$keychain_path"
-  security unlock-keychain -p "$keychain_password" "$keychain_path"
-  printf '%s' "$IOS_CERTIFICATE" | base64 --decode > "$signing_dir/certificate.p12"
-  security import "$signing_dir/certificate.p12" -P "$IOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
-  security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain_path"
-  security list-keychains -d user -s "$keychain_path" "$HOME/Library/Keychains/login.keychain-db"
+  # Read the profile first: its type is checked against the build profile
+  # before any keychain exists or the certificate is imported.
   printf '%s' "$IOS_PROVISIONING_PROFILE" | base64 --decode > "$signing_dir/profile.mobileprovision"
   security cms -D -i "$signing_dir/profile.mobileprovision" > "$signing_dir/profile.plist"
   profile_uuid=$(plutil -extract UUID raw -o - "$signing_dir/profile.plist")
   export DEVELOPMENT_TEAM="$(plutil -extract TeamIdentifier.0 raw -o - "$signing_dir/profile.plist")"
   export PROVISIONING_PROFILE_NAME="$(plutil -extract Name raw -o - "$signing_dir/profile.plist")"
-  mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
-  profile_dest="$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision"
-  cp "$signing_dir/profile.mobileprovision" "$profile_dest"
   export EXPORT_METHOD="$(detect_export_method "$signing_dir/profile.plist")"
   check_signing_set "$EXPORT_METHOD"
   echo "Signing with '$PROVISIONING_PROFILE_NAME' (team $DEVELOPMENT_TEAM, set $SIGNING_SET_USED), export method $EXPORT_METHOD"
@@ -252,6 +246,18 @@ install_signing() {
     echo "The provisioning profile is an $EXPORT_METHOD profile, but the build configuration is Debug. A Debug build is signed with get-task-allow, which distribution profiles do not allow and App Store Connect rejects. Set \"configuration\": \"Release\" under \"ios\" in builder.json, or use a development profile." >&2
     exit 1
   fi
+  keychain_path="$signing_dir/signing.keychain-db"
+  keychain_password=$(openssl rand -base64 32)
+  security create-keychain -p "$keychain_password" "$keychain_path"
+  security set-keychain-settings -lut 7200 "$keychain_path"
+  security unlock-keychain -p "$keychain_password" "$keychain_path"
+  printf '%s' "$IOS_CERTIFICATE" | base64 --decode > "$signing_dir/certificate.p12"
+  security import "$signing_dir/certificate.p12" -P "$IOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
+  security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain_path"
+  security list-keychains -d user -s "$keychain_path" "$HOME/Library/Keychains/login.keychain-db"
+  mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+  profile_dest="$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision"
+  cp "$signing_dir/profile.mobileprovision" "$profile_dest"
 }
 
 build_ipa() {

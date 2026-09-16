@@ -216,9 +216,12 @@ internal/
   signing step receives every set's secrets as env (GitHub hands a missing secret over as empty;
   Codemagic/Bitrise users define the suffixed variables); `select_signing_set` picks the set by
   bash indirect expansion, falls back to the unsuffixed names, and fails naming both when neither
-  exists; `check_signing_set` compares `detect_export_method`'s result with the requested
-  distribution (a suffixed set is always checked, the legacy set only when a distribution was
-  requested) before the keychain work and the build. `select_signing_set`/`check_signing_set`/
+  exists. A suffixed set needs all three secrets, password included (Builder never writes one
+  without): a partial set fails naming the missing names, never falls back; only the unsuffixed
+  password may be empty, as before. `check_signing_set` compares `detect_export_method`'s result
+  with the requested distribution (a suffixed set is always checked, the legacy set only when a
+  distribution was requested) after the profile is decoded and before any keychain exists or
+  `security import` runs, so a wrong pair never lands in a keychain. `select_signing_set`/`check_signing_set`/
   `signing_set` are verbatim in both templates, each with its own `fail` (`::error::` vs stderr);
   `TestSigningSetSelection` compares the bodies and runs them with stub secrets. `signing setup`
   writes only the set of its type (automatic: `--type`; manual: `signing.ProfileType` reads the

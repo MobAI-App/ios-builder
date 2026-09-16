@@ -137,7 +137,7 @@ not transferred by these commands.
 | Secret | Purpose |
 | --- | --- |
 | `IOS_CERTIFICATE_<SET>` | Base64 P12 signing certificate |
-| `IOS_CERTIFICATE_PASSWORD_<SET>` | P12 password, which may be empty |
+| `IOS_CERTIFICATE_PASSWORD_<SET>` | P12 password (required; only the unsuffixed legacy one may be empty) |
 | `IOS_PROVISIONING_PROFILE_<SET>` | Base64 provisioning profile matching the app |
 | `MOBAI_API_KEY` | MobAI simulator sharing |
 
