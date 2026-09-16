@@ -146,6 +146,20 @@ func TestNonJSONErrorBody(t *testing.T) {
 	}
 }
 
+// Anything outside 2xx is an error, as in MobAI's client: a 3xx that the
+// HTTP client did not follow carries no document to decode.
+func TestNon2xxIsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(304)
+	}))
+	defer srv.Close()
+	var out map[string]any
+	err := newTestClient(t, srv).Get(context.Background(), "/v1/apps", nil, &out)
+	if !IsStatus(err, 304) {
+		t.Errorf("err = %v, want an App Store Connect error with status 304", err)
+	}
+}
+
 func TestPaginationFollowsNextLink(t *testing.T) {
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

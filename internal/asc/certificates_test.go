@@ -44,6 +44,36 @@ func TestListCertificatesDecodesContent(t *testing.T) {
 	}
 }
 
+func TestCheckAccessListsOneCertificate(t *testing.T) {
+	var path, limit string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, limit = r.URL.Path, r.URL.Query().Get("limit")
+		if r.Header.Get("Authorization") == "" {
+			writeJSON(w, 401, map[string]any{"errors": []map[string]any{{"code": "NOT_AUTHORIZED", "title": "Authentication credentials are missing or invalid."}}})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"data": []any{}})
+	}))
+	defer srv.Close()
+	if err := newTestClient(t, srv).CheckAccess(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if path != "/v1/certificates" || limit != "1" {
+		t.Errorf("request = %s?limit=%s, want /v1/certificates?limit=1", path, limit)
+	}
+}
+
+func TestCheckAccessSurfacesForbidden(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 403, map[string]any{"errors": []map[string]any{{"status": "403", "code": "FORBIDDEN_ERROR", "title": "This request is forbidden for security reasons", "detail": "The API key in use does not allow this request"}}})
+	}))
+	defer srv.Close()
+	err := newTestClient(t, srv).CheckAccess(context.Background())
+	if !IsStatus(err, 403) || !strings.Contains(err.Error(), "does not allow this request") {
+		t.Errorf("err = %v", err)
+	}
+}
+
 func TestListCertificatesRejectsBadContent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"data": []map[string]any{{"type": "certificates", "id": "cert-1", "attributes": map[string]any{"certificateContent": "not base64!"}}}})

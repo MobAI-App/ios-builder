@@ -41,9 +41,3 @@ func (c *Client) AppByBundleID(ctx context.Context, bundleID string) (*App, erro
 	}
 	return nil, fmt.Errorf("no App Store Connect app has bundle ID %s; create the app record in App Store Connect (My Apps → +) with that bundle ID first, and check the API key can see it", bundleID)
 }
-
-// CheckAccess makes the cheapest authenticated call to verify the key works.
-func (c *Client) CheckAccess(ctx context.Context) error {
-	_, err := getPage[appAttributes](ctx, c, "/v1/apps", url.Values{"limit": {"1"}})
-	return err
-}

@@ -313,7 +313,10 @@ internal/
 - **ASC Credentials**: one JSON secret (`apple-asc-key`) in the keyring/file store, via the
   shared `readSecret`/`writeSecret`/`deleteSecret` helpers the CI tokens use. `ASC_ISSUER_ID`,
   `ASC_KEY_ID` + `ASC_PRIVATE_KEY`|`ASC_KEY_PATH` take precedence; a partially set environment is
-  an error, not a fallback. Only `auth apple` prompts; `upload`/`submit` never do.
+  an error, not a fallback. Only `auth apple` prompts; `upload`/`submit` never do. `auth apple`
+  verifies the key with `GET /v1/certificates?limit=1` (as MobAI does): `apps?limit=1` answers 200
+  for a key of any role, `certificates` needs the Certificates, Identifiers & Profiles access that
+  signing needs and every role that can upload builds has.
 - **Build Upload**: `buildUploads` → `buildUploadFiles` (returns `uploadOperations`) → PUT each
   byte range with its `requestHeaders`, no bearer token → PATCH `uploaded=true` → poll the upload
   `state` (COMPLETE/FAILED with `errors[]`) → poll `builds` filtered by app, marketing version and
@@ -333,7 +336,8 @@ internal/
   A certificate is reused only when its private key is local (`--key`, or the
   `ios-signing-<distribution>.key` / legacy `ios-signing.key` a previous run left in
   `--out-dir`), since a .p12 needs the key; otherwise a new one is issued and Apple's quota error
-  (2 Development / 3 Distribution) gets a hint. Dev/ad-hoc profiles cover every ENABLED iOS
+  (2 Development / 3 Distribution) gets a hint. Keys are written as PKCS#8 (`PRIVATE KEY`, as
+  MobAI's signer writes them); the PKCS#1 `RSA PRIVATE KEY` files of earlier runs are still read. Dev/ad-hoc profiles cover every ENABLED iOS
   device on the account, not just the ones passed; App Store profiles send no `devices`
   relationship at all (an empty one is rejected). Profile membership is read from
   `/v1/profiles/{id}/relationships/{certificates,devices}` (paginated), not `include=`, which

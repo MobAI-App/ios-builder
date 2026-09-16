@@ -125,3 +125,22 @@ func TestCreateAndDeleteProfile(t *testing.T) {
 		t.Errorf("delete: err = %v, deleted = %q", err, deleted)
 	}
 }
+
+func TestDeleteProfileToleratesGone(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/profiles/gone":
+			writeJSON(w, 404, map[string]any{"errors": []map[string]any{{"status": "404", "code": "NOT_FOUND", "title": "The specified resource does not exist"}}})
+		default:
+			writeJSON(w, 409, map[string]any{"errors": []map[string]any{{"status": "409", "code": "STATE_ERROR", "title": "in use"}}})
+		}
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	if err := c.DeleteProfile(context.Background(), "gone"); err != nil {
+		t.Errorf("a profile that is already gone must not fail the delete: %v", err)
+	}
+	if err := c.DeleteProfile(context.Background(), "busy"); !IsStatus(err, 409) {
+		t.Errorf("other errors must surface: %v", err)
+	}
+}

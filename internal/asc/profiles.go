@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net/http"
 	"net/url"
 	"time"
 )
@@ -138,7 +139,12 @@ func (c *Client) CreateProfile(ctx context.Context, name, profileType, bundleIDR
 	return &p, nil
 }
 
-// DeleteProfile removes a profile. Certificates and devices are untouched.
+// DeleteProfile removes a profile; one that is already gone is not an error.
+// Certificates and devices are untouched.
 func (c *Client) DeleteProfile(ctx context.Context, profileID string) error {
-	return c.Delete(ctx, "/v1/profiles/"+profileID, nil)
+	err := c.Delete(ctx, "/v1/profiles/"+profileID, nil)
+	if IsStatus(err, http.StatusNotFound) {
+		return nil
+	}
+	return err
 }
