@@ -123,6 +123,9 @@ func (c *Coordinator) buildRemote(ctx context.Context, opts BuildOptions) (*Buil
 	if c.config.IOS.Signing && !opts.Unsigned {
 		v["USE_SIGNING"] = "true"
 	}
+	if n := opts.buildNumberInput(); n != "" {
+		v["BUILD_NUMBER"] = n
+	}
 	c.progress.Update(PhaseTriggering, "Triggering "+p.Name()+" build...")
 	run, err := p.Start(ctx, ci.Request{Workflow: cfgCI.BuildWorkflow, Variables: v})
 	if err != nil {

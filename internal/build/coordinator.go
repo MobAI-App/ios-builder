@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/MobAI-App/ios-builder/internal/ci"
@@ -61,6 +62,20 @@ type BuildOptions struct {
 	Timeout   time.Duration
 	Unsigned  bool   // Skip code signing even if configured
 	Remote    string // Git remote to push the working-tree snapshot to
+	// BuildNumber is the CFBundleVersion the runner stamps on the build; empty
+	// leaves the project's own. Version does the same for the marketing
+	// version and needs BuildNumber.
+	BuildNumber string
+	Version     string
+}
+
+// buildNumberInput encodes BuildNumber and Version the way the runner reads
+// them: "N", or "X.Y.Z+N" (the pubspec convention) when both are set.
+func (o BuildOptions) buildNumberInput() string {
+	if o.BuildNumber == "" || o.Version == "" {
+		return o.BuildNumber
+	}
+	return o.Version + "+" + o.BuildNumber
 }
 
 // BuildResult contains the result of a build
@@ -145,8 +160,14 @@ func (c *Coordinator) Build(ctx context.Context, opts BuildOptions) (*BuildResul
 	if c.config.KMP.JDKVersion != "" {
 		inputs["jdk_version"] = c.config.KMP.JDKVersion
 	}
+	if v := opts.buildNumberInput(); v != "" {
+		inputs["build_number"] = v
+	}
 	if err := c.github.TriggerWorkflow(ctx, c.config.GitHub.Owner, c.config.GitHub.Repo, WorkflowFile, inputs); err != nil {
 		c.progress.Error(PhaseTriggering, err)
+		if inputs["build_number"] != "" && strings.Contains(err.Error(), "Unexpected inputs") {
+			return nil, fmt.Errorf("failed to trigger workflow: %w. The workflow on the default branch has no build_number input; rerun builder init and push .github/workflows/ios-build.yml", err)
+		}
 		return nil, fmt.Errorf("failed to trigger workflow: %w", err)
 	}
 	c.progress.Complete(PhaseTriggering, "Workflow triggered")

@@ -112,6 +112,9 @@ type IOSConfig struct {
 	Scheme        string `json:"scheme,omitempty"`        // Xcode scheme to build (auto-detected if empty)
 	Signing       bool   `json:"signing,omitempty"`       // Whether code signing is configured
 	Configuration string `json:"configuration,omitempty"` // Build configuration: Debug (faster) or Release (production)
+	// BundleID identifies the App Store Connect app for `ios release` before
+	// any IPA exists; empty falls back to the newest IPA in the output directory.
+	BundleID string `json:"bundleId,omitempty"`
 }
 
 // MobAIConfig holds MobAI settings for local development
