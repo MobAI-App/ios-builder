@@ -149,19 +149,20 @@ same build may consume different minutes on each provider.
 
 See [step-by-step signing and MobAI secret setup](provider-secrets.md).
 
-`builder signing setup` continues to upload signing secrets to **GitHub**.
-For Codemagic/Bitrise, separately configure these secrets on that provider,
-one set per distribution type (`<SET>` is `DEVELOPMENT`, `AD_HOC`, `APP_STORE`
-or `ENTERPRISE`; a build reads the set its profile's `distribution` names,
-`DEVELOPMENT` by default, and falls back to the unsuffixed names):
+`builder signing setup` uploads signing secrets to **GitHub** only. For
+Codemagic/Bitrise, configure these secrets on that provider yourself, one set
+per distribution (`<SET>` is `DEVELOPMENT`, `AD_HOC`, `STORE` or `ENTERPRISE`;
+a build reads the set its profile's `distribution` names; a build without a
+profile and with `ios.signing: true` reads the unsuffixed legacy names):
 
 - `IOS_CERTIFICATE_<SET>`: base64-encoded `.p12`
 - `IOS_CERTIFICATE_PASSWORD_<SET>`: the `.p12` password (required; only the unsuffixed legacy one can be empty)
 - `IOS_PROVISIONING_PROFILE_<SET>`: base64-encoded `.mobileprovision`
 
-Set `ios.signing` to `true` after configuring the secrets. `--unsigned` disables
-signing for a particular build. The runner installs a temporary signing keychain
-and removes it on exit. The CSR and P12 commands remain usable for all providers.
+Build with a profile whose `distribution` names the set (`signing setup`
+writes one). `--unsigned` disables signing for a particular build. The runner
+installs a temporary signing keychain and removes it on exit. The CSR and P12
+commands remain usable for all providers.
 
 ## Simulator sessions
 
