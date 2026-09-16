@@ -78,6 +78,8 @@ func TestResolveProfileErrors(t *testing.T) {
 		"env with equals":  {Env: map[string]string{"A=B": "x"}},
 		"reserved env":     {Env: map[string]string{"SCHEME": "Other"}},
 		"reserved secret":  {Env: map[string]string{"IOS_CERTIFICATE": "x"}},
+		"reserved set":     {Env: map[string]string{"IOS_PROVISIONING_PROFILE_APP_STORE": "x"}},
+		"reserved SIGNING": {Env: map[string]string{"SIGNING_SET": "AD_HOC"}},
 		"reserved PATH":    {Env: map[string]string{"PATH": "/tmp"}},
 		"GitHub namespace": {Env: map[string]string{"GITHUB_TOKEN": "x"}},
 		"Codemagic space":  {Env: map[string]string{"CM_BUILD_ID": "x"}},

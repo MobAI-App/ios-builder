@@ -32,15 +32,18 @@ var Distributions = []string{"development", "ad-hoc", "app-store", "enterprise"}
 var reservedEnv = []string{
 	"BUILD_ID", "SNAPSHOT_REF", "SNAPSHOT_SHA", "IOS_PATH", "SCHEME", "CONFIGURATION",
 	"USE_SIGNING", "FLUTTER_VERSION", "JDK_VERSION", "BUILD_ENV", "DISTRIBUTION",
-	"DURATION", "PROJECT_TYPE", "EXPORT_METHOD",
-	"IOS_CERTIFICATE", "IOS_CERTIFICATE_PASSWORD", "IOS_PROVISIONING_PROFILE", "MOBAI_API_KEY",
+	"SIGNING_SET", "SIGNING_SET_USED", "DURATION", "PROJECT_TYPE", "EXPORT_METHOD",
+	"MOBAI_API_KEY",
 	"PATH", "HOME", "USER", "SHELL", "TMPDIR", "DEVELOPER_DIR", "NODE_OPTIONS",
 }
 
 // reservedEnvPrefixes cover the runners' own namespaces: Builder's, GitHub
-// Actions' (GITHUB_*, RUNNER_*, ACTIONS_*), Codemagic's (CM_*, FCI_*) and
-// Bitrise's.
-var reservedEnvPrefixes = []string{"BUILDER_", "GITHUB_", "RUNNER_", "ACTIONS_", "CM_", "FCI_", "BITRISE_"}
+// Actions' (GITHUB_*, RUNNER_*, ACTIONS_*), Codemagic's (CM_*, FCI_*),
+// Bitrise's, and the signing secrets with every set suffix.
+var reservedEnvPrefixes = []string{
+	"BUILDER_", "GITHUB_", "RUNNER_", "ACTIONS_", "CM_", "FCI_", "BITRISE_",
+	"IOS_CERTIFICATE", "IOS_PROVISIONING_PROFILE",
+}
 
 var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 

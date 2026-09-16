@@ -33,8 +33,9 @@ type Profile struct {
 	Signing       *bool             `json:"signing,omitempty"`       // overrides ios.signing; a pointer so false can override true
 	Provider      string            `json:"provider,omitempty"`      // overrides provider
 	Env           map[string]string `json:"env,omitempty"`           // exported on the runner before dependencies and the build
-	// Distribution is reserved for the export step (development, ad-hoc, app-store,
-	// enterprise). It is validated and passed to the runner but not applied yet.
+	// Distribution (development, ad-hoc, app-store, enterprise) selects the signing
+	// set the runner reads (IOS_*_<SET> secrets, see SigningSet) and the type the
+	// provisioning profile in it must have. Empty means development.
 	Distribution string `json:"distribution,omitempty"`
 }
 

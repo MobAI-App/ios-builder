@@ -149,12 +149,25 @@ func TestSettingsPrinted(t *testing.T) {
 	p := NewProgress(&out)
 	p.Start("abcdef12")
 	p.Settings(&config.BuildSettings{Profile: "preview", Configuration: "Release", Signing: true, Env: map[string]string{"B": "2", "A": "1"}, Distribution: "ad-hoc"}, "github")
-	for _, want := range []string{"Profile:       preview", "Configuration: Release", "Scheme:        (auto-detected)", "Signing:       signed", "Provider:      github", "Env:           A, B", "Distribution:  ad-hoc"} {
+	for _, want := range []string{"Profile:       preview", "Configuration: Release", "Scheme:        (auto-detected)", "Signing:       signed", "Signing set:   AD_HOC", "Provider:      github", "Env:           A, B", "Distribution:  ad-hoc"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q in:\n%s", want, out.String())
 		}
 	}
 	if strings.Contains(out.String(), "staging") || strings.Contains(out.String(), "=1") {
 		t.Fatal("env values should not be printed, only names")
+	}
+
+	// Signed without a distribution reads the development set; unsigned
+	// builds read none.
+	out.Reset()
+	p.Settings(&config.BuildSettings{Signing: true}, "github")
+	if !strings.Contains(out.String(), "Signing set:   DEVELOPMENT") {
+		t.Errorf("default set not printed:\n%s", out.String())
+	}
+	out.Reset()
+	p.Settings(&config.BuildSettings{Distribution: "app-store"}, "github")
+	if strings.Contains(out.String(), "Signing set") {
+		t.Errorf("unsigned build printed a signing set:\n%s", out.String())
 	}
 }

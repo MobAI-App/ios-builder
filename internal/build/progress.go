@@ -91,6 +91,9 @@ func (p *Progress) Settings(s *config.BuildSettings, provider string) {
 	fmt.Fprintf(p.writer, "   Configuration: %s\n", orDefault(s.Configuration, "Debug"))
 	fmt.Fprintf(p.writer, "   Scheme:        %s\n", orDefault(s.Scheme, "(auto-detected)"))
 	fmt.Fprintf(p.writer, "   Signing:       %s\n", signing)
+	if s.Signing {
+		fmt.Fprintf(p.writer, "   Signing set:   %s\n", s.SigningSet())
+	}
 	fmt.Fprintf(p.writer, "   Provider:      %s\n", provider)
 	if len(s.Env) > 0 {
 		keys := slices.Sorted(maps.Keys(s.Env))
