@@ -426,9 +426,12 @@ create certificates. It then:
    id>.mobileprovision` to `--out-dir` (default `.`), uploads the three secrets
    of the set to GitHub, and writes the build profile in `builder.json`:
    `--name` (default: the distribution name) with `"distribution":
-   "<distribution>"`. Other fields of an existing profile are kept. For
-   Codemagic and Bitrise it prints the three secret names and file paths to
-   paste instead, following the [secrets guide](docs/provider-secrets.md).
+   "<distribution>"`. Other fields of an existing profile are kept; a
+   different `distribution` in it is replaced, and the command says so.
+   `defaultProfile` is not touched: point it at the profile for a plain
+   `ios build` to use it, or pass `--profile`. For Codemagic and Bitrise it
+   prints the three secret names and file paths to paste instead, following
+   the [secrets guide](docs/provider-secrets.md).
 
 The command shows its plan and asks once before creating anything; `--yes`
 skips that (required without a terminal), and then the `.p12` password is

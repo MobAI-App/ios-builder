@@ -239,16 +239,20 @@ internal/
   distribution (automatic: `--distribution`, else the `--name` profile's, else development;
   manual: `signing.ProfileType` reads the plist out of the CMS blob and a disagreeing
   `--distribution` is an error) and never touches other sets or the legacy names, then writes
-  `profiles.<--name or distribution>.distribution` (`writeSigningProfile`, other fields kept)
-  and never `ios.signing`. Files are `ios-signing-<distribution>.key/.p12`, so two coexist in
+  `profiles.<--name or distribution>.distribution` (`writeSigningProfile`: other fields kept, an
+  equal distribution keeps the user's spelling, a different one is replaced and the old value
+  printed; `defaultProfile` is never set) and never `ios.signing`. Files are `ios-signing-<distribution>.key/.p12`, so two coexist in
   one `--out-dir`; the key lookup is `--key`, then the distribution's file, then the legacy
   `ios-signing.key`. `Progress.Settings` prints `signed (set X)` / `signed (unsuffixed IOS_*
   secrets)`. Enterprise is a valid set and profile type but `Auto` refuses it (no ASC endpoint
   for in-house profiles). The suffixed secret names and `SIGNING_SET*` are reserved env names.
 - **On-Demand Provisioning** (`ensureSigningSecrets` in `cmd/builder/signing_auto.go`, called by
-  `runBuild` for GitHub builds without `--unsigned`): when the selected profile has a distribution,
-  `github.Client.ListSecretNames` (`GET /repos/{o}/{r}/actions/secrets`, paginated) is checked for
-  the three names; all present → dispatch. Otherwise, with an ASC key (`getASCClient` passed as a
+  `runBuild` without `--unsigned`; it returns early unless the provider that will run the job —
+  `--provider`, else the profile's, else the top level, as `Coordinator.settings` resolves it — is
+  GitHub): when the selected profile has a distribution, `github.Client.ListSecretNames`
+  (`GET /repos/{o}/{r}/actions/secrets`, paginated; 403/404 are reported as a token without the
+  `repo` scope or admin access, never as "no secrets") is checked for the three names; all
+  present → dispatch. Otherwise, with an ASC key (`getASCClient` passed as a
   factory so tests inject the `signingtest` portal), `provisionSigning` (= `signing.Auto` + upload,
   shared with `signing setup`) runs with no prompts: bundle ID from `ios.bundleId` or `dist/*.ipa`,
   key from `.`, generated password (printed once), no devices given (Auto covers the enabled ones
