@@ -110,6 +110,7 @@ type IOSConfig struct {
 	// Empty means root directory contains the Xcode project
 	Path          string `json:"path,omitempty"`
 	Scheme        string `json:"scheme,omitempty"`        // Xcode scheme to build (auto-detected if empty)
+	BundleID      string `json:"bundleId,omitempty"`      // App bundle identifier, for signing setup (detected by init when unambiguous)
 	Signing       bool   `json:"signing,omitempty"`       // Whether code signing is configured
 	Configuration string `json:"configuration,omitempty"` // Build configuration: Debug (faster) or Release (production)
 }

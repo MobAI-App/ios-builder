@@ -23,23 +23,31 @@ var signingCmd = &cobra.Command{
 var signingSetupCmd = &cobra.Command{
 	Use:   "setup",
 	Short: "Set up code signing for iOS builds",
-	Long: `Uploads your iOS signing certificate and provisioning profile to GitHub Secrets.
+	Long: `Sets up code signing for iOS builds and uploads the material to GitHub Secrets.
 
-The certificate can be either:
+Without --certificate/--profile the whole thing is automatic, using the App
+Store Connect API key from 'builder auth apple': the App ID is registered if
+missing, a certificate is issued for a private key generated here (or --key),
+devices are registered (--device, --devices-from-mobai) and a provisioning
+profile named "Builder <type> <bundle id>" is created. Running it again is
+safe: valid material is reused and only what is missing, expired, invalid or
+changed is recreated. Nothing is ever revoked.
+
+  --type development  Apple Development certificate, devices required (default)
+  --type ad-hoc       Apple Distribution certificate, devices required
+  --type app-store    Apple Distribution certificate, no devices; TestFlight/App
+                      Store uploads need this and ios.configuration Release
+
+With --certificate and --profile the files are taken as they are:
 - A .p12 file (exported from Keychain Access on a Mac)
 - A .cer file downloaded from the Apple Developer portal, together with the
   private key from 'builder signing csr' (--key) — the .p12 is then assembled
   locally, so no Mac is needed at any point
 
-This command will:
-- Read your certificate and .mobileprovision provisioning profile
-- Base64 encode and encrypt them
-- Upload them as GitHub repository secrets:
-  - IOS_CERTIFICATE
-  - IOS_CERTIFICATE_PASSWORD
-  - IOS_PROVISIONING_PROFILE
-
-After setup, builds will be signed automatically.`,
+Either way the command uploads three GitHub repository secrets —
+IOS_CERTIFICATE, IOS_CERTIFICATE_PASSWORD, IOS_PROVISIONING_PROFILE — and sets
+ios.signing in builder.json. For Codemagic and Bitrise it writes the files and
+points at docs/provider-secrets.md instead.`,
 	RunE: runSigningSetup,
 }
 
@@ -75,7 +83,16 @@ func init() {
 
 	signingSetupCmd.Flags().StringP("certificate", "c", "", "Path to certificate file (.p12, or .cer from the Apple Developer portal)")
 	signingSetupCmd.Flags().StringP("profile", "p", "", "Path to .mobileprovision file")
-	signingSetupCmd.Flags().StringP("key", "k", "", "Path to the private key from 'builder signing csr' (required with a .cer)")
+	signingSetupCmd.Flags().StringP("key", "k", "", "Path to the private key from 'builder signing csr' (required with a .cer; automatic mode reuses it and its certificate)")
+	signingSetupCmd.Flags().String("bundle-id", "", "App bundle ID (default: ios.bundleId in builder.json, else the newest IPA in ./dist)")
+	signingSetupCmd.Flags().String("type", string(signing.TypeDevelopment), "Signing type: development, ad-hoc or app-store")
+	signingSetupCmd.Flags().StringArray("device", nil, "Device UDID to register (repeatable)")
+	signingSetupCmd.Flags().Bool("devices-from-mobai", false, "Register the physical iOS devices connected to MobAI")
+	signingSetupCmd.Flags().String("out-dir", ".", "Directory for the private key, .p12 and .mobileprovision")
+	signingSetupCmd.Flags().String("password", "", "Password to protect the .p12 (prompted; generated with --yes)")
+	signingSetupCmd.Flags().Bool("force", false, "Issue a new certificate and profile even when valid ones exist")
+	signingSetupCmd.Flags().BoolP("yes", "y", false, "Skip confirmations")
+	signingSetupCmd.Flags().Bool("json", false, "Print the result as JSON (progress goes to stderr)")
 
 	signingCSRCmd.Flags().String("name", "", "Your name (certificate common name)")
 	signingCSRCmd.Flags().String("email", "", "Email address of your Apple Developer account")
@@ -235,6 +252,12 @@ func expandPath(path string) string {
 }
 
 func runSigningSetup(cmd *cobra.Command, args []string) error {
+	if certFlag, _ := cmd.Flags().GetString("certificate"); certFlag == "" {
+		if profileFlag, _ := cmd.Flags().GetString("profile"); profileFlag == "" {
+			return runSigningAuto(cmd)
+		}
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
 		return err

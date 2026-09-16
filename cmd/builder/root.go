@@ -219,6 +219,45 @@ func detectIOSPath() (string, string) {
 	return "", ""
 }
 
+// bundleIDRe matches PRODUCT_BUNDLE_IDENTIFIER assignments in a project.pbxproj.
+var bundleIDRe = regexp.MustCompile(`PRODUCT_BUNDLE_IDENTIFIER\s*=\s*"?([^";\s]+)"?\s*;`)
+
+// detectBundleID reads the app's bundle identifier from the Xcode project
+// under iosPath. Test targets (…Tests) and values built from build settings
+// ($(…)) are ignored; anything still ambiguous yields "" so init leaves the
+// field for `signing setup` to resolve.
+func detectBundleID(iosPath string) string {
+	if iosPath == "" {
+		iosPath = "."
+	}
+	projects, _ := filepath.Glob(filepath.Join(iosPath, "*.xcodeproj", "project.pbxproj"))
+	var found []string
+	for _, path := range projects {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		found = append(found, bundleIDsFromPbxproj(string(data))...)
+	}
+	if len(found) == 1 {
+		return found[0]
+	}
+	return ""
+}
+
+// bundleIDsFromPbxproj returns the distinct app bundle identifiers in pbxproj text.
+func bundleIDsFromPbxproj(text string) []string {
+	var ids []string
+	for _, m := range bundleIDRe.FindAllStringSubmatch(text, -1) {
+		id := m[1]
+		if strings.Contains(id, "$") || strings.HasSuffix(id, "Tests") || slices.Contains(ids, id) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 func detectGitHubRepo(remoteName string) (owner, repo string, err error) {
 	// Try to get GitHub remote URL from git
 	cmd := exec.Command("git", "remote", "get-url", remoteName)
@@ -397,6 +436,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 	cfg.Project, cfg.Platform = projectName, "ios"
 	cfg.GitHub = config.GitHubConfig{Owner: githubOwner, Repo: repoName}
 	cfg.IOS.Path, cfg.IOS.Scheme = iosPath, scheme
+	if cfg.IOS.BundleID == "" {
+		cfg.IOS.BundleID = detectBundleID(iosPath)
+	}
 	if flutterVersion != "" {
 		cfg.Flutter.Version = flutterVersion
 	}
