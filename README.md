@@ -144,6 +144,10 @@ identifier — `expo.ios.bundleIdentifier` in `app.json`, or `ios.bundleIdentifi
 in `app.config.js` / `app.config.ts`. Without one, prebuild would stop and ask
 for it; instead the build fails immediately and names the missing setting.
 
+The default `Debug` configuration builds an IPA that loads its JavaScript from
+Metro, so set `"ios": { "configuration": "Release" }` in `builder.json` for a
+standalone IPA with the bundle baked in.
+
 An `ios/` directory left over from running `expo prebuild` locally is not
 uploaded: managed projects gitignore it, and the working-tree snapshot skips
 gitignored files. That is what you want — the runner prebuilds from the app
