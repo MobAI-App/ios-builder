@@ -147,18 +147,23 @@ jobs:
           echo "profile=${PROFILE:-(none)}"
           echo "distribution=$DISTRIBUTION"
           # Values are base64 per entry so newlines and quotes survive; the
-          # heredoc form of GITHUB_ENV then takes them verbatim. Names are
-          # checked so a value cannot smuggle in a second variable.
+          # heredoc form of GITHUB_ENV then takes them verbatim, with a random
+          # delimiter so no value line can end it early. Names are checked so a
+          # value cannot smuggle in a second variable.
+          if [ "$(jq -r '.env // {} | type' <<< "$PROFILE_JSON")" != "object" ]; then
+            echo "::error::the profile's env must be a JSON object of variable names to string values"; exit 1
+          fi
           while IFS=' ' read -r key encoded; do
             name=$(printf '%s' "$key" | base64 --decode)
             if ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
               echo "::error::env name \"$name\" is not a valid environment variable name"; exit 1
             fi
+            delim="BUILDER_ENV_${RANDOM}${RANDOM}${RANDOM}"
             {
-              echo "$name<<__BUILDER_ENV__"
+              echo "$name<<$delim"
               printf '%s' "$encoded" | base64 --decode
               echo
-              echo "__BUILDER_ENV__"
+              echo "$delim"
             } >> "$GITHUB_ENV"
             echo "env: $name"
           done < <(jq -r '.env // {} | to_entries[] | "\(.key | @base64) \(.value | tostring | @base64)"' <<< "$PROFILE_JSON")

@@ -81,12 +81,13 @@ func runResolve(t *testing.T, script, builderJSON string, env map[string]string)
 	if data, err := os.ReadFile(envPath); err == nil {
 		lines := strings.Split(string(data), "\n")
 		for i := 0; i < len(lines); i++ {
-			name, ok := strings.CutSuffix(lines[i], "<<__BUILDER_ENV__")
-			if !ok {
+			// GitHub's heredoc form: NAME<<DELIM, value lines, DELIM.
+			name, delim, ok := strings.Cut(lines[i], "<<")
+			if !ok || delim == "" {
 				continue
 			}
 			var value []string
-			for i++; i < len(lines) && lines[i] != "__BUILDER_ENV__"; i++ {
+			for i++; i < len(lines) && lines[i] != delim; i++ {
 				value = append(value, lines[i])
 			}
 			r.env[name] = strings.Join(value, "\n")
@@ -101,7 +102,7 @@ const profiledBuilderJSON = `{
   "defaultProfile": "preview",
   "profiles": {
     "preview": {"configuration": "Release", "signing": false, "distribution": "ad-hoc",
-                "env": {"API_URL": "https://staging.example.com", "NOTES": "line one\nline \"two\""}}
+                "env": {"API_URL": "https://staging.example.com", "NOTES": "line one\n__BUILDER_ENV__\nline \"two\""}}
   }
 }`
 
@@ -129,7 +130,7 @@ func TestResolveParametersApplyProfiles(t *testing.T) {
 				t.Errorf("%s = %q, want %q\n%s", k, r.outputs[k], v, r.log)
 			}
 		}
-		if r.env["API_URL"] != "https://staging.example.com" || r.env["NOTES"] != "line one\nline \"two\"" {
+		if r.env["API_URL"] != "https://staging.example.com" || r.env["NOTES"] != "line one\n__BUILDER_ENV__\nline \"two\"" {
 			t.Fatalf("env not exported verbatim: %q\n%s", r.env, r.log)
 		}
 	})
@@ -185,6 +186,8 @@ func TestResolveParametersApplyProfiles(t *testing.T) {
 			"unknown defaultProfile": {`{"defaultProfile": "nightly", "profiles": {"preview": {}}}`, map[string]string{"GITHUB_EVENT_NAME": "push"}},
 			"bad distribution":       {`{"defaultProfile": "p", "profiles": {"p": {"distribution": "adhoc"}}}`, map[string]string{"GITHUB_EVENT_NAME": "push"}},
 			"bad env name":           {``, map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_PROFILE": `{"name":"p","env":{"A B":"x"}}`}},
+			"env not an object":      {``, map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_PROFILE": `{"name":"p","env":"A=x"}`}},
+			"profile not JSON":       {``, map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_PROFILE": `preview`}},
 		} {
 			if r := runResolve(t, build, tt.json, tt.env); r.err == nil {
 				t.Errorf("%s accepted:\n%s", name, r.log)

@@ -16,6 +16,7 @@ export DISTRIBUTION="${DISTRIBUTION:-}" BUILD_ENV="${BUILD_ENV:-}"
 # survive; names are checked so a value cannot become a second variable.
 export_build_env() {
   [ -n "$BUILD_ENV" ] || return 0
+  if [ "$(jq -r 'type' <<< "$BUILD_ENV" 2>/dev/null)" != "object" ]; then echo "BUILD_ENV must be a JSON object of variable names to string values" >&2; exit 1; fi
   while IFS=' ' read -r key encoded; do
     name=$(printf '%s' "$key" | base64 --decode)
     if ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then echo "Invalid env name in BUILD_ENV: $name" >&2; exit 1; fi
