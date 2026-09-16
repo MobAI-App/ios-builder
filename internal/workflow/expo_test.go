@@ -80,6 +80,15 @@ func TestExpoPrebuildStep(t *testing.T) {
 			if template == "ios-build.yml" && prebuild > indexOfStep(t, all, "Restore Pods cache") {
 				t.Fatal("prebuild runs after the Pods cache, so the Podfile it writes is cached too late")
 			}
+			// `pod install` and the scheme detection both live in the build
+			// step, which must see the project prebuild generates.
+			build := "Build IPA"
+			if template == "ios-share.yml" {
+				build = "Build for the simulator"
+			}
+			if prebuild > indexOfStep(t, all, build) {
+				t.Fatalf("prebuild runs after %q, which needs the project it generates", build)
+			}
 
 			// The steps that walk the iOS directory run before prebuild, so
 			// they must tolerate it not existing yet.

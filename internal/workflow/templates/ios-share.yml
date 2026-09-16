@@ -271,7 +271,7 @@ jobs:
 
           # Without a bundle identifier prebuild asks for one interactively,
           # which on a runner means waiting for the job timeout.
-          BUNDLE_ID=$(npx expo config --type public --json 2>/dev/null | jq -r '.ios.bundleIdentifier // empty' || true)
+          BUNDLE_ID=$(npx expo config --type public --json 2>/dev/null | jq -r '.ios.bundleIdentifier // empty' 2>/dev/null || true)
           if [ -z "$BUNDLE_ID" ]; then
             for f in app.json app.config.json; do
               [ -f "$f" ] || continue

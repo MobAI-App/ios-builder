@@ -34,7 +34,7 @@ expo_prebuild() {
     echo "$IOS_PATH already holds an Xcode project (ejected Expo); skipping prebuild"
     return 0
   fi
-  bundle_id=$(npx expo config --type public --json 2>/dev/null | jq -r '.ios.bundleIdentifier // empty' || true)
+  bundle_id=$(npx expo config --type public --json 2>/dev/null | jq -r '.ios.bundleIdentifier // empty' 2>/dev/null || true)
   if [ -z "$bundle_id" ]; then
     for manifest in app.json app.config.json; do
       if [ -f "$manifest" ]; then
