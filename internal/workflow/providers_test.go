@@ -192,7 +192,9 @@ fi
 // indented run: blocks of the workflow YAML.
 func shellFunc(t *testing.T, template, name string) string {
 	t.Helper()
-	lines := strings.Split(template, "\n")
+	// Windows checkouts may have CRLF line endings; the closing brace
+	// comparison below needs bare lines.
+	lines := strings.Split(strings.ReplaceAll(template, "\r\n", "\n"), "\n")
 	start := -1
 	indent := ""
 	for i, line := range lines {
