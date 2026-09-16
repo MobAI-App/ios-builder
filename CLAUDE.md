@@ -24,6 +24,7 @@ go install ./cmd/builder
 ./builder auth github       # Authenticate with GitHub (OAuth device flow)
 ./builder init              # Set up workflow in current repo
 ./builder ios build         # Trigger build and download IPA to ./dist/
+./builder ios build --profile production  # Build with a builder.json profile
 ./builder dev flutter       # Flutter hot reload with MobAI
 ./builder dev rn            # React Native hot reload with MobAI
 ./builder dev kmp           # Kotlin Multiplatform install + launch (no hot reload)
@@ -134,6 +135,21 @@ internal/
   submodule commit that only exists locally fails checkout on the runner.
 - **Run Correlation**: `run-name` carries the build ID so concurrent builds cannot adopt each
   other's runs
+- **Build Profiles**: `profiles.<name>` in `builder.json` overrides `ios.configuration`, `ios.scheme`,
+  `ios.signing` and `provider`, and adds `env` and the reserved `distribution`. `ios build` and
+  `ios share` take `--profile`; without it `defaultProfile` applies, and without that the top-level
+  settings are used unchanged. `config.ResolveProfile` does the merge, `Coordinator.settings` layers
+  `--unsigned`/`--provider` on top, and `Progress.Settings` prints the result before dispatch.
+  `Profile.Signing` is a `*bool` so a profile's `false` can override a top-level `true`; the jq in
+  `Resolve parameters` needs an explicit `!= null` test for the same reason, since `//` treats
+  `false` as missing. The runner receives env as one JSON object: the `profile` dispatch input
+  (`{"name","env","distribution"}`, one input to stay under the ten-input limit) on GitHub, and
+  `BUILD_ENV` plus `DISTRIBUTION` variables for `runner.sh`. Each entry is base64-encoded per
+  key and value on the runner (jq drops NUL bytes, and a key with a space must not split), names
+  are checked against `^[A-Za-z_][A-Za-z0-9_]*$`, and the runners' own parameter names are
+  rejected by `ResolveProfile`. `profile` is only sent when a profile is selected, because a
+  workflow file from before profiles rejects a dispatch with an input it does not declare.
+  `env` is build-time configuration, not secrets: it sits in `builder.json` and in the run's inputs
 - **Flutter Detection**: Auto-detects Flutter projects, runs `flutter pub get`, uses `Runner` scheme
 - **DerivedData Caching**: `restore` keys on `github.run_id` and only the prefix in `restore-keys`
   ever hits, so every run must pair with a `cache/save` step or later builds stay cold. `ios-share`
@@ -178,14 +194,28 @@ internal/
   "project": "MyApp",
   "platform": "ios",
   "github": { "owner": "username", "repo": "my-ios-app" },
-  "ios": { "path": "ios", "scheme": "" }
+  "ios": { "path": "ios", "scheme": "" },
+  "defaultProfile": "development",
+  "profiles": {
+    "development": { "configuration": "Debug", "signing": false },
+    "preview":     { "configuration": "Release", "signing": true, "env": { "API_URL": "https://staging.example.com" } },
+    "production":  { "configuration": "Release", "signing": true, "scheme": "MyApp", "provider": "codemagic", "distribution": "app-store" }
+  }
 }
 ```
+
+`profiles` and `defaultProfile` are optional. A profile's fields are `configuration`, `scheme`,
+`signing`, `provider`, `env` (string map) and `distribution` (`development`, `ad-hoc`, `app-store`,
+`enterprise`; reserved for the export step, passed through but not applied yet). `runner` and
+`submit` are planned for the same struct (`config.Profile`) but not read.
 
 ## Workflow Features
 
 The embedded workflow template (`internal/workflow/templates/ios-build.yml`):
-- Triggered via `workflow_dispatch` with `build_id`, `snapshot_ref`, `ios_path`, `scheme`
+- Triggered via `workflow_dispatch` with `build_id`, `snapshot_ref`, `ios_path`, `scheme`,
+  `use_signing`, `configuration`, `flutter_version`, `jdk_version` and `profile` (nine of the ten
+  inputs GitHub allows; the last slot is meant for item 5's `build_number`, so add nothing else
+  without combining)
 - Dispatch runs the workflow from the **default branch**, so edits to the workflow file itself
   only take effect once pushed there — unlike app sources, which come from the snapshot ref
 - Checks out `snapshot_ref` over the default-branch checkout when set
@@ -193,7 +223,9 @@ The embedded workflow template (`internal/workflow/templates/ios-build.yml`):
   workflow) for environments without GitHub API access. Push events run the workflow file from
   the tagged commit, `inputs` are empty, so a `Resolve parameters` step reads `ios_path`, `scheme`,
   `use_signing`, `configuration`, `flutter_version` and `jdk_version` from `builder.json` in the
-  tagged tree; every later step reads `steps.params.outputs.*`, never `inputs.*`. The job deletes
+  tagged tree, applying the profile named by `defaultProfile` (a tag cannot pick one per run);
+  every later step reads `steps.params.outputs.*`, never `inputs.*`. The same step exports the
+  profile's `env` to `$GITHUB_ENV` and outputs `profile` and `distribution`. The job deletes
   the tag when it ends (`permissions: contents: write`). Any other workflow in the repo with an
   unfiltered `on: push` also fires on these tags.
 - Runs on `macos-latest`

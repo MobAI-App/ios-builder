@@ -112,8 +112,10 @@ builder ios build --provider bitrise --unsigned
 builder ios build --provider github    # explicit override
 ```
 
-Provider selection is: command flag, then `builder.json`'s `provider`, then
-`github`. Adding or logging into a provider does not change the default.
+Provider selection is: command flag, then the selected build profile's
+`provider` (see the README's Build Profiles section), then `builder.json`'s
+`provider`, then `github`. Adding or logging into a provider does not change
+the default.
 To change it, edit `provider`, or pass `--set-default` when configuring a provider.
 
 ```json
