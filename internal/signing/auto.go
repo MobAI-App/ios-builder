@@ -200,13 +200,31 @@ func Auto(ctx context.Context, client *asc.Client, opts *AutoOptions) (*AutoResu
 	}
 	res.BundleID.ID, res.BundleID.Identifier = bundle.ID, bundle.Identifier
 
-	// 2. Certificate
+	// 2. Devices, before anything that counts against a quota: a development
+	// profile with no device to cover is an error, and it must not cost a
+	// certificate.
+	var deviceIDs []string
+	if opts.Type.NeedsDevices() {
+		if deviceIDs, err = ensureDevices(ctx, client, opts, &res.Devices); err != nil {
+			return res, err
+		}
+	}
+
+	// 3. Certificate. A generated key is on disk before the CSR goes to
+	// Apple: a certificate whose key is lost cannot be revoked by Builder and
+	// occupies one of the team's slots for a year.
+	if err := os.MkdirAll(opts.OutDir, 0755); err != nil {
+		return res, fmt.Errorf("create %s: %w", opts.OutDir, err)
+	}
 	keyPEM := opts.KeyPEM
 	if keyPEM == nil {
 		if keyPEM, err = generateKey(); err != nil {
 			return res, err
 		}
 		res.Files.Key = filepath.Join(opts.OutDir, KeyFileName)
+		if err := os.WriteFile(res.Files.Key, keyPEM, 0600); err != nil {
+			return res, fmt.Errorf("write private key: %w", err)
+		}
 	}
 	cert, err := ensureCertificate(ctx, client, opts, keyPEM, now(), &res.Certificate)
 	if err != nil {
@@ -217,14 +235,6 @@ func Auto(ctx context.Context, client *asc.Client, opts *AutoOptions) (*AutoResu
 		return res, err
 	}
 
-	// 3. Devices
-	var deviceIDs []string
-	if opts.Type.NeedsDevices() {
-		if deviceIDs, err = ensureDevices(ctx, client, opts, &res.Devices); err != nil {
-			return res, err
-		}
-	}
-
 	// 4. Profile
 	profile, err := ensureProfile(ctx, client, opts, bundle.ID, cert.ID, deviceIDs, now(), &res.Profile)
 	if err != nil {
@@ -233,14 +243,6 @@ func Auto(ctx context.Context, client *asc.Client, opts *AutoOptions) (*AutoResu
 	res.ProfileContent = profile.Content
 
 	// 5. Files
-	if err := os.MkdirAll(opts.OutDir, 0755); err != nil {
-		return res, fmt.Errorf("create %s: %w", opts.OutDir, err)
-	}
-	if res.Files.Key != "" {
-		if err := os.WriteFile(res.Files.Key, keyPEM, 0600); err != nil {
-			return res, fmt.Errorf("write private key: %w", err)
-		}
-	}
 	res.Files.P12 = filepath.Join(opts.OutDir, P12FileName)
 	if err := os.WriteFile(res.Files.P12, res.P12, 0600); err != nil {
 		return res, fmt.Errorf("write .p12: %w", err)

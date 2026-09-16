@@ -538,8 +538,13 @@ func TestAutoDevelopmentWithoutDevicesFails(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "--device") || !strings.Contains(err.Error(), "--devices-from-mobai") {
 		t.Errorf("err = %v", err)
 	}
-	if p.count("POST /v1/profiles") != 0 {
-		t.Errorf("profile created without devices: %v", p.calls)
+	// Devices are checked before the certificate: no device means no key
+	// written and no certificate slot spent.
+	if p.count("POST /v1/certificates") != 0 || p.count("POST /v1/profiles") != 0 {
+		t.Errorf("certificate or profile created without devices: %v", p.calls)
+	}
+	if _, err := os.Stat(filepath.Join(opts.OutDir, KeyFileName)); err == nil {
+		t.Error("a key was written although no certificate was requested")
 	}
 }
 
@@ -583,9 +588,23 @@ func TestAutoWithSuppliedKeyReusesMatchingCertificate(t *testing.T) {
 func TestAutoCertificateLimitHint(t *testing.T) {
 	p := newPortal(t)
 	p.refuseCertificates = true
-	_, err := Auto(context.Background(), p.client(t), devOpts(t.TempDir()))
+	dir := t.TempDir()
+	res, err := Auto(context.Background(), p.client(t), devOpts(dir))
 	if err == nil || !strings.Contains(err.Error(), "maximum number of certificates") || !strings.Contains(err.Error(), "Revoke one") || !strings.Contains(err.Error(), "--key") {
 		t.Errorf("err = %v", err)
+	}
+	// The key is on disk before the request goes out, so whatever Apple did
+	// with it, the next run can carry on with the same key.
+	keyPEM, readErr := os.ReadFile(res.Files.Key)
+	if readErr != nil || res.Files.Key != filepath.Join(dir, KeyFileName) {
+		t.Fatalf("key after a refused certificate: %+v, %v", res.Files, readErr)
+	}
+	p.refuseCertificates = false
+	opts := devOpts(dir)
+	opts.KeyPEM = keyPEM
+	res = run(t, p, opts)
+	if !res.Certificate.Created || !KeyMatchesCertificate(keyPEM, p.certs[0].der) || res.Files.Key != "" {
+		t.Errorf("retry = %+v", res)
 	}
 }
 
