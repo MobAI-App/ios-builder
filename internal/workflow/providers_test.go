@@ -233,13 +233,31 @@ func TestExportMethodFollowsProfile(t *testing.T) {
 		t.Fatalf("templates disagree on the export method:\n%s\n---\n%s", fromWorkflow, fromRunner)
 	}
 	// Both must refuse a Debug distribution build, whose get-task-allow
-	// entitlement no distribution profile grants.
+	// entitlement no distribution profile grants, and both must feed the
+	// detected method — not a constant — into ExportOptions.plist.
+	wiring := map[string][]string{
+		"ios-build.yml": {
+			`EXPORT_METHOD=$(detect_export_method "$PROFILE_PLIST")`,
+			`"    <string>${EXPORT_METHOD}</string>"`,
+			"plutil -insert manageAppVersionAndBuildNumber -bool NO",
+		},
+		"runner.sh": {
+			`detect_export_method "$signing_dir/profile.plist"`,
+			`'method': os.environ['EXPORT_METHOD']`,
+			"options['manageAppVersionAndBuildNumber'] = False",
+		},
+	}
 	for name, data := range map[string]string{"ios-build.yml": string(workflowTemplate), "runner.sh": string(runner)} {
 		if !strings.Contains(data, `configuration\": \"Release`) {
 			t.Errorf("%s: no Debug + distribution guard", name)
 		}
 		if strings.Contains(data, "<string>development</string>") || strings.Contains(data, "'method': 'development'") {
 			t.Errorf("%s: export method still hardcoded", name)
+		}
+		for _, want := range wiring[name] {
+			if !strings.Contains(data, want) {
+				t.Errorf("%s: export options no longer wired to the profile, missing %q", name, want)
+			}
 		}
 	}
 

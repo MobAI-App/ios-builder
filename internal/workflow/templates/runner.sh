@@ -182,7 +182,8 @@ install_signing() {
 }
 
 build_ipa() {
-  # Before the build, so a profile/configuration mismatch fails in seconds.
+  # Before the compile, so a profile/configuration mismatch fails without
+  # waiting for the archive.
   if [ "$USE_SIGNING" = true ]; then install_signing; fi
   if [ "$project_type" = flutter ]; then
     cd "$BUILDER_WORKSPACE"

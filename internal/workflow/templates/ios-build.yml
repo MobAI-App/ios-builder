@@ -567,13 +567,6 @@ jobs:
             APP_BUNDLE_ID=$(plutil -extract ApplicationProperties.CFBundleIdentifier raw -o - build/App.xcarchive/Info.plist)
             echo "Exporting $APP_BUNDLE_ID with profile '$PROVISIONING_PROFILE_NAME' (team $DEVELOPMENT_TEAM), method $EXPORT_METHOD"
 
-            # Distribution exports keep the version numbers the archive was
-            # built with; Xcode would otherwise renumber the build on export.
-            MANAGE_VERSION=""
-            if [ "$EXPORT_METHOD" != "development" ]; then
-              MANAGE_VERSION=$(printf '    <key>manageAppVersionAndBuildNumber</key>\n    <false/>')
-            fi
-
             printf '%s\n' \
               '<?xml version="1.0" encoding="UTF-8"?>' \
               '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
@@ -581,7 +574,6 @@ jobs:
               '<dict>' \
               '    <key>method</key>' \
               "    <string>${EXPORT_METHOD}</string>" \
-              "${MANAGE_VERSION}" \
               '    <key>signingStyle</key>' \
               '    <string>manual</string>' \
               '    <key>teamID</key>' \
@@ -593,6 +585,13 @@ jobs:
               '    </dict>' \
               '</dict>' \
               '</plist>' > ExportOptions.plist
+
+            # Distribution exports keep the version numbers the archive was
+            # built with; Xcode would otherwise renumber the build on export.
+            if [ "$EXPORT_METHOD" != "development" ]; then
+              plutil -insert manageAppVersionAndBuildNumber -bool NO ExportOptions.plist
+            fi
+
             xcodebuild -exportArchive \
               -archivePath build/App.xcarchive \
               -exportOptionsPlist ExportOptions.plist \
