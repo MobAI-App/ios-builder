@@ -32,7 +32,7 @@ func TestProfileType(t *testing.T) {
 	}{
 		{"development", devices + allow(true), TypeDevelopment},
 		{"ad-hoc", devices + allow(false), TypeAdHoc},
-		{"app-store", allow(false), TypeAppStore},
+		{"store", allow(false), TypeStore},
 		{"enterprise", "<key>ProvisionsAllDevices</key><true/>" + allow(false), TypeEnterprise},
 		{"enterprise with devices", "<key>ProvisionsAllDevices</key><true/>" + devices + allow(false), TypeEnterprise},
 		{"empty device list is still ad-hoc", "<key>ProvisionedDevices</key><array/>" + allow(false), TypeAdHoc},
@@ -57,21 +57,22 @@ func TestProfileType(t *testing.T) {
 
 func TestParseType(t *testing.T) {
 	for in, want := range map[string]Type{
-		"development": TypeDevelopment, "ad-hoc": TypeAdHoc, "adhoc": TypeAdHoc, "App-Store": TypeAppStore,
-		"appstore": TypeAppStore, "enterprise": TypeEnterprise, "in-house": TypeEnterprise,
+		"development": TypeDevelopment, "ad-hoc": TypeAdHoc, "internal": TypeAdHoc, "store": TypeStore, "enterprise": TypeEnterprise,
 	} {
-		// Flags arrive with whatever case and spacing the user typed.
+		// Flags arrive with whatever spacing the user typed.
 		if got, err := ParseType(" " + in + " "); err != nil || got != want {
 			t.Errorf("ParseType(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
-	if _, err := ParseType("distribution"); err == nil {
-		t.Error("unknown type accepted")
+	for _, bad := range []string{"", "distribution", "app-store", "adhoc"} {
+		if _, err := ParseType(bad); err == nil {
+			t.Errorf("ParseType(%q) accepted", bad)
+		}
 	}
-	if TypeAppStore.NeedsDevices() || TypeEnterprise.NeedsDevices() || !TypeDevelopment.NeedsDevices() || !TypeAdHoc.NeedsDevices() {
+	if TypeStore.NeedsDevices() || TypeEnterprise.NeedsDevices() || !TypeDevelopment.NeedsDevices() || !TypeAdHoc.NeedsDevices() {
 		t.Error("NeedsDevices: only development and ad-hoc profiles list devices")
 	}
-	if KeyFileName(TypeAppStore) != "ios-signing-app-store.key" || P12FileName(TypeAdHoc) != "ios-signing-ad-hoc.p12" {
-		t.Errorf("file names: %s %s", KeyFileName(TypeAppStore), P12FileName(TypeAdHoc))
+	if KeyFileName(TypeStore) != "ios-signing-store.key" || P12FileName(TypeAdHoc) != "ios-signing-ad-hoc.p12" {
+		t.Errorf("file names: %s %s", KeyFileName(TypeStore), P12FileName(TypeAdHoc))
 	}
 }

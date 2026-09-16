@@ -12,7 +12,7 @@ import (
 // signature wrapping an XML plist; the plist alone decides the type, by the
 // rules detect_export_method applies on the runner: ProvisionsAllDevices is
 // enterprise, ProvisionedDevices with get-task-allow is development and
-// without it ad-hoc, and a profile with neither is App Store.
+// without it ad-hoc, and a profile with neither is App Store (store).
 func ProfileType(data []byte) (Type, error) {
 	start := bytes.Index(data, []byte("<?xml"))
 	end := bytes.LastIndex(data, []byte("</plist>"))
@@ -33,5 +33,5 @@ func ProfileType(data []byte) (Type, error) {
 		}
 		return TypeAdHoc, nil
 	}
-	return TypeAppStore, nil
+	return TypeStore, nil
 }

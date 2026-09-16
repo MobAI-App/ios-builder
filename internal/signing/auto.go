@@ -13,37 +13,35 @@ import (
 	"unicode"
 
 	"github.com/MobAI-App/ios-builder/internal/asc"
+	"github.com/MobAI-App/ios-builder/internal/config"
 )
 
 // Type is what the signing material is for: which certificate is issued and
-// which profile type wraps it.
+// which profile type wraps it. Its values are the canonical distributions of
+// a build profile, and each one has a signing set of secrets.
 type Type string
 
-// Signing types, as accepted by --type. They are the values of a build
-// profile's distribution, and each one has a signing set of secrets.
+// Signing types, as accepted by --distribution.
 const (
-	TypeDevelopment Type = "development"
-	TypeAdHoc       Type = "ad-hoc"
-	TypeAppStore    Type = "app-store"
+	TypeDevelopment Type = config.DistributionDevelopment
+	TypeAdHoc       Type = config.DistributionAdHoc
+	TypeStore       Type = config.DistributionStore
 	// TypeEnterprise is an in-house profile. Auto cannot issue one; it is
 	// only reached with --certificate/--profile.
-	TypeEnterprise Type = "enterprise"
+	TypeEnterprise Type = config.DistributionEnterprise
 )
 
-// ParseType validates a --type value.
+// ParseType validates a --distribution value (internal is ad-hoc). Empty is
+// an error here: signing material is always of some type.
 func ParseType(s string) (Type, error) {
-	switch t := Type(strings.ToLower(strings.TrimSpace(s))); t {
-	case TypeDevelopment, TypeAdHoc, TypeAppStore, TypeEnterprise:
-		return t, nil
-	case "adhoc":
-		return TypeAdHoc, nil
-	case "appstore":
-		return TypeAppStore, nil
-	case "in-house", "inhouse":
-		return TypeEnterprise, nil
-	default:
-		return "", fmt.Errorf("--type must be development, ad-hoc, app-store or enterprise, got %q", s)
+	d, err := config.ParseDistribution(s)
+	if err != nil {
+		return "", err
 	}
+	if d == "" {
+		return "", fmt.Errorf("distribution must be one of %s (internal is ad-hoc)", strings.Join(config.Distributions, ", "))
+	}
+	return Type(d), nil
 }
 
 // NeedsDevices reports whether profiles of this type list the devices the
@@ -61,7 +59,7 @@ func (t Type) profileType() string {
 	switch t {
 	case TypeAdHoc:
 		return asc.ProfileTypeIOSAppAdHoc
-	case TypeAppStore:
+	case TypeStore:
 		return asc.ProfileTypeIOSAppStore
 	default:
 		return asc.ProfileTypeIOSAppDevelopment
@@ -389,7 +387,7 @@ func ensureDevices(ctx context.Context, client *asc.Client, opts *AutoOptions, o
 		}
 	}
 	if len(ids) == 0 {
-		return nil, fmt.Errorf("no iOS devices are registered on the account and a %s profile needs at least one: pass --device <udid> (repeatable) or --devices-from-mobai", opts.Type)
+		return nil, fmt.Errorf("no iOS devices are registered on the account and a %s profile needs at least one: run builder signing setup --distribution %s --devices-from-mobai, or --device <udid> (repeatable)", opts.Type, opts.Type)
 	}
 	slices.Sort(ids)
 	out.InProfile = len(ids)
