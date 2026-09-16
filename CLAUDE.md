@@ -201,10 +201,12 @@ internal/
 - **ASC Client** (`internal/asc`): runs locally, never on the runner. Auth is an ES256 JWT
   (15 min, cached, refreshed a minute early) signed with the `.p8` key. JSON:API plumbing is
   generic (`Document`/`Resource[A]`, `getOne`/`getAll`/`post`/`patch`); typed helpers exist only
-  for what the commands use, so item 2 (bundle IDs, certificates, profiles, devices) adds files in
-  the same package without restructuring. `getAll` follows `links.next`; 429 retries on every
-  method, 5xx only on idempotent ones (a failed POST may have created the resource). `*asc.Error`
-  carries the ASC `errors[]` and renders on one line.
+  for what the commands use, so the signing resources (bundle IDs, certificates, profiles,
+  devices) add files in the same package without restructuring. `getAll` follows `links.next`;
+  429 retries on every method, 5xx only on idempotent ones (a failed POST may have created the
+  resource). All waits go through `Client.sleep`, which tests replace, so retry and poll tests
+  run instantly; status polls (`poller`) grow 1.5× per round up to 4× the base interval.
+  `*asc.Error` carries the ASC `errors[]` and renders on one line.
 - **ASC Credentials**: one JSON secret (`apple-asc-key`) in the keyring/file store, via the
   shared `readSecret`/`writeSecret`/`deleteSecret` helpers the CI tokens use. `ASC_ISSUER_ID`,
   `ASC_KEY_ID` + `ASC_PRIVATE_KEY`|`ASC_KEY_PATH` take precedence; a partially set environment is
@@ -222,9 +224,9 @@ internal/
   chosen group is external and none exists) → add groups. App Store reuses an open
   `reviewSubmission` (READY_FOR_REVIEW/UNRESOLVED_ISSUES), skips the item when the version is
   already in it, and rewrites ASC 409/422 with a "complete the metadata" hint.
-- **Extension Points**: item 5 (`ios release`, auto build numbers) composes `distribute.Upload`
-  and `distribute.SubmitTestFlight` and reads `asc.Client.ListBuilds` for the latest build number;
-  the `pkg/` wrappers do not expose `asc` yet.
+- **Extension Points**: a future `ios release` (upload + TestFlight, automatic build numbers)
+  composes `distribute.Upload` and `distribute.SubmitTestFlight` and reads `asc.Client.ListBuilds`
+  for the latest build number; the `pkg/` wrappers do not expose `asc` yet.
 
 ## Configuration
 

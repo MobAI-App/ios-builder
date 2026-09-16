@@ -369,6 +369,9 @@ You need:
   provisioning profile. `builder signing setup` accepts both, exactly as in the
   steps above; pick those types on the portal instead of the development ones.
   An IPA signed for development is rejected at upload.
+- `"configuration": "Release"` under `ios` in `builder.json`: `ios build`
+  defaults to `Debug`, which is what the dev commands expect, not what you want
+  to ship.
 - An App Store Connect API key: App Store Connect → Users and Access →
   Integrations → App Store Connect API → Team Keys. Give it the **App Manager**
   role, note the **Issuer ID** and **Key ID**, and download the
