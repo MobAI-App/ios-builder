@@ -18,6 +18,24 @@ type Config struct {
 	ReactNative ReactNativeConfig `json:"reactNative,omitempty"`
 	KMP         KMPConfig         `json:"kmp,omitempty"`
 	MobAI       MobAIConfig       `json:"mobai,omitempty"`
+	// DefaultProfile is used when a command is run without --profile. Tag-triggered
+	// runs have no flags, so it is also the only way they can select a profile.
+	DefaultProfile string             `json:"defaultProfile,omitempty"`
+	Profiles       map[string]Profile `json:"profiles,omitempty"`
+}
+
+// Profile is a named set of build settings, selected with --profile. Every
+// field is optional and overrides the matching top-level setting; unset fields
+// keep the top-level value. Runner and submit settings are planned here too.
+type Profile struct {
+	Configuration string            `json:"configuration,omitempty"` // overrides ios.configuration
+	Scheme        string            `json:"scheme,omitempty"`        // overrides ios.scheme
+	Signing       *bool             `json:"signing,omitempty"`       // overrides ios.signing; a pointer so false can override true
+	Provider      string            `json:"provider,omitempty"`      // overrides provider
+	Env           map[string]string `json:"env,omitempty"`           // exported on the runner before dependencies and the build
+	// Distribution is reserved for the export step (development, ad-hoc, app-store,
+	// enterprise). It is validated and passed to the runner but not applied yet.
+	Distribution string `json:"distribution,omitempty"`
 }
 
 // CIConfig identifies an app already connected to the project's GitHub repository.

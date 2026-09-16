@@ -97,7 +97,9 @@ The run is named after the tag. Build settings come from `builder.json` in the
 tagged commit (`ios.path`, `ios.scheme`, `ios.signing`, `ios.configuration`,
 `flutter.version`, `kmp.jdkVersion`), the simulator stays available for the
 default 30 minutes, and the tag is deleted when the run ends. The IPA is
-attached to the run as an artifact.
+attached to the run as an artifact. A tag carries no flags, so a tag build
+cannot pick a [profile](#build-profiles) per run; it applies the profile named
+by `defaultProfile`, if there is one.
 
 ## Additional macOS Providers
 
@@ -176,6 +178,7 @@ builder update                # Update builder to the latest release
 builder ios build             # Trigger build and download IPA to ./dist/
 builder ios build --unsigned  # Build without code signing (if signing is configured)
 builder ios build --provider codemagic  # Build on another provider (also: bitrise)
+builder ios build --profile production  # Build with a profile from builder.json
 
 # Simulator (free, needs a MOBAI_API_KEY secret)
 builder ios share             # Try the build on a simulator in the MobAI app
@@ -255,6 +258,69 @@ never prompts, so agents and CI jobs can drive them.
 | `ios.bundleId` | App bundle identifier, used by `signing setup` | detected by `init` when the project has one app target; else saved by `signing setup` |
 | `ios.signing` | Sign the IPA with the uploaded certificate and profile | `false` |
 | `ios.configuration` | Xcode build configuration. **Builds are `Debug` unless you set `Release`**; Debug is faster and is what the dev commands expect | `Debug` |
+
+### Build Profiles
+
+Profiles are named sets of build settings, in the spirit of `eas.json`, selected
+with `--profile` on `ios build` and `ios share`:
+
+```json
+{
+  "ios": { "path": "ios", "configuration": "Debug" },
+  "defaultProfile": "development",
+  "profiles": {
+    "development": { "configuration": "Debug", "signing": false },
+    "preview":     { "configuration": "Release", "signing": true,
+                     "env": { "API_URL": "https://staging.example.com" } },
+    "production":  { "configuration": "Release", "signing": true, "scheme": "MyApp",
+                     "provider": "codemagic", "distribution": "app-store" }
+  }
+}
+```
+
+```bash
+builder ios build --profile preview
+builder ios share --profile preview
+```
+
+| Field | Description |
+|-------|-------------|
+| `configuration` | Overrides `ios.configuration` |
+| `scheme` | Overrides `ios.scheme` |
+| `signing` | Overrides `ios.signing`; `false` in a profile turns signing off even when the top level has it on |
+| `provider` | Overrides the top-level `provider` (`github`, `codemagic`, `bitrise`) |
+| `env` | String map exported as environment variables on the runner before dependencies are installed and the app is built, so `pod install`, `npm install`, `flutter pub get`, Gradle and xcodebuild all see them |
+| `distribution` | Reserved: one of `development`, `ad-hoc`, `app-store`, `enterprise`. Validated and passed to the runner; the export step does not act on it yet |
+
+How a build's settings are resolved:
+
+- Without `--profile`, the profile named by `defaultProfile` applies. With
+  neither, the top-level `ios.*` and `provider` settings are used exactly as
+  before, so existing projects are unaffected.
+- A profile only overrides the fields it sets; everything else comes from the
+  top level. An unknown profile name is an error that lists the available ones.
+- `--unsigned` and `--provider` on the command line override the profile.
+- The resolved settings (profile, configuration, scheme, signing, provider, env
+  names) are printed before anything is dispatched.
+- `ios share` only takes the profile's scheme, provider and env: simulator
+  builds are always Debug and unsigned.
+
+**`env` values are build-time configuration, not secrets.** They are stored in
+`builder.json`, sent to the CI provider as plain workflow inputs, and visible in
+the run's inputs and logs. Keep tokens and passwords in the provider's secrets
+instead (`gh secret set` on GitHub, or the [Codemagic / Bitrise secrets
+guide](docs/provider-secrets.md)); the build reads those as environment
+variables too. Names the runner owns are rejected: its own parameters
+(`SCHEME`, `CONFIGURATION`, `USE_SIGNING`, `BUILD_ENV`, ...), the signing
+secrets, `PATH`, `HOME`, `DEVELOPER_DIR`, and anything starting with `GITHUB_`,
+`RUNNER_`, `CM_`, `BITRISE_` or `BUILDER_`.
+
+Selecting a profile, with `--profile` or `defaultProfile`, needs the workflow
+files from this version of Builder, which declare a `profile` input; an older
+committed workflow rejects the dispatch. Run `builder init` again to refresh
+`.github/workflows/ios-build.yml` and `ios-share.yml` (or `builder init
+--provider ...` for `runner.sh`) in a project set up earlier, then commit and
+push them to the default branch.
 
 ### MobAI Configuration
 

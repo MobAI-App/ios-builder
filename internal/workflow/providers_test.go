@@ -149,6 +149,7 @@ for arg in "$@"; do
   if [ "$arg" = "-showBuildSettings" ]; then settings=true; fi
   prev="$arg"
 done
+printf '%s' "${API_URL:-}|${NOTES:-}|${DISTRIBUTION:-}" > "$ENV_LOG"
 app="$dd/Build/Products/Debug-iphoneos/App.app"
 if [ "$settings" = true ]; then
   python3 - "$dd/Build/Products/Debug-iphoneos" <<'PY'
@@ -166,9 +167,16 @@ fi
 		scheme := `App's $(touch should-not-exist)`
 		cmd := exec.Command("/bin/bash", script, "build")
 		cmd.Dir = clone
-		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "SNAPSHOT_REF="+ref, "SNAPSHOT_SHA="+sha, "BUILD_ID=abcdef12", "IOS_PATH=.", "USE_SIGNING=false", "CONFIGURATION=Debug", "SCHEME="+scheme, "SCHEME_LOG="+filepath.Join(dir, "scheme.log"), "BUILDER_CI_DIR="+filepath.Join(dir, "state"))
+		// The profile env arrives as one JSON object and must reach the build
+		// tools as ordinary variables, values intact.
+		buildEnv := `{"API_URL":"https://staging.example.com","NOTES":"line one\nline \"two\""}`
+		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "SNAPSHOT_REF="+ref, "SNAPSHOT_SHA="+sha, "BUILD_ID=abcdef12", "IOS_PATH=.", "USE_SIGNING=false", "CONFIGURATION=Debug", "SCHEME="+scheme, "SCHEME_LOG="+filepath.Join(dir, "scheme.log"), "BUILDER_CI_DIR="+filepath.Join(dir, "state"),
+			"BUILD_ENV="+buildEnv, "DISTRIBUTION=ad-hoc", "ENV_LOG="+filepath.Join(dir, "env.log"))
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("runner: %s %v", out, err)
+		}
+		if data, err := os.ReadFile(filepath.Join(dir, "env.log")); err != nil || string(data) != "https://staging.example.com|line one\nline \"two\"|ad-hoc" {
+			t.Fatalf("profile env did not reach the build: %q %v", data, err)
 		}
 		if _, err := os.Stat(filepath.Join(clone, "build", "abcdef12.ipa")); err != nil {
 			t.Fatal("runner produced no IPA:", err)

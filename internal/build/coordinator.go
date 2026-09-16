@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/MobAI-App/ios-builder/internal/ci"
@@ -56,11 +57,85 @@ func NewCoordinatorWithOutput(cfg *config.Config, gh *github.Client, w io.Writer
 
 // BuildOptions contains options for a build
 type BuildOptions struct {
-	Provider  string // Override the configured CI provider
+	Provider  string // Override the configured CI provider (and the profile's)
+	Profile   string // builder.json profile to build with; empty uses defaultProfile, else the top-level settings
 	OutputDir string
 	Timeout   time.Duration
 	Unsigned  bool   // Skip code signing even if configured
 	Remote    string // Git remote to push the working-tree snapshot to
+}
+
+// settings applies the selected profile, then the command flags, over
+// builder.json. The returned name is the provider that will run the job.
+func (c *Coordinator) settings(profile, provider string, unsigned bool) (*config.BuildSettings, string, error) {
+	s, err := c.config.ResolveProfile(profile)
+	if err != nil {
+		return nil, "", err
+	}
+	if provider != "" {
+		s.Provider = provider
+	}
+	name, err := c.config.ProviderName(s.Provider)
+	if err != nil {
+		return nil, "", err
+	}
+	if unsigned {
+		s.Signing = false
+	}
+	return &s, name, nil
+}
+
+// workflowInputs maps the settings onto the workflow_dispatch inputs both
+// GitHub workflows share. Empty values are left out so the declared defaults
+// apply, and `profile` is only sent when one is selected: a workflow file from
+// before profiles rejects a dispatch carrying an input it does not declare.
+func (c *Coordinator) workflowInputs(buildID, ref string, s *config.BuildSettings) map[string]string {
+	inputs := map[string]string{
+		"build_id":     buildID,
+		"snapshot_ref": ref,
+	}
+	if c.config.IOS.Path != "" {
+		inputs["ios_path"] = c.config.IOS.Path
+	}
+	if s.Scheme != "" {
+		inputs["scheme"] = s.Scheme
+	}
+	// Pass Flutter version if configured (ensures SDK version match for hot reload)
+	if c.config.Flutter.Version != "" {
+		inputs["flutter_version"] = c.config.Flutter.Version
+	}
+	// Pass JDK version for Kotlin Multiplatform Gradle builds
+	if c.config.KMP.JDKVersion != "" {
+		inputs["jdk_version"] = c.config.KMP.JDKVersion
+	}
+	if p := s.ProfileInput(); p != "" {
+		inputs["profile"] = p
+	}
+	return inputs
+}
+
+// buildInputs are the ios-build.yml inputs: the shared ones plus signing and
+// configuration, which the simulator workflow has no use for.
+func (c *Coordinator) buildInputs(buildID, ref string, s *config.BuildSettings) map[string]string {
+	inputs := c.workflowInputs(buildID, ref, s)
+	if s.Signing {
+		inputs["use_signing"] = "true"
+	}
+	// Pass build configuration (Debug is faster, Release for production)
+	if s.Configuration != "" {
+		inputs["configuration"] = s.Configuration
+	}
+	return inputs
+}
+
+// triggerError explains a rejected dispatch. GitHub answers 422 "Unexpected
+// inputs provided" when the committed workflow file does not declare an input,
+// which for `profile` means the file predates build profiles.
+func triggerError(err error, inputs map[string]string, file string) error {
+	if _, ok := inputs["profile"]; ok && strings.Contains(err.Error(), "Unexpected inputs") {
+		return fmt.Errorf("failed to trigger workflow: the committed .github/workflows/%s does not declare the `profile` input; run `builder init` to refresh it, then commit and push the workflow to the default branch: %w", file, err)
+	}
+	return fmt.Errorf("failed to trigger workflow: %w", err)
 }
 
 // BuildResult contains the result of a build
@@ -73,13 +148,16 @@ type BuildResult struct {
 }
 
 // Build triggers a remote build and downloads the IPA artifact
-func (c *Coordinator) Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
-	name, err := c.config.ProviderName(opts.Provider)
+func (c *Coordinator) Build(ctx context.Context, opts *BuildOptions) (*BuildResult, error) {
+	// Defaults below are filled in on a copy: opts belongs to the caller.
+	o := *opts
+	opts = &o
+	settings, name, err := c.settings(opts.Profile, opts.Provider, opts.Unsigned)
 	if err != nil {
 		return nil, err
 	}
 	if name != "github" || c.provider != nil {
-		return c.buildRemote(ctx, opts)
+		return c.buildRemote(ctx, opts, settings)
 	}
 	if c.github == nil {
 		return nil, fmt.Errorf("GitHub client is required")
@@ -98,6 +176,7 @@ func (c *Coordinator) Build(ctx context.Context, opts BuildOptions) (*BuildResul
 	// Generate build ID
 	buildID := uuid.New().String()[:8]
 	c.progress.Start(buildID)
+	c.progress.Settings(settings, name)
 
 	// Step 1: Snapshot the working tree so the build matches what's on disk
 	c.progress.Update(PhaseSnapshot, "Snapshotting working tree...")
@@ -117,37 +196,11 @@ func (c *Coordinator) Build(ctx context.Context, opts BuildOptions) (*BuildResul
 
 	// Step 2: Trigger workflow
 	c.progress.Update(PhaseTriggering, "Triggering GitHub Actions build...")
-	inputs := map[string]string{
-		"build_id":     buildID,
-		"snapshot_ref": ref,
-	}
-	// Add iOS-specific inputs if configured
-	if c.config.IOS.Path != "" {
-		inputs["ios_path"] = c.config.IOS.Path
-	}
-	if c.config.IOS.Scheme != "" {
-		inputs["scheme"] = c.config.IOS.Scheme
-	}
-	// Determine signing: use signing if configured and not explicitly disabled
-	useSigning := c.config.IOS.Signing && !opts.Unsigned
-	if useSigning {
-		inputs["use_signing"] = "true"
-	}
-	// Pass build configuration (Debug is faster, Release for production)
-	if c.config.IOS.Configuration != "" {
-		inputs["configuration"] = c.config.IOS.Configuration
-	}
-	// Pass Flutter version if configured (ensures SDK version match for hot reload)
-	if c.config.Flutter.Version != "" {
-		inputs["flutter_version"] = c.config.Flutter.Version
-	}
-	// Pass JDK version for Kotlin Multiplatform Gradle builds
-	if c.config.KMP.JDKVersion != "" {
-		inputs["jdk_version"] = c.config.KMP.JDKVersion
-	}
+	inputs := c.buildInputs(buildID, ref, settings)
 	if err := c.github.TriggerWorkflow(ctx, c.config.GitHub.Owner, c.config.GitHub.Repo, WorkflowFile, inputs); err != nil {
+		err = triggerError(err, inputs, WorkflowFile)
 		c.progress.Error(PhaseTriggering, err)
-		return nil, fmt.Errorf("failed to trigger workflow: %w", err)
+		return nil, err
 	}
 	c.progress.Complete(PhaseTriggering, "Workflow triggered")
 

@@ -163,7 +163,7 @@ func TestRemoteSnapshotLifecycle(t *testing.T) {
 			if strings.HasSuffix(tt.name, "share") {
 				_, err = c.Share(context.Background(), ShareOptions{})
 			} else {
-				result, err = c.Build(context.Background(), BuildOptions{OutputDir: filepath.Join(dir, "dist")})
+				result, err = c.Build(context.Background(), &BuildOptions{OutputDir: filepath.Join(dir, "dist")})
 			}
 			if tt.name == "success" || tt.name == "transient poll recovers" {
 				if err != nil || result == nil {
