@@ -6,7 +6,10 @@ ci_dir="${BUILDER_CI_DIR:-$HOME/.ios-builder-ci}"
 mkdir -p "$ci_dir"
 mode="${1:-build}"
 export IOS_PATH="${IOS_PATH:-.}" SCHEME="${SCHEME:-}" CONFIGURATION="${CONFIGURATION:-Debug}"
-export USE_SIGNING="${USE_SIGNING:-false}" JDK_VERSION="${JDK_VERSION:-17}" BUILD_NUMBER="${BUILD_NUMBER:-}"
+export USE_SIGNING="${USE_SIGNING:-false}" JDK_VERSION="${JDK_VERSION:-17}"
+# Codemagic sets BUILD_NUMBER itself (its build counter), so the CLI sends
+# the CFBundleVersion to stamp as BUILDER_BUILD_NUMBER; empty means none.
+export BUILD_NUMBER="${BUILDER_BUILD_NUMBER:-}"
 
 snapshot_checkout() {
   case "${SNAPSHOT_REF:-}" in
@@ -181,7 +184,7 @@ apply_build_number() {
   fi
   current=$(plutil -extract CFBundleVersion raw -o - "$plist" 2>/dev/null || true)
   case "$current" in
-    '$(CURRENT_PROJECT_VERSION)'|'$(FLUTTER_BUILD_NUMBER)')
+    '$(CURRENT_PROJECT_VERSION)'|'${CURRENT_PROJECT_VERSION}'|'$(FLUTTER_BUILD_NUMBER)'|'${FLUTTER_BUILD_NUMBER}')
       echo "$plist reads CFBundleVersion from $current" ;;
     *)
       echo "$plist hardcodes CFBundleVersion '$current'; setting $build_number in the plist"
@@ -190,7 +193,7 @@ apply_build_number() {
   [ -n "$build_name" ] || return 0
   current=$(plutil -extract CFBundleShortVersionString raw -o - "$plist" 2>/dev/null || true)
   case "$current" in
-    '$(MARKETING_VERSION)'|'$(FLUTTER_BUILD_NAME)') ;;
+    '$(MARKETING_VERSION)'|'${MARKETING_VERSION}'|'$(FLUTTER_BUILD_NAME)'|'${FLUTTER_BUILD_NAME}') ;;
     *)
       echo "$plist hardcodes CFBundleShortVersionString '$current'; setting $build_name in the plist"
       plutil -replace CFBundleShortVersionString -string "$build_name" "$plist" ;;

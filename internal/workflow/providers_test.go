@@ -147,6 +147,7 @@ for arg in "$@"; do
   if [ "$prev" = "-derivedDataPath" ]; then dd="$arg"; fi
   if [ "$prev" = "-scheme" ]; then printf '%s' "$arg" > "$SCHEME_LOG"; fi
   if [ "$arg" = "-showBuildSettings" ]; then settings=true; fi
+  case "$arg" in CURRENT_PROJECT_VERSION=*) touch "$SCHEME_LOG.stamped" ;; esac
   prev="$arg"
 done
 app="$dd/Build/Products/Debug-iphoneos/App.app"
@@ -166,9 +167,14 @@ fi
 		scheme := `App's $(touch should-not-exist)`
 		cmd := exec.Command("/bin/bash", script, "build")
 		cmd.Dir = clone
-		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "SNAPSHOT_REF="+ref, "SNAPSHOT_SHA="+sha, "BUILD_ID=abcdef12", "IOS_PATH=.", "USE_SIGNING=false", "CONFIGURATION=Debug", "SCHEME="+scheme, "SCHEME_LOG="+filepath.Join(dir, "scheme.log"), "BUILDER_CI_DIR="+filepath.Join(dir, "state"))
+		// BUILD_NUMBER=17 plays Codemagic's own build counter, which a plain
+		// build must not stamp on the app.
+		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "SNAPSHOT_REF="+ref, "SNAPSHOT_SHA="+sha, "BUILD_ID=abcdef12", "IOS_PATH=.", "USE_SIGNING=false", "CONFIGURATION=Debug", "BUILD_NUMBER=17", "SCHEME="+scheme, "SCHEME_LOG="+filepath.Join(dir, "scheme.log"), "BUILDER_CI_DIR="+filepath.Join(dir, "state"))
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("runner: %s %v", out, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "scheme.log.stamped")); !os.IsNotExist(err) {
+			t.Fatal("the provider's BUILD_NUMBER was stamped on a plain build")
 		}
 		if _, err := os.Stat(filepath.Join(clone, "build", "abcdef12.ipa")); err != nil {
 			t.Fatal("runner produced no IPA:", err)
@@ -272,6 +278,7 @@ printf '%s|%s|%s\n' "$build_number" "$build_name" "$version_settings"
 		{name: "project version setting", input: "42", plist: "CFBundleVersion=$(CURRENT_PROJECT_VERSION)\n", want: "42||CURRENT_PROJECT_VERSION=42", wantPlist: "CFBundleVersion=$(CURRENT_PROJECT_VERSION)\n"},
 		{name: "flutter setting", input: "42", plist: "CFBundleVersion=$(FLUTTER_BUILD_NUMBER)\n", want: "42||CURRENT_PROJECT_VERSION=42", wantPlist: "CFBundleVersion=$(FLUTTER_BUILD_NUMBER)\n"},
 		{name: "hardcoded plist", input: "1.2.3+42", plist: "CFBundleVersion=7\nCFBundleShortVersionString=1.0\n", want: "42|1.2.3|CURRENT_PROJECT_VERSION=42 MARKETING_VERSION=1.2.3", wantPlist: "CFBundleVersion=42\nCFBundleShortVersionString=1.2.3\n"},
+		{name: "brace setting", input: "1.2.3+42", plist: "CFBundleVersion=${CURRENT_PROJECT_VERSION}\nCFBundleShortVersionString=${MARKETING_VERSION}\n", want: "42|1.2.3|CURRENT_PROJECT_VERSION=42 MARKETING_VERSION=1.2.3", wantPlist: "CFBundleVersion=${CURRENT_PROJECT_VERSION}\nCFBundleShortVersionString=${MARKETING_VERSION}\n"},
 		{name: "generated plist", input: "42", noPlist: true, want: "42||CURRENT_PROJECT_VERSION=42"},
 		{name: "rejects shell metacharacters", input: "42; touch pwned", fail: true},
 	} {

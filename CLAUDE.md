@@ -255,8 +255,9 @@ internal/
   processed build, so `release` lists the app's builds across all marketing versions
   (`ListBuilds`, no limit, pages through `links.next`) and increments the last component of the
   largest (`1` when none; dotted numbers compare component-wise). `--build-number` skips the
-  query. The number travels as the single `build_number` dispatch input (`BUILD_NUMBER` for
-  Codemagic/Bitrise), encoded `N` or `X.Y.Z+N` when `--version` is given — one input because
+  query. The number travels as the single `build_number` dispatch input (`BUILDER_BUILD_NUMBER`
+  for Codemagic/Bitrise — Codemagic predefines `BUILD_NUMBER` as its own counter, so `runner.sh`
+  maps the prefixed name onto it), encoded `N` or `X.Y.Z+N` when `--version` is given — one input because
   `workflow_dispatch` caps inputs at 10. `apply_build_number` in both templates must stay
   byte-identical; `TestApplyBuildNumber` extracts it from each and diffs them. It validates the
   shape (the value reaches `eval` and `plutil`), passes `--build-number`/`--build-name` to

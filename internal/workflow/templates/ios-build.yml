@@ -368,7 +368,7 @@ jobs:
             fi
             current=$(plutil -extract CFBundleVersion raw -o - "$plist" 2>/dev/null || true)
             case "$current" in
-              '$(CURRENT_PROJECT_VERSION)'|'$(FLUTTER_BUILD_NUMBER)')
+              '$(CURRENT_PROJECT_VERSION)'|'${CURRENT_PROJECT_VERSION}'|'$(FLUTTER_BUILD_NUMBER)'|'${FLUTTER_BUILD_NUMBER}')
                 echo "$plist reads CFBundleVersion from $current" ;;
               *)
                 echo "$plist hardcodes CFBundleVersion '$current'; setting $build_number in the plist"
@@ -377,7 +377,7 @@ jobs:
             [ -n "$build_name" ] || return 0
             current=$(plutil -extract CFBundleShortVersionString raw -o - "$plist" 2>/dev/null || true)
             case "$current" in
-              '$(MARKETING_VERSION)'|'$(FLUTTER_BUILD_NAME)') ;;
+              '$(MARKETING_VERSION)'|'${MARKETING_VERSION}'|'$(FLUTTER_BUILD_NAME)'|'${FLUTTER_BUILD_NAME}') ;;
               *)
                 echo "$plist hardcodes CFBundleShortVersionString '$current'; setting $build_name in the plist"
                 plutil -replace CFBundleShortVersionString -string "$build_name" "$plist" ;;

@@ -163,7 +163,12 @@ func TestRemoteSnapshotLifecycle(t *testing.T) {
 			if strings.HasSuffix(tt.name, "share") {
 				_, err = c.Share(context.Background(), ShareOptions{})
 			} else {
-				result, err = c.Build(context.Background(), &BuildOptions{OutputDir: filepath.Join(dir, "dist")})
+				result, err = c.Build(context.Background(), &BuildOptions{OutputDir: filepath.Join(dir, "dist"), BuildNumber: "1.2.3+42"})
+				// Codemagic defines BUILD_NUMBER itself; the stamp must travel
+				// under Builder's own name.
+				if v := p.request.Variables; v["BUILDER_BUILD_NUMBER"] != "1.2.3+42" || v["BUILD_NUMBER"] != "" {
+					t.Errorf("build number variables: %v", v)
+				}
 			}
 			if tt.name == "success" || tt.name == "transient poll recovers" {
 				if err != nil || result == nil {

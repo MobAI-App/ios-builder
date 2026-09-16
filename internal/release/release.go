@@ -28,8 +28,8 @@ type Builder interface {
 
 // Options configures Run.
 type Options struct {
-	// Build carries Provider, Remote, Timeout and OutputDir; BuildNumber,
-	// Version and Unsigned are set by Run.
+	// Build carries Provider, Remote, Timeout and OutputDir; Run sets
+	// BuildNumber and Unsigned itself.
 	Build build.BuildOptions
 	// BundleID identifies the app before the IPA exists. Empty falls back to
 	// ios.bundleId in builder.json, then the newest IPA in the output directory.
