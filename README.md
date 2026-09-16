@@ -126,10 +126,43 @@ and connect the same repository to each provider before building. See
 |-----------|----------|---------------|
 | Native iOS/Swift | `.` (root) | Yes |
 | React Native | `ios/` | Yes |
-| Expo (ejected) | `ios/` | Yes |
+| Expo (managed or ejected) | `ios/` | Yes |
 | Flutter | `ios/` | Yes |
 | Kotlin Multiplatform | `iosApp/` | Yes |
 | Cordova/Ionic | `platforms/ios/` | Yes |
+
+### React Native
+
+The runner installs JavaScript dependencies with the package manager the project
+already uses — npm, Yarn, pnpm or Bun, from `packageManager` in `package.json` or
+from the lockfile — on the Node version from `.nvmrc`, `.node-version` or
+`engines.node`.
+
+### Expo
+
+Dependencies install the way they do for React Native: the project's own package
+manager (npm, Yarn, pnpm or Bun) and Node version, with `expo prebuild` running
+through that same manager.
+
+A managed Expo project has no `ios/` directory in git. `builder init` detects it
+as *Expo (managed)*, still records `"ios": { "path": "ios" }`, and the runner
+generates the native project with `expo prebuild --platform ios --no-install`
+before building it. Ejected projects keep the committed `ios/` they have: the
+prebuild step skips a directory that already holds an Xcode project.
+
+`expo prebuild` has to run unattended, so the app config must set the bundle
+identifier — `expo.ios.bundleIdentifier` in `app.json`, or `ios.bundleIdentifier`
+in `app.config.js` / `app.config.ts`. Without one, prebuild would stop and ask
+for it; instead the build fails immediately and names the missing setting.
+
+The default `Debug` configuration builds an IPA that loads its JavaScript from
+Metro, so set `"ios": { "configuration": "Release" }` in `builder.json` for a
+standalone IPA with the bundle baked in.
+
+An `ios/` directory left over from running `expo prebuild` locally is not
+uploaded: managed projects gitignore it, and the working-tree snapshot skips
+gitignored files. That is what you want — the runner prebuilds from the app
+config on every build, so it cannot drift from a stale local copy.
 
 ## Installation
 

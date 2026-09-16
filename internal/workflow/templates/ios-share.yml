@@ -173,6 +173,12 @@ jobs:
           IOS_PATH: ${{ steps.params.outputs.ios_path }}
         run: |
           set -e
+          # A managed Expo project has no iOS directory at all until the
+          # prebuild step below creates it.
+          if [ ! -d "$IOS_PATH" ]; then
+            echo "No '$IOS_PATH' directory yet — skipping."
+            exit 0
+          fi
           cd "$IOS_PATH"
 
           MANIFEST=""
@@ -200,6 +206,10 @@ jobs:
           IOS_PATH: ${{ steps.params.outputs.ios_path }}
         run: |
           set -e
+          if [ ! -d "$IOS_PATH" ]; then
+            echo "No '$IOS_PATH' directory yet — skipping."
+            exit 0
+          fi
           MISSING=""
           for pbx in $(find "$IOS_PATH" -maxdepth 2 -name project.pbxproj -not -path '*/Pods.xcodeproj/*'); do
             for id in $(grep -o 'baseConfigurationReference = [A-Za-z0-9]*' "$pbx" | awk '{print $3}' | sort -u); do
@@ -234,15 +244,286 @@ jobs:
         if: steps.detect.outputs.type == 'flutter'
         run: flutter pub get
 
+      # setup-node cannot make `with:` keys conditional, so the version and the
+      # version file are both computed here; it ignores an empty version file.
+      - name: Resolve JS toolchain
+        id: js
+        if: steps.detect.outputs.type == 'reactnative' || steps.detect.outputs.type == 'expo'
+        run: |
+          set -e
+          # >>> js toolchain (keep identical across ios-build.yml, ios-share.yml, runner.sh)
+          # The package manager the project actually uses: the packageManager field
+          # first, then the lockfile, then npm. Guessing npm is not safe — `npm install`
+          # in a pnpm or yarn workspace fails with
+          # 'EUNSUPPORTEDPROTOCOL Unsupported URL Type "workspace:"'.
+          js_detect_manager() {
+            if [ -z "${JS_MANAGER:-}" ]; then
+              case "$(jq -r '.packageManager // empty' package.json 2>/dev/null || true)" in
+                pnpm|pnpm@*) JS_MANAGER=pnpm ;;
+                yarn|yarn@*) JS_MANAGER=yarn ;;
+                bun|bun@*) JS_MANAGER=bun ;;
+                npm|npm@*) JS_MANAGER=npm ;;
+                *)
+                  if [ -f pnpm-lock.yaml ]; then JS_MANAGER=pnpm
+                  elif [ -f yarn.lock ]; then JS_MANAGER=yarn
+                  elif [ -f bun.lock ] || [ -f bun.lockb ]; then JS_MANAGER=bun
+                  else JS_MANAGER=npm # package-lock.json, or no lockfile at all
+                  fi
+                  ;;
+              esac
+            fi
+            case "$JS_MANAGER" in
+              pnpm) JS_EXEC='pnpm exec' ;;
+              yarn) JS_EXEC=yarn ;;
+              bun) JS_EXEC=bunx ;;
+              *) JS_EXEC=npx ;;
+            esac
+            export JS_MANAGER JS_EXEC
+            echo "Package manager: $JS_MANAGER"
+          }
+
+          # The Node version the project asks for: .nvmrc or .node-version, else the
+          # first comparator of engines.node, else 22. A leading "v" or range prefix
+          # is dropped: nvm, n and setup-node all take "20.11.1" and "24.x" as they are.
+          js_node_version() {
+            js_version=""
+            for js_file in .nvmrc .node-version; do
+              if [ -f "$js_file" ]; then
+                js_version=$(tr -d ' \t\r' < "$js_file" | head -n1)
+                break
+              fi
+            done
+            if [ -z "$js_version" ]; then
+              js_version=$(jq -r '.engines.node // empty' package.json 2>/dev/null || true)
+              js_version=$(printf '%s' "${js_version%%|*}" | awk '{print $1}')
+            fi
+            js_version=$(printf '%s' "$js_version" | sed -E 's/^(>=|<=|>|<|=|\^|~|v)+//')
+            case "$js_version" in
+              [0-9]*|lts/*) ;;
+              *) js_version=22 ;;
+            esac
+            printf '%s\n' "$js_version"
+          }
+
+          # Put the manager on PATH first, then install — unless a cache already restored
+          # node_modules, in which case the manager is still wanted for `expo prebuild`
+          # and for the React Native build phases that shell out to it.
+          js_install() {
+            js_detect_manager
+            case "$JS_MANAGER" in
+              pnpm|yarn)
+                # corepack installs the version packageManager pins. Node 16.10-24
+                # bundle it; Node 25+ and some provider images do not.
+                command -v corepack >/dev/null 2>&1 || npm install -g corepack || true
+                corepack enable || true
+                command -v "$JS_MANAGER" >/dev/null 2>&1 || npm install -g "$JS_MANAGER"
+                ;;
+              bun)
+                if ! command -v bun >/dev/null 2>&1; then
+                  curl -fsSL https://bun.sh/install | bash
+                  export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+                  export PATH="$BUN_INSTALL/bin:$PATH"
+                  # A step's PATH does not survive into the next GitHub Actions step.
+                  if [ -n "${GITHUB_PATH:-}" ]; then echo "$BUN_INSTALL/bin" >> "$GITHUB_PATH"; fi
+                fi
+                ;;
+            esac
+            if [ "${JS_DEPS_CACHED:-}" = "true" ]; then
+              echo "node_modules restored from cache; skipping install"
+              return 0
+            fi
+            case "$JS_MANAGER" in
+              pnpm)
+                if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else pnpm install; fi
+                ;;
+              yarn)
+                if [ -f .yarnrc.yml ]; then yarn install --immutable
+                elif [ -f yarn.lock ]; then yarn install --frozen-lockfile
+                else yarn install
+                fi
+                ;;
+              bun)
+                if [ -f bun.lock ] || [ -f bun.lockb ]; then bun install --frozen-lockfile; else bun install; fi
+                ;;
+              *)
+                if [ -f package-lock.json ]; then npm ci; else npm install; fi
+                ;;
+            esac
+          }
+          # <<< js toolchain
+          js_detect_manager
+          NODE_VERSION_FILE=""
+          for f in .nvmrc .node-version; do
+            if [ -f "$f" ]; then NODE_VERSION_FILE="$f"; break; fi
+          done
+          NODE_VERSION=""
+          if [ -n "$NODE_VERSION_FILE" ]; then
+            echo "Node version: from $NODE_VERSION_FILE"
+          else
+            NODE_VERSION=$(js_node_version)
+            echo "Node version: $NODE_VERSION"
+          fi
+          {
+            echo "manager=$JS_MANAGER"
+            echo "exec=$JS_EXEC"
+            echo "node_version=$NODE_VERSION"
+            echo "node_version_file=$NODE_VERSION_FILE"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Setup Node.js
         if: steps.detect.outputs.type == 'reactnative' || steps.detect.outputs.type == 'expo'
         uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: ${{ steps.js.outputs.node_version }}
+          node-version-file: ${{ steps.js.outputs.node_version_file }}
 
-      - name: Install npm dependencies
+      # Runs even on a cache hit: the manager itself still has to be on PATH for
+      # the prebuild and build steps that follow.
+      - name: Install JS dependencies
         if: steps.detect.outputs.type == 'reactnative' || steps.detect.outputs.type == 'expo'
-        run: npm install
+        env:
+          JS_MANAGER: ${{ steps.js.outputs.manager }}
+        run: |
+          set -e
+          # >>> js toolchain (keep identical across ios-build.yml, ios-share.yml, runner.sh)
+          # The package manager the project actually uses: the packageManager field
+          # first, then the lockfile, then npm. Guessing npm is not safe — `npm install`
+          # in a pnpm or yarn workspace fails with
+          # 'EUNSUPPORTEDPROTOCOL Unsupported URL Type "workspace:"'.
+          js_detect_manager() {
+            if [ -z "${JS_MANAGER:-}" ]; then
+              case "$(jq -r '.packageManager // empty' package.json 2>/dev/null || true)" in
+                pnpm|pnpm@*) JS_MANAGER=pnpm ;;
+                yarn|yarn@*) JS_MANAGER=yarn ;;
+                bun|bun@*) JS_MANAGER=bun ;;
+                npm|npm@*) JS_MANAGER=npm ;;
+                *)
+                  if [ -f pnpm-lock.yaml ]; then JS_MANAGER=pnpm
+                  elif [ -f yarn.lock ]; then JS_MANAGER=yarn
+                  elif [ -f bun.lock ] || [ -f bun.lockb ]; then JS_MANAGER=bun
+                  else JS_MANAGER=npm # package-lock.json, or no lockfile at all
+                  fi
+                  ;;
+              esac
+            fi
+            case "$JS_MANAGER" in
+              pnpm) JS_EXEC='pnpm exec' ;;
+              yarn) JS_EXEC=yarn ;;
+              bun) JS_EXEC=bunx ;;
+              *) JS_EXEC=npx ;;
+            esac
+            export JS_MANAGER JS_EXEC
+            echo "Package manager: $JS_MANAGER"
+          }
+
+          # The Node version the project asks for: .nvmrc or .node-version, else the
+          # first comparator of engines.node, else 22. A leading "v" or range prefix
+          # is dropped: nvm, n and setup-node all take "20.11.1" and "24.x" as they are.
+          js_node_version() {
+            js_version=""
+            for js_file in .nvmrc .node-version; do
+              if [ -f "$js_file" ]; then
+                js_version=$(tr -d ' \t\r' < "$js_file" | head -n1)
+                break
+              fi
+            done
+            if [ -z "$js_version" ]; then
+              js_version=$(jq -r '.engines.node // empty' package.json 2>/dev/null || true)
+              js_version=$(printf '%s' "${js_version%%|*}" | awk '{print $1}')
+            fi
+            js_version=$(printf '%s' "$js_version" | sed -E 's/^(>=|<=|>|<|=|\^|~|v)+//')
+            case "$js_version" in
+              [0-9]*|lts/*) ;;
+              *) js_version=22 ;;
+            esac
+            printf '%s\n' "$js_version"
+          }
+
+          # Put the manager on PATH first, then install — unless a cache already restored
+          # node_modules, in which case the manager is still wanted for `expo prebuild`
+          # and for the React Native build phases that shell out to it.
+          js_install() {
+            js_detect_manager
+            case "$JS_MANAGER" in
+              pnpm|yarn)
+                # corepack installs the version packageManager pins. Node 16.10-24
+                # bundle it; Node 25+ and some provider images do not.
+                command -v corepack >/dev/null 2>&1 || npm install -g corepack || true
+                corepack enable || true
+                command -v "$JS_MANAGER" >/dev/null 2>&1 || npm install -g "$JS_MANAGER"
+                ;;
+              bun)
+                if ! command -v bun >/dev/null 2>&1; then
+                  curl -fsSL https://bun.sh/install | bash
+                  export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+                  export PATH="$BUN_INSTALL/bin:$PATH"
+                  # A step's PATH does not survive into the next GitHub Actions step.
+                  if [ -n "${GITHUB_PATH:-}" ]; then echo "$BUN_INSTALL/bin" >> "$GITHUB_PATH"; fi
+                fi
+                ;;
+            esac
+            if [ "${JS_DEPS_CACHED:-}" = "true" ]; then
+              echo "node_modules restored from cache; skipping install"
+              return 0
+            fi
+            case "$JS_MANAGER" in
+              pnpm)
+                if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else pnpm install; fi
+                ;;
+              yarn)
+                if [ -f .yarnrc.yml ]; then yarn install --immutable
+                elif [ -f yarn.lock ]; then yarn install --frozen-lockfile
+                else yarn install
+                fi
+                ;;
+              bun)
+                if [ -f bun.lock ] || [ -f bun.lockb ]; then bun install --frozen-lockfile; else bun install; fi
+                ;;
+              *)
+                if [ -f package-lock.json ]; then npm ci; else npm install; fi
+                ;;
+            esac
+          }
+          # <<< js toolchain
+          js_install
+
+      # A managed Expo project keeps no ios/ directory in git — `expo prebuild`
+      # generates it from app.json / app.config.js. The simulator build needs
+      # the same native project the IPA build does.
+      - name: Expo prebuild
+        if: steps.detect.outputs.type == 'expo'
+        env:
+          IOS_PATH: ${{ steps.params.outputs.ios_path }}
+          JS_EXEC: ${{ steps.js.outputs.exec }}
+          CI: '1' # prebuild answers its own prompts instead of hanging
+        run: |
+          set -e
+          if [ -n "$(find "$IOS_PATH" -maxdepth 1 \( -name '*.xcodeproj' -o -name '*.xcworkspace' \) -print -quit 2>/dev/null)" ]; then
+            echo "'$IOS_PATH' already holds an Xcode project (ejected Expo) — skipping prebuild."
+            exit 0
+          fi
+
+          # Without a bundle identifier prebuild asks for one interactively,
+          # which on a runner means waiting for the job timeout.
+          BUNDLE_ID=$(${JS_EXEC:-npx} expo config --type public --json 2>/dev/null | jq -r '.ios.bundleIdentifier // empty' 2>/dev/null || true)
+          if [ -z "$BUNDLE_ID" ]; then
+            for f in app.json app.config.json; do
+              [ -f "$f" ] || continue
+              BUNDLE_ID=$(jq -r '(.expo.ios.bundleIdentifier // .ios.bundleIdentifier) // empty' "$f" 2>/dev/null || true)
+              if [ -n "$BUNDLE_ID" ]; then break; fi
+            done
+          fi
+          if [ -z "$BUNDLE_ID" ]; then
+            echo "::error::This managed Expo project has no ios.bundleIdentifier. Set it in app.json (expo.ios.bundleIdentifier) or app.config.js, commit that, and share again — 'expo prebuild' cannot run unattended without it."
+            exit 1
+          fi
+          echo "Prebuilding $BUNDLE_ID into '$IOS_PATH'..."
+
+          ${JS_EXEC:-npx} expo prebuild --platform ios --no-install
+          if [ -z "$(find "$IOS_PATH" -maxdepth 1 -name '*.xcodeproj' -print -quit 2>/dev/null)" ]; then
+            echo "::error::'expo prebuild' produced no Xcode project in '$IOS_PATH'. If the project generates it elsewhere, set ios.path in builder.json."
+            exit 1
+          fi
 
       # KMP builds through xcodebuild like a native project, but its Xcode run
       # script phase shells out to Gradle, which needs a JDK on PATH.
