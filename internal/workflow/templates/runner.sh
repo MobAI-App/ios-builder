@@ -7,9 +7,12 @@ mkdir -p "$ci_dir"
 mode="${1:-build}"
 export IOS_PATH="${IOS_PATH:-.}" SCHEME="${SCHEME:-}" CONFIGURATION="${CONFIGURATION:-Debug}"
 export USE_SIGNING="${USE_SIGNING:-false}" JDK_VERSION="${JDK_VERSION:-17}"
-# From the selected builder.json profile: DISTRIBUTION is reserved for the
-# export step; BUILD_ENV is a JSON object exported by prepare().
+# From the selected builder.json profile: DISTRIBUTION picks the signing set
+# (IOS_*_<SET> secrets) and the profile type install_signing expects; BUILD_ENV
+# is a JSON object exported by prepare().
 export DISTRIBUTION="${DISTRIBUTION:-}" BUILD_ENV="${BUILD_ENV:-}"
+
+fail() { echo "$*" >&2; exit 1; }
 
 # Exports the profile's env before any dependency install or build, as the
 # GitHub workflows do. Values are base64 per entry so newlines and quotes
@@ -165,10 +168,61 @@ detect_export_method() {
   fi
 }
 
+# The suffix of the IOS_* secrets a distribution is signed with; no
+# distribution is development. Same table in ios-build.yml.
+signing_set() {
+  case "$1" in
+    ''|development) echo DEVELOPMENT ;;
+    ad-hoc) echo AD_HOC ;;
+    app-store) echo APP_STORE ;;
+    enterprise) echo ENTERPRISE ;;
+    *) return 1 ;;
+  esac
+}
+
+# Picks the secrets of the set the build profile's distribution names
+# (IOS_CERTIFICATE_<SET> and friends) into IOS_CERTIFICATE,
+# IOS_CERTIFICATE_PASSWORD and IOS_PROVISIONING_PROFILE, falling back to those
+# unsuffixed names when the set is absent. SIGNING_SET_USED says which it was.
+# Same function in ios-build.yml.
+select_signing_set() {
+  local cert="IOS_CERTIFICATE_$SIGNING_SET" pass="IOS_CERTIFICATE_PASSWORD_$SIGNING_SET" prof="IOS_PROVISIONING_PROFILE_$SIGNING_SET"
+  if [ -n "${!cert:-}" ] || [ -n "${!prof:-}" ]; then
+    if [ -z "${!cert:-}" ] || [ -z "${!prof:-}" ]; then
+      fail "Signing set $SIGNING_SET is incomplete: set both $cert and $prof (and $pass)."
+    fi
+    IOS_CERTIFICATE="${!cert}"
+    IOS_CERTIFICATE_PASSWORD="${!pass:-}"
+    IOS_PROVISIONING_PROFILE="${!prof}"
+    SIGNING_SET_USED="$SIGNING_SET"
+  elif [ -n "${IOS_CERTIFICATE:-}" ] && [ -n "${IOS_PROVISIONING_PROFILE:-}" ]; then
+    SIGNING_SET_USED=legacy
+  else
+    fail "No signing secrets for distribution ${DISTRIBUTION:-development}: set $cert, $pass and $prof (builder signing setup --type ${DISTRIBUTION:-development} does), or the unsuffixed IOS_CERTIFICATE, IOS_CERTIFICATE_PASSWORD and IOS_PROVISIONING_PROFILE."
+  fi
+  echo "Signing set: $SIGNING_SET_USED"
+}
+
+# The profile in the set must be the type the build profile asked for, or the
+# export method, and the IPA, would not be what the profile promised. The
+# unsuffixed secrets with no distribution requested are taken as they are, as
+# before signing sets.
+check_signing_set() {
+  local want="$DISTRIBUTION" secret="IOS_PROVISIONING_PROFILE_$SIGNING_SET"
+  if [ "$SIGNING_SET_USED" = legacy ]; then
+    secret="the unsuffixed IOS_PROVISIONING_PROFILE"
+  elif [ -z "$want" ]; then
+    want=development
+  fi
+  if [ -n "$want" ] && [ "$1" != "$want" ]; then
+    fail "$secret holds a $1 provisioning profile, but the build profile asks for distribution $want (signing set $SIGNING_SET). Upload a $want profile with builder signing setup --type $want, or set the profile's distribution to $1."
+  fi
+}
+
 install_signing() {
-  : "${IOS_CERTIFICATE:?Set the IOS_CERTIFICATE secret on this provider}"
-  : "${IOS_CERTIFICATE_PASSWORD?Set IOS_CERTIFICATE_PASSWORD on this provider (may be empty)}"
-  : "${IOS_PROVISIONING_PROFILE:?Set IOS_PROVISIONING_PROFILE on this provider}"
+  SIGNING_SET=$(signing_set "$DISTRIBUTION") || fail "DISTRIBUTION \"$DISTRIBUTION\" must be development, ad-hoc, app-store or enterprise"
+  select_signing_set
+  : "${IOS_CERTIFICATE_PASSWORD=}"
   signing_dir=$(mktemp -d "$ci_dir/signing.XXXXXX")
   keychain_path="$signing_dir/signing.keychain-db"
   keychain_password=$(openssl rand -base64 32)
@@ -189,7 +243,8 @@ install_signing() {
   profile_dest="$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision"
   cp "$signing_dir/profile.mobileprovision" "$profile_dest"
   export EXPORT_METHOD="$(detect_export_method "$signing_dir/profile.plist")"
-  echo "Signing with '$PROVISIONING_PROFILE_NAME' (team $DEVELOPMENT_TEAM), export method $EXPORT_METHOD"
+  check_signing_set "$EXPORT_METHOD"
+  echo "Signing with '$PROVISIONING_PROFILE_NAME' (team $DEVELOPMENT_TEAM, set $SIGNING_SET_USED), export method $EXPORT_METHOD"
   # A Debug archive carries get-task-allow=true, which no distribution profile
   # grants: the export fails, or an IPA that App Store Connect rejects comes
   # out. Say so now instead of after the whole build.

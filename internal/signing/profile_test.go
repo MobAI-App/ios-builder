@@ -57,10 +57,11 @@ func TestProfileType(t *testing.T) {
 
 func TestParseType(t *testing.T) {
 	for in, want := range map[string]Type{
-		"development": TypeDevelopment, "ad-hoc": TypeAdHoc, "adhoc": TypeAdHoc, " App-Store ": TypeAppStore,
+		"development": TypeDevelopment, "ad-hoc": TypeAdHoc, "adhoc": TypeAdHoc, "App-Store": TypeAppStore,
 		"appstore": TypeAppStore, "enterprise": TypeEnterprise, "in-house": TypeEnterprise,
 	} {
-		if got, err := ParseType(in); err != nil || got != want {
+		// Flags arrive with whatever case and spacing the user typed.
+		if got, err := ParseType(" " + in + " "); err != nil || got != want {
 			t.Errorf("ParseType(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}

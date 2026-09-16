@@ -124,7 +124,7 @@ func TestResolveParametersApplyProfiles(t *testing.T) {
 			t.Fatalf("%v\n%s", r.err, r.log)
 		}
 		want := map[string]string{"build_id": "abcdef12", "ios_path": "ios", "scheme": "Top", "use_signing": "false",
-			"configuration": "Release", "profile": "preview", "distribution": "ad-hoc", "jdk_version": "17"}
+			"configuration": "Release", "profile": "preview", "distribution": "ad-hoc", "signing_set": "AD_HOC", "jdk_version": "17"}
 		for k, v := range want {
 			if r.outputs[k] != v {
 				t.Errorf("%s = %q, want %q\n%s", k, r.outputs[k], v, r.log)
@@ -141,7 +141,7 @@ func TestResolveParametersApplyProfiles(t *testing.T) {
 		if r.err != nil {
 			t.Fatalf("%v\n%s", r.err, r.log)
 		}
-		if r.outputs["scheme"] != "Top" || r.outputs["use_signing"] != "true" || r.outputs["configuration"] != "Debug" || r.outputs["profile"] != "" || len(r.env) != 0 {
+		if r.outputs["scheme"] != "Top" || r.outputs["use_signing"] != "true" || r.outputs["configuration"] != "Debug" || r.outputs["profile"] != "" || r.outputs["signing_set"] != "DEVELOPMENT" || len(r.env) != 0 {
 			t.Fatalf("outputs %v env %v\n%s", r.outputs, r.env, r.log)
 		}
 	})
@@ -156,13 +156,13 @@ func TestResolveParametersApplyProfiles(t *testing.T) {
 			t.Fatalf("%v\n%s", r.err, r.log)
 		}
 		if r.outputs["build_id"] != "12345678" || r.outputs["scheme"] != "Dispatched" || r.outputs["use_signing"] != "true" ||
-			r.outputs["profile"] != "production" || r.outputs["distribution"] != "app-store" || r.env["API_URL"] != "https://api.example.com" {
+			r.outputs["profile"] != "production" || r.outputs["distribution"] != "app-store" || r.outputs["signing_set"] != "APP_STORE" || r.env["API_URL"] != "https://api.example.com" {
 			t.Fatalf("outputs %v env %v\n%s", r.outputs, r.env, r.log)
 		}
 		// Without a selected profile the input carries its default.
 		env["IN_PROFILE"] = "{}"
 		r = runResolve(t, build, "", env)
-		if r.err != nil || r.outputs["profile"] != "" || r.outputs["distribution"] != "" || len(r.env) != 0 {
+		if r.err != nil || r.outputs["profile"] != "" || r.outputs["distribution"] != "" || r.outputs["signing_set"] != "DEVELOPMENT" || len(r.env) != 0 {
 			t.Fatalf("default profile input: %v %v %v\n%s", r.err, r.outputs, r.env, r.log)
 		}
 	})

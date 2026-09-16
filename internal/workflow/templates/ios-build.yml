@@ -127,8 +127,9 @@ jobs:
           param flutter_version  "$IN_FLUTTER_VERSION" '.flutter.version' ''
           param jdk_version      "$IN_JDK_VERSION" '.kmp.jdkVersion' '17'
 
-          # The rest of the profile: name (for the summary), distribution (for
-          # the export step) and env, exported to every step from here on so
+          # The rest of the profile: name (for the summary), distribution
+          # (which signing set the signing step reads and which profile type
+          # it expects) and env, exported to every step from here on so
           # dependency installs and the build see it.
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             PROFILE_JSON="$IN_PROFILE"
@@ -138,14 +139,26 @@ jobs:
           [ -n "${PROFILE_JSON:-}" ] || PROFILE_JSON='{}'
           PROFILE=$(jq -r '.name // ""' <<< "$PROFILE_JSON")
           DISTRIBUTION=$(jq -r '.distribution // ""' <<< "$PROFILE_JSON")
-          case "$DISTRIBUTION" in
-            ''|development|ad-hoc|app-store|enterprise) ;;
-            *) echo "::error::distribution \"$DISTRIBUTION\" must be development, ad-hoc, app-store or enterprise"; exit 1 ;;
-          esac
+          # The suffix of the IOS_* secrets a distribution is signed with; no
+          # distribution is development. Same table in runner.sh.
+          signing_set() {
+            case "$1" in
+              ''|development) echo DEVELOPMENT ;;
+              ad-hoc) echo AD_HOC ;;
+              app-store) echo APP_STORE ;;
+              enterprise) echo ENTERPRISE ;;
+              *) return 1 ;;
+            esac
+          }
+          if ! SIGNING_SET=$(signing_set "$DISTRIBUTION"); then
+            echo "::error::distribution \"$DISTRIBUTION\" must be development, ad-hoc, app-store or enterprise"; exit 1
+          fi
           echo "profile=$PROFILE" >> "$GITHUB_OUTPUT"
           echo "distribution=$DISTRIBUTION" >> "$GITHUB_OUTPUT"
+          echo "signing_set=$SIGNING_SET" >> "$GITHUB_OUTPUT"
           echo "profile=${PROFILE:-(none)}"
           echo "distribution=$DISTRIBUTION"
+          echo "signing_set=$SIGNING_SET"
           # Values are base64 per entry so newlines and quotes survive; the
           # heredoc form of GITHUB_ENV then takes them verbatim, with a random
           # delimiter so no value line can end it early. Names are checked so a
@@ -329,15 +342,73 @@ jobs:
           restore-keys: |
             pods-${{ runner.os }}-
 
+      # One set of secrets per distribution type, IOS_*_<SET>, selected by the
+      # build profile's distribution; the unsuffixed names are the fallback for
+      # repositories set up before signing sets. A secret that does not exist
+      # arrives empty.
       - name: Install certificate and provisioning profile
         if: steps.params.outputs.use_signing == 'true'
         env:
+          SIGNING_SET: ${{ steps.params.outputs.signing_set }}
+          DISTRIBUTION: ${{ steps.params.outputs.distribution }}
+          CONFIGURATION: ${{ steps.params.outputs.configuration }}
           IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
           IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
           IOS_PROVISIONING_PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE }}
-          CONFIGURATION: ${{ steps.params.outputs.configuration }}
+          IOS_CERTIFICATE_DEVELOPMENT: ${{ secrets.IOS_CERTIFICATE_DEVELOPMENT }}
+          IOS_CERTIFICATE_PASSWORD_DEVELOPMENT: ${{ secrets.IOS_CERTIFICATE_PASSWORD_DEVELOPMENT }}
+          IOS_PROVISIONING_PROFILE_DEVELOPMENT: ${{ secrets.IOS_PROVISIONING_PROFILE_DEVELOPMENT }}
+          IOS_CERTIFICATE_AD_HOC: ${{ secrets.IOS_CERTIFICATE_AD_HOC }}
+          IOS_CERTIFICATE_PASSWORD_AD_HOC: ${{ secrets.IOS_CERTIFICATE_PASSWORD_AD_HOC }}
+          IOS_PROVISIONING_PROFILE_AD_HOC: ${{ secrets.IOS_PROVISIONING_PROFILE_AD_HOC }}
+          IOS_CERTIFICATE_APP_STORE: ${{ secrets.IOS_CERTIFICATE_APP_STORE }}
+          IOS_CERTIFICATE_PASSWORD_APP_STORE: ${{ secrets.IOS_CERTIFICATE_PASSWORD_APP_STORE }}
+          IOS_PROVISIONING_PROFILE_APP_STORE: ${{ secrets.IOS_PROVISIONING_PROFILE_APP_STORE }}
+          IOS_CERTIFICATE_ENTERPRISE: ${{ secrets.IOS_CERTIFICATE_ENTERPRISE }}
+          IOS_CERTIFICATE_PASSWORD_ENTERPRISE: ${{ secrets.IOS_CERTIFICATE_PASSWORD_ENTERPRISE }}
+          IOS_PROVISIONING_PROFILE_ENTERPRISE: ${{ secrets.IOS_PROVISIONING_PROFILE_ENTERPRISE }}
         run: |
           set -e
+          fail() { echo "::error::$*"; exit 1; }
+
+          # Picks the secrets of the set the build profile's distribution names
+          # (IOS_CERTIFICATE_<SET> and friends) into IOS_CERTIFICATE,
+          # IOS_CERTIFICATE_PASSWORD and IOS_PROVISIONING_PROFILE, falling back
+          # to those unsuffixed names when the set is absent. SIGNING_SET_USED
+          # says which it was. Same function in runner.sh.
+          select_signing_set() {
+            local cert="IOS_CERTIFICATE_$SIGNING_SET" pass="IOS_CERTIFICATE_PASSWORD_$SIGNING_SET" prof="IOS_PROVISIONING_PROFILE_$SIGNING_SET"
+            if [ -n "${!cert:-}" ] || [ -n "${!prof:-}" ]; then
+              if [ -z "${!cert:-}" ] || [ -z "${!prof:-}" ]; then
+                fail "Signing set $SIGNING_SET is incomplete: set both $cert and $prof (and $pass)."
+              fi
+              IOS_CERTIFICATE="${!cert}"
+              IOS_CERTIFICATE_PASSWORD="${!pass:-}"
+              IOS_PROVISIONING_PROFILE="${!prof}"
+              SIGNING_SET_USED="$SIGNING_SET"
+            elif [ -n "${IOS_CERTIFICATE:-}" ] && [ -n "${IOS_PROVISIONING_PROFILE:-}" ]; then
+              SIGNING_SET_USED=legacy
+            else
+              fail "No signing secrets for distribution ${DISTRIBUTION:-development}: set $cert, $pass and $prof (builder signing setup --type ${DISTRIBUTION:-development} does), or the unsuffixed IOS_CERTIFICATE, IOS_CERTIFICATE_PASSWORD and IOS_PROVISIONING_PROFILE."
+            fi
+            echo "Signing set: $SIGNING_SET_USED"
+          }
+
+          # The profile in the set must be the type the build profile asked
+          # for, or the export method, and the IPA, would not be what the
+          # profile promised. The unsuffixed secrets with no distribution
+          # requested are taken as they are, as before signing sets.
+          check_signing_set() {
+            local want="$DISTRIBUTION" secret="IOS_PROVISIONING_PROFILE_$SIGNING_SET"
+            if [ "$SIGNING_SET_USED" = legacy ]; then
+              secret="the unsuffixed IOS_PROVISIONING_PROFILE"
+            elif [ -z "$want" ]; then
+              want=development
+            fi
+            if [ -n "$want" ] && [ "$1" != "$want" ]; then
+              fail "$secret holds a $1 provisioning profile, but the build profile asks for distribution $want (signing set $SIGNING_SET). Upload a $want profile with builder signing setup --type $want, or set the profile's distribution to $1."
+            fi
+          }
 
           # The export method has to match the profile, or -exportArchive fails
           # and App Store Connect rejects the IPA. Xcode 15.3+ also accepts
@@ -357,6 +428,8 @@ jobs:
               echo app-store
             fi
           }
+
+          select_signing_set
 
           # Create temporary keychain
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
@@ -392,6 +465,7 @@ jobs:
           PROFILE_BUNDLE_ID=${APP_ID#"$TEAM_ID".}
 
           EXPORT_METHOD=$(detect_export_method "$PROFILE_PLIST")
+          check_signing_set "$EXPORT_METHOD"
 
           # A Debug archive carries get-task-allow=true, which no distribution
           # profile grants: the export fails, or an IPA that App Store Connect
@@ -405,10 +479,12 @@ jobs:
           echo "DEVELOPMENT_TEAM=$TEAM_ID" >> $GITHUB_ENV
           echo "PROVISIONING_PROFILE_NAME=$PROFILE_NAME" >> $GITHUB_ENV
           echo "EXPORT_METHOD=$EXPORT_METHOD" >> $GITHUB_ENV
+          echo "SIGNING_SET_USED=$SIGNING_SET_USED" >> $GITHUB_ENV
           echo "Certificate and provisioning profile installed"
           echo "  team:    $TEAM_ID"
           echo "  profile: $PROFILE_NAME ($PROFILE_UUID)"
           echo "  app id:  $PROFILE_BUNDLE_ID"
+          echo "  set:     $SIGNING_SET_USED"
           echo "  export:  $EXPORT_METHOD"
           echo "If the build fails on a provisioning mismatch, the app's PRODUCT_BUNDLE_IDENTIFIER must match the app id above."
 
@@ -756,7 +832,7 @@ jobs:
           echo "- **Pods Cache:** ${{ steps.pods-cache.outputs.cache-hit == 'true' && 'Hit' || 'Miss' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Node Modules Cache:** ${{ steps.node-modules-cache.outputs.cache-hit == 'true' && 'Hit' || 'N/A' }}" >> $GITHUB_STEP_SUMMARY
           if [ "$USE_SIGNING" = "true" ]; then
-            echo "- **Signing:** Signed (development)" >> $GITHUB_STEP_SUMMARY
+            echo "- **Signing:** Signed (${EXPORT_METHOD:-unknown}, set ${SIGNING_SET_USED:-unknown})" >> $GITHUB_STEP_SUMMARY
           else
             echo "- **Signing:** Unsigned (sign locally with AltStore/Sideloadly)" >> $GITHUB_STEP_SUMMARY
           fi
