@@ -259,10 +259,10 @@ func TestEnsureSigningSecretsChecksTheSet(t *testing.T) {
 	store := newFakeSecrets(t)
 
 	// No distribution: nothing to check, the API is not even called.
-	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "unsigned", io.Discard); err != nil || store.listed != 0 {
+	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "unsigned", "", io.Discard); err != nil || store.listed != 0 {
 		t.Fatalf("unsigned profile: %v, listed %d", err, store.listed)
 	}
-	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "", io.Discard); err != nil || store.listed != 0 {
+	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "", "", io.Discard); err != nil || store.listed != 0 {
 		t.Fatalf("no profile: %v, listed %d", err, store.listed)
 	}
 
@@ -270,7 +270,7 @@ func TestEnsureSigningSecretsChecksTheSet(t *testing.T) {
 	for _, name := range config.SigningSecretNames("STORE").Names() {
 		store.stored[name] = "x"
 	}
-	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "store", io.Discard); err != nil {
+	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "store", "", io.Discard); err != nil {
 		t.Fatalf("complete set: %v", err)
 	}
 
@@ -278,7 +278,7 @@ func TestEnsureSigningSecretsChecksTheSet(t *testing.T) {
 	// names both ways out.
 	delete(store.stored, "IOS_PROVISIONING_PROFILE_STORE")
 	var log strings.Builder
-	err := ensureSigningSecrets(ctx, cfg, store, noASC, "store", &log)
+	err := ensureSigningSecrets(ctx, cfg, store, noASC, "store", "", &log)
 	if err == nil {
 		t.Fatal("missing profile secret accepted")
 	}
@@ -292,15 +292,33 @@ func TestEnsureSigningSecretsChecksTheSet(t *testing.T) {
 	}
 
 	// Enterprise is never provisioned through the API.
-	err = ensureSigningSecrets(ctx, cfg, store, noASC, "inhouse", io.Discard)
+	err = ensureSigningSecrets(ctx, cfg, store, noASC, "inhouse", "", io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "--certificate") || strings.Contains(err.Error(), "auth apple") {
 		t.Fatalf("enterprise: %v", err)
 	}
 
 	// A listing failure is reported, not treated as "missing".
 	store.listErr = errors.New("403")
-	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "store", io.Discard); err == nil || !strings.Contains(err.Error(), "403") {
+	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "store", "", io.Discard); err == nil || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("listing failure: %v", err)
+	}
+
+	// A profile that builds on Codemagic or Bitrise has no GitHub set to
+	// check, whatever the top-level provider; --provider decides over it.
+	store.listErr = nil
+	store.listed = 0
+	cfg.Profiles["cm"] = config.Profile{Distribution: "store", Provider: "codemagic"}
+	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "cm", "", io.Discard); err != nil || store.listed != 0 {
+		t.Fatalf("codemagic profile: %v, listed %d", err, store.listed)
+	}
+	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "store", "bitrise", io.Discard); err != nil || store.listed != 0 {
+		t.Fatalf("--provider bitrise: %v, listed %d", err, store.listed)
+	}
+	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "cm", "github", io.Discard); err == nil || store.listed != 1 {
+		t.Fatalf("--provider github over a codemagic profile: %v, listed %d", err, store.listed)
+	}
+	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "cm", "circle", io.Discard); err == nil || !strings.Contains(err.Error(), "unknown provider") {
+		t.Fatalf("bad --provider: %v", err)
 	}
 }
 
@@ -313,7 +331,7 @@ func TestEnsureSigningSecretsProvisionsOnDemand(t *testing.T) {
 	withPortal := func() (*asc.Client, error) { return portal.Client(t), nil }
 	var log strings.Builder
 
-	if err := ensureSigningSecrets(ctx, cfg, store, withPortal, "store", &log); err != nil {
+	if err := ensureSigningSecrets(ctx, cfg, store, withPortal, "store", "", &log); err != nil {
 		t.Fatalf("on-demand provisioning: %v\n%s", err, log.String())
 	}
 	// The whole store set is in the repository now, made from what the
@@ -339,13 +357,13 @@ func TestEnsureSigningSecretsProvisionsOnDemand(t *testing.T) {
 
 	// Second build: the set is there, nothing is provisioned again.
 	portal.Reset()
-	if err := ensureSigningSecrets(ctx, cfg, store, withPortal, "store", io.Discard); err != nil || len(portal.Calls()) != 0 || len(store.names) != 3 {
+	if err := ensureSigningSecrets(ctx, cfg, store, withPortal, "store", "", io.Discard); err != nil || len(portal.Calls()) != 0 || len(store.names) != 3 {
 		t.Fatalf("second build: %v, calls %v, uploads %v", err, portal.Calls(), store.names)
 	}
 
 	// Development with no device anywhere cannot be provisioned without
 	// prompting: the error sends the user to signing setup.
-	err := ensureSigningSecrets(ctx, cfg, store, withPortal, "development", io.Discard)
+	err := ensureSigningSecrets(ctx, cfg, store, withPortal, "development", "", io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "builder signing setup --distribution development --devices-from-mobai") {
 		t.Fatalf("development without devices: %v", err)
 	}
@@ -355,7 +373,7 @@ func TestEnsureSigningSecretsProvisionsOnDemand(t *testing.T) {
 
 	// With a device on the account the development set follows.
 	portal.Devices = []signingtest.Device{{ID: "dev-1", Name: "Jane's iPhone", UDID: "00008030-000000000000001E", Status: "ENABLED"}}
-	if err := ensureSigningSecrets(ctx, cfg, store, withPortal, "development", io.Discard); err != nil {
+	if err := ensureSigningSecrets(ctx, cfg, store, withPortal, "development", "", io.Discard); err != nil {
 		t.Fatalf("development with a registered device: %v", err)
 	}
 	if len(store.stored) != 6 || store.stored["IOS_CERTIFICATE_DEVELOPMENT"] == "" {
@@ -366,7 +384,7 @@ func TestEnsureSigningSecretsProvisionsOnDemand(t *testing.T) {
 	cfg.IOS.BundleID = ""
 	delete(store.stored, "IOS_CERTIFICATE_DEVELOPMENT")
 	portal.Reset()
-	err = ensureSigningSecrets(ctx, cfg, store, withPortal, "development", io.Discard)
+	err = ensureSigningSecrets(ctx, cfg, store, withPortal, "development", "", io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "ios.bundleId") || len(portal.Calls()) != 0 {
 		t.Fatalf("no bundle ID: %v, calls %v", err, portal.Calls())
 	}

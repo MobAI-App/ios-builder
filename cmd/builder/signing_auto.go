@@ -397,7 +397,7 @@ func uploadSigningSecrets(ctx context.Context, gh secretStore, cfg *config.Confi
 func missingSigningSecrets(ctx context.Context, gh secretStore, cfg *config.Config, set string) ([]string, error) {
 	have, err := gh.ListSecretNames(ctx, cfg.GitHub.Owner, cfg.GitHub.Repo)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list the secrets of %s/%s: %w", cfg.GitHub.Owner, cfg.GitHub.Repo, err)
+		return nil, err // names the repository already
 	}
 	var missing []string
 	for _, name := range config.SigningSecretNames(set).Names() {
@@ -408,17 +408,27 @@ func missingSigningSecrets(ctx context.Context, gh secretStore, cfg *config.Conf
 	return missing, nil
 }
 
-// ensureSigningSecrets runs before a GitHub build is dispatched: when the
+// ensureSigningSecrets runs before a build is dispatched to GitHub: when the
 // selected profile has a distribution, its signing set must be in the
 // repository. A missing or partial set is provisioned through App Store
 // Connect the way `signing setup` does, without prompts; without Apple
-// credentials the build stops here, before anything is pushed.
-func ensureSigningSecrets(ctx context.Context, cfg *config.Config, store secretStore, ascClient func() (*asc.Client, error), profile string, log io.Writer) error {
+// credentials the build stops here, before anything is pushed. The provider
+// that will run the job is --provider, else the profile's, else the top-level
+// one (as the coordinator resolves it); Codemagic and Bitrise have no secrets
+// API, so their builds are left to the runner, which reports a missing set.
+func ensureSigningSecrets(ctx context.Context, cfg *config.Config, store secretStore, ascClient func() (*asc.Client, error), profile, provider string, log io.Writer) error {
 	s, err := cfg.ResolveProfile(profile)
 	if err != nil {
 		return err
 	}
-	if s.Distribution == "" {
+	if provider == "" {
+		provider = s.Provider
+	}
+	name, err := cfg.ProviderName(provider)
+	if err != nil {
+		return err
+	}
+	if name != "github" || s.Distribution == "" {
 		return nil
 	}
 	typ, set := signing.Type(s.Distribution), s.SigningSet()
