@@ -100,6 +100,7 @@ printf '%s %s\n' "$(basename "$0")" "$*" >> "$CMD_LOG"
 		name        string
 		files       map[string]string
 		cached      bool
+		noCorepack  bool
 		wantManager string
 		wantCmds    []string
 	}{{
@@ -144,6 +145,14 @@ printf '%s %s\n' "$(basename "$0")" "$*" >> "$CMD_LOG"
 		cached:      true,
 		wantManager: "pnpm",
 		wantCmds:    []string{"corepack enable"},
+	}, {
+		// Node 25+ no longer bundles corepack; it is installed rather than
+		// replaced by an unpinned manager.
+		name:        "corepack missing",
+		files:       map[string]string{"package.json": `{"packageManager":"pnpm@12.1.0"}`, "pnpm-lock.yaml": ""},
+		noCorepack:  true,
+		wantManager: "pnpm",
+		wantCmds:    []string{"npm install -g corepack", "pnpm install --frozen-lockfile"},
 	}} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -152,7 +161,25 @@ printf '%s %s\n' "$(basename "$0")" "$*" >> "$CMD_LOG"
 				t.Fatal(err)
 			}
 			for _, name := range []string{"corepack", "npm", "pnpm", "yarn", "bun"} {
+				if name == "corepack" && tt.noCorepack {
+					continue
+				}
 				if err := os.WriteFile(filepath.Join(bin, name), []byte(stub), 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// PATH holds the stubs and the few real tools the block uses, so a
+			// manager installed on this machine cannot stand in for a stub.
+			tools := filepath.Join(dir, "tools")
+			if err := os.MkdirAll(tools, 0755); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"jq", "tr", "head", "awk", "sed", "basename"} {
+				real, err := exec.LookPath(name)
+				if err != nil {
+					t.Skip(name + " unavailable")
+				}
+				if err := os.Symlink(real, filepath.Join(tools, name)); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -169,7 +196,7 @@ printf '%s %s\n' "$(basename "$0")" "$*" >> "$CMD_LOG"
 			cmd := exec.Command("bash", path)
 			cmd.Dir = dir
 			cmd.Env = append(os.Environ(),
-				"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"PATH="+bin+string(os.PathListSeparator)+tools,
 				"CMD_LOG="+log, "JS_MANAGER=", "JS_DEPS_CACHED=")
 			if tt.cached {
 				cmd.Env = append(cmd.Env, "JS_DEPS_CACHED=true")
@@ -191,6 +218,58 @@ printf '%s %s\n' "$(basename "$0")" "$*" >> "$CMD_LOG"
 			}
 			if strings.Join(got, "|") != strings.Join(tt.wantCmds, "|") {
 				t.Fatalf("commands = %q, want %q", got, tt.wantCmds)
+			}
+		})
+	}
+}
+
+// TestJSNodeVersion runs js_node_version as runner.sh does, where the result
+// goes to nvm or n rather than to setup-node: a version file with a leading
+// "v" must not fall back to the default.
+func TestJSNodeVersion(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("macOS/Linux shell test")
+	}
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq unavailable")
+	}
+	script := "set -eu\n" + jsBlocks(t)["runner.sh"] + "js_node_version\n"
+	for _, tt := range []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{".nvmrc with v prefix", map[string]string{"package.json": `{}`, ".nvmrc": "v20.11.1\n"}, "20.11.1"},
+		{".nvmrc lts alias", map[string]string{"package.json": `{}`, ".nvmrc": "lts/*\n"}, "lts/*"},
+		{".node-version with CRLF", map[string]string{"package.json": `{}`, ".node-version": "22\r\n"}, "22"},
+		{".nvmrc beats engines", map[string]string{"package.json": `{"engines":{"node":"18"}}`, ".nvmrc": "20\n"}, "20"},
+		{"engines 24.x", map[string]string{"package.json": `{"engines":{"node":"24.x"}}`}, "24.x"},
+		{"engines caret", map[string]string{"package.json": `{"engines":{"node":"^20.11"}}`}, "20.11"},
+		{"engines range", map[string]string{"package.json": `{"engines":{"node":">=20 <23"}}`}, "20"},
+		{"engines or", map[string]string{"package.json": `{"engines":{"node":"20 || 22"}}`}, "20"},
+		{"engines wildcard", map[string]string{"package.json": `{"engines":{"node":"*"}}`}, "22"},
+		{"engines without node", map[string]string{"package.json": `{"engines":{"npm":">=10"}}`}, "22"},
+		{"nothing to go on", map[string]string{"package.json": `{}`}, "22"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, content := range tt.files {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			path := filepath.Join(dir, "version.sh")
+			if err := os.WriteFile(path, []byte(script), 0644); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("bash", path)
+			cmd.Dir = dir
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("js_node_version: %s %v", out, err)
+			}
+			if got := strings.TrimSpace(string(out)); got != tt.want {
+				t.Fatalf("js_node_version = %q, want %q", got, tt.want)
 			}
 		})
 	}

@@ -147,8 +147,9 @@ internal/
 - **JS Package Manager**: React Native and Expo dependencies install with the manager the
   project declares — `packageManager` in `package.json` first, then the lockfile
   (`pnpm-lock.yaml`, `yarn.lock`, `bun.lock`/`bun.lockb`, `package-lock.json`), else npm.
-  pnpm and yarn come from `corepack`, bun from its installer, and `expo prebuild` and the
-  other `npx` calls run through the same manager (`pnpm exec`/`yarn`/`bunx`/`npx`). Running
+  pnpm and yarn come from `corepack` (installed with npm where Node 25+ or a provider image
+  lacks it), bun from its installer, and `expo prebuild` and the other `npx` calls run
+  through the same manager (`pnpm exec`/`yarn`/`bunx`/`npx`). Running
   `npm install` on a pnpm or yarn workspace fails with `EUNSUPPORTEDPROTOCOL Unsupported URL
   Type "workspace:"`, so the guess is not free. The Node version is `.nvmrc`/`.node-version`
   (as `node-version-file`), else `engines.node` with the range prefix stripped, else 22;

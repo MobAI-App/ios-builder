@@ -282,9 +282,9 @@ jobs:
             echo "Package manager: $JS_MANAGER"
           }
 
-          # The Node version the project asks for: .nvmrc or .node-version verbatim,
-          # else the first comparator of engines.node with the range prefix stripped
-          # ("24.x" is a version setup-node takes as it is), else 22.
+          # The Node version the project asks for: .nvmrc or .node-version, else the
+          # first comparator of engines.node, else 22. A leading "v" or range prefix
+          # is dropped: nvm, n and setup-node all take "20.11.1" and "24.x" as they are.
           js_node_version() {
             js_version=""
             for js_file in .nvmrc .node-version; do
@@ -295,8 +295,9 @@ jobs:
             done
             if [ -z "$js_version" ]; then
               js_version=$(jq -r '.engines.node // empty' package.json 2>/dev/null || true)
-              js_version=$(printf '%s' "${js_version%%|*}" | awk '{print $1}' | sed -E 's/^(>=|<=|>|<|=|\^|~|v)+//')
+              js_version=$(printf '%s' "${js_version%%|*}" | awk '{print $1}')
             fi
+            js_version=$(printf '%s' "$js_version" | sed -E 's/^(>=|<=|>|<|=|\^|~|v)+//')
             case "$js_version" in
               [0-9]*|lts/*) ;;
               *) js_version=22 ;;
@@ -311,7 +312,10 @@ jobs:
             js_detect_manager
             case "$JS_MANAGER" in
               pnpm|yarn)
-                corepack enable || true # ships with Node 16.10+, installs the pinned version
+                # corepack installs the version packageManager pins. Node 16.10-24
+                # bundle it; Node 25+ and some provider images do not.
+                command -v corepack >/dev/null 2>&1 || npm install -g corepack || true
+                corepack enable || true
                 command -v "$JS_MANAGER" >/dev/null 2>&1 || npm install -g "$JS_MANAGER"
                 ;;
               bun)
@@ -412,9 +416,9 @@ jobs:
             echo "Package manager: $JS_MANAGER"
           }
 
-          # The Node version the project asks for: .nvmrc or .node-version verbatim,
-          # else the first comparator of engines.node with the range prefix stripped
-          # ("24.x" is a version setup-node takes as it is), else 22.
+          # The Node version the project asks for: .nvmrc or .node-version, else the
+          # first comparator of engines.node, else 22. A leading "v" or range prefix
+          # is dropped: nvm, n and setup-node all take "20.11.1" and "24.x" as they are.
           js_node_version() {
             js_version=""
             for js_file in .nvmrc .node-version; do
@@ -425,8 +429,9 @@ jobs:
             done
             if [ -z "$js_version" ]; then
               js_version=$(jq -r '.engines.node // empty' package.json 2>/dev/null || true)
-              js_version=$(printf '%s' "${js_version%%|*}" | awk '{print $1}' | sed -E 's/^(>=|<=|>|<|=|\^|~|v)+//')
+              js_version=$(printf '%s' "${js_version%%|*}" | awk '{print $1}')
             fi
+            js_version=$(printf '%s' "$js_version" | sed -E 's/^(>=|<=|>|<|=|\^|~|v)+//')
             case "$js_version" in
               [0-9]*|lts/*) ;;
               *) js_version=22 ;;
@@ -441,7 +446,10 @@ jobs:
             js_detect_manager
             case "$JS_MANAGER" in
               pnpm|yarn)
-                corepack enable || true # ships with Node 16.10+, installs the pinned version
+                # corepack installs the version packageManager pins. Node 16.10-24
+                # bundle it; Node 25+ and some provider images do not.
+                command -v corepack >/dev/null 2>&1 || npm install -g corepack || true
+                corepack enable || true
                 command -v "$JS_MANAGER" >/dev/null 2>&1 || npm install -g "$JS_MANAGER"
                 ;;
               bun)
