@@ -58,8 +58,8 @@ func TestResolveProfileDefault(t *testing.T) {
 		t.Fatalf("explicit profile lost to default: %+v %v", s, err)
 	}
 	cfg.DefaultProfile = "nightly"
-	if _, err := cfg.ResolveProfile(""); err == nil || !strings.Contains(err.Error(), `"nightly"`) {
-		t.Fatalf("unknown defaultProfile accepted: %v", err)
+	if _, err := cfg.ResolveProfile(""); err == nil || !strings.Contains(err.Error(), `defaultProfile "nightly"`) {
+		t.Fatalf("unknown defaultProfile accepted or not named as the source: %v", err)
 	}
 }
 
@@ -77,6 +77,11 @@ func TestResolveProfileErrors(t *testing.T) {
 		"bad env name":     {Env: map[string]string{"API-URL": "x"}},
 		"env with equals":  {Env: map[string]string{"A=B": "x"}},
 		"reserved env":     {Env: map[string]string{"SCHEME": "Other"}},
+		"reserved secret":  {Env: map[string]string{"IOS_CERTIFICATE": "x"}},
+		"reserved PATH":    {Env: map[string]string{"PATH": "/tmp"}},
+		"GitHub namespace": {Env: map[string]string{"GITHUB_TOKEN": "x"}},
+		"Codemagic space":  {Env: map[string]string{"CM_BUILD_ID": "x"}},
+		"Bitrise space":    {Env: map[string]string{"BITRISE_GIT_BRANCH": "x"}},
 	} {
 		cfg.Profiles["bad"] = p
 		if _, err := cfg.ResolveProfile("bad"); err == nil {

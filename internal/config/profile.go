@@ -25,15 +25,36 @@ type BuildSettings struct {
 // Distributions are the accepted values of a profile's distribution field.
 var Distributions = []string{"development", "ad-hoc", "app-store", "enterprise"}
 
-// reservedEnv names the variables the runners read their parameters from. A
-// profile that set one of these would silently change the build.
+// reservedEnv names the variables the runners read their parameters and
+// secrets from, and the ones the shell and the CI services own. A profile that
+// set one of these would silently change the build, or on runner.sh replace a
+// provider secret, since the env is exported before the signing step reads it.
 var reservedEnv = []string{
 	"BUILD_ID", "SNAPSHOT_REF", "SNAPSHOT_SHA", "IOS_PATH", "SCHEME", "CONFIGURATION",
 	"USE_SIGNING", "FLUTTER_VERSION", "JDK_VERSION", "BUILD_ENV", "DISTRIBUTION",
-	"BUILDER_REPOSITORY", "BUILDER_WORKSPACE", "DURATION", "PROJECT_TYPE",
+	"DURATION", "PROJECT_TYPE", "EXPORT_METHOD",
+	"IOS_CERTIFICATE", "IOS_CERTIFICATE_PASSWORD", "IOS_PROVISIONING_PROFILE", "MOBAI_API_KEY",
+	"PATH", "HOME", "USER", "SHELL", "TMPDIR", "DEVELOPER_DIR", "NODE_OPTIONS",
 }
 
+// reservedEnvPrefixes cover the runners' own namespaces: Builder's, GitHub
+// Actions' (GITHUB_*, RUNNER_*, ACTIONS_*), Codemagic's (CM_*, FCI_*) and
+// Bitrise's.
+var reservedEnvPrefixes = []string{"BUILDER_", "GITHUB_", "RUNNER_", "ACTIONS_", "CM_", "FCI_", "BITRISE_"}
+
 var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func reservedEnvName(name string) bool {
+	if slices.Contains(reservedEnv, name) {
+		return true
+	}
+	for _, prefix := range reservedEnvPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
 
 // ProfileNames lists the configured profiles, sorted.
 func (c *Config) ProfileNames() []string {
@@ -56,8 +77,9 @@ func (c *Config) ResolveProfile(name string) (BuildSettings, error) {
 		Signing:       c.IOS.Signing,
 		Provider:      c.Provider,
 	}
+	source := "profile"
 	if name == "" {
-		name = c.DefaultProfile
+		name, source = c.DefaultProfile, "defaultProfile"
 	}
 	if name == "" {
 		return s, nil
@@ -65,9 +87,9 @@ func (c *Config) ResolveProfile(name string) (BuildSettings, error) {
 	p, ok := c.Profiles[name]
 	if !ok {
 		if len(c.Profiles) == 0 {
-			return s, fmt.Errorf("profile %q is not defined; builder.json has no profiles", name)
+			return s, fmt.Errorf("%s %q is not defined; builder.json has no profiles", source, name)
 		}
-		return s, fmt.Errorf("profile %q is not defined; available profiles: %s", name, strings.Join(c.ProfileNames(), ", "))
+		return s, fmt.Errorf("%s %q is not defined; available profiles: %s", source, name, strings.Join(c.ProfileNames(), ", "))
 	}
 	if p.Distribution != "" && !slices.Contains(Distributions, p.Distribution) {
 		return s, fmt.Errorf("profile %q: distribution %q must be one of %s", name, p.Distribution, strings.Join(Distributions, ", "))
@@ -76,8 +98,8 @@ func (c *Config) ResolveProfile(name string) (BuildSettings, error) {
 		if !envNameRe.MatchString(k) {
 			return s, fmt.Errorf("profile %q: env name %q is not a valid environment variable name", name, k)
 		}
-		if slices.Contains(reservedEnv, k) {
-			return s, fmt.Errorf("profile %q: env name %q is reserved for the runner's own parameters", name, k)
+		if reservedEnvName(k) {
+			return s, fmt.Errorf("profile %q: env name %q is reserved for the runner", name, k)
 		}
 	}
 	s.Profile = name
