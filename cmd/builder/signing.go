@@ -21,38 +21,38 @@ var signingCmd = &cobra.Command{
 var signingSetupCmd = &cobra.Command{
 	Use:   "setup",
 	Short: "Set up code signing for iOS builds",
-	Long: `Sets up code signing for iOS builds and uploads the material to GitHub Secrets.
+	Long: `Sets up code signing for one distribution and writes the build profile that uses it.
 
 Without --certificate/--profile the whole thing is automatic, using the App
 Store Connect API key from 'builder auth apple': the App ID is registered if
 missing, a certificate is issued for a private key generated here (or --key),
 devices are registered (--device, --devices-from-mobai) and a provisioning
-profile named "Builder <type> <bundle id>" is created. Running it again is
-safe: valid material is reused and only what is missing, expired, invalid or
-changed is recreated. Nothing is ever revoked.
+profile named "Builder <distribution> <bundle id>" is created. Running it
+again is safe: valid material is reused and only what is missing, expired,
+invalid or changed is recreated. Nothing is ever revoked.
 
-  --type development  Apple Development certificate, devices required (default)
-  --type ad-hoc       Apple Distribution certificate, devices required
-  --type app-store    Apple Distribution certificate, no devices; TestFlight/App
-                      Store uploads need this and a Release configuration
+  --distribution development  Apple Development certificate, devices required (default)
+  --distribution ad-hoc       Apple Distribution certificate, devices required
+                              (internal is the same thing)
+  --distribution store        Apple Distribution certificate, no devices;
+                              TestFlight and App Store uploads need this
 
 With --certificate and --profile the files are taken as they are:
 - A .p12 file (exported from Keychain Access on a Mac)
 - A .cer file downloaded from the Apple Developer portal, together with the
   private key from 'builder signing csr' (--key) — the .p12 is then assembled
   locally, so no Mac is needed at any point
-The type is read from the .mobileprovision (development, ad-hoc, app-store or
-enterprise); --type overrides it.
+The distribution is read from the .mobileprovision (development, ad-hoc,
+store or enterprise).
 
 Either way the command uploads the three GitHub repository secrets of the
-type's signing set — IOS_CERTIFICATE_<SET>, IOS_CERTIFICATE_PASSWORD_<SET>,
-IOS_PROVISIONING_PROFILE_<SET>, with SET one of DEVELOPMENT, AD_HOC,
-APP_STORE, ENTERPRISE — and sets ios.signing in builder.json. A build reads
-the set named by its profile's distribution (development when there is
-none), so one repository can hold a development set for devices and an
-App Store set for releases; existing unsuffixed secrets stay in place and
-remain the fallback. For Codemagic and Bitrise it writes the files and points
-at docs/provider-secrets.md instead.`,
+distribution's signing set — IOS_CERTIFICATE_<SET>, IOS_CERTIFICATE_PASSWORD_<SET>,
+IOS_PROVISIONING_PROFILE_<SET>, with SET one of DEVELOPMENT, AD_HOC, STORE,
+ENTERPRISE — and writes a profile in builder.json (--name, default the
+distribution name) with that distribution. 'builder ios build --profile <name>'
+then signs with the set, and provisions it the same way when it is missing.
+For Codemagic and Bitrise the command writes the files and prints the secret
+names to add in the dashboard instead.`,
 	RunE: runSigningSetup,
 }
 
@@ -90,7 +90,8 @@ func init() {
 	signingSetupCmd.Flags().StringP("profile", "p", "", "Path to .mobileprovision file")
 	signingSetupCmd.Flags().StringP("key", "k", "", "Path to the private key from 'builder signing csr' (required with a .cer; automatic mode reuses it and its certificate)")
 	signingSetupCmd.Flags().String("bundle-id", "", "App bundle ID (default: ios.bundleId in builder.json, else the newest IPA in ./dist)")
-	signingSetupCmd.Flags().String("type", string(signing.TypeDevelopment), "Signing type: development, ad-hoc, app-store or enterprise (with --profile: read from the profile unless given)")
+	signingSetupCmd.Flags().String("distribution", "", "Distribution to sign for: development, ad-hoc (internal), store or enterprise (default: the --name profile's, else development; with --profile: read from the file)")
+	signingSetupCmd.Flags().String("name", "", "builder.json profile to write the distribution to (default: the distribution name)")
 	signingSetupCmd.Flags().StringArray("device", nil, "Device UDID to register (repeatable)")
 	signingSetupCmd.Flags().Bool("devices-from-mobai", false, "Register the physical iOS devices connected to MobAI")
 	signingSetupCmd.Flags().String("out-dir", ".", "Directory for the private key, .p12 and .mobileprovision")
@@ -267,10 +268,17 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-
-	ghClient, err := getGitHubClient()
+	provider, err := cfg.ProviderName("")
 	if err != nil {
 		return err
+	}
+	var store secretStore
+	if provider == "github" {
+		ghClient, err := getGitHubClient()
+		if err != nil {
+			return err
+		}
+		store = ghClient
 	}
 
 	// Get certificate path
@@ -307,8 +315,8 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("Profile: %s (%.1f KB)\n", profilePath, float64(len(profileData))/1024)
 
-	typeFlag, _ := cmd.Flags().GetString("type")
-	typ, source, err := manualSigningType(profileData, typeFlag, cmd.Flags().Changed("type"))
+	distributionFlag, _ := cmd.Flags().GetString("distribution")
+	typ, err := manualSigningType(profileData, distributionFlag)
 	if err != nil {
 		return err
 	}
@@ -316,9 +324,14 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Type:    %s (%s), signing set %s\n", typ, source, set)
+	profileName, _ := cmd.Flags().GetString("name")
+	if profileName == "" {
+		profileName = string(typ)
+	}
+	fmt.Printf("Distribution: %s (read from the profile), signing set %s, build profile %q\n", typ, set, profileName)
 
 	var password string
+	p12Path := certPath
 	if isPortalCertificate(certPath) {
 		// A .cer from the Apple Developer portal: assemble the .p12 locally
 		// from the private key that produced the CSR.
@@ -343,7 +356,7 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 		}
 		// Save the .p12: it is the reusable signing identity (Sideloadly,
 		// another machine, re-running setup), not a throwaway.
-		p12Path := signing.P12FileName(typ)
+		p12Path = signing.P12FileName(typ)
 		if err := os.WriteFile(p12Path, certData, 0600); err != nil {
 			return fmt.Errorf("failed to write .p12: %w", err)
 		}
@@ -355,61 +368,52 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	fmt.Println()
-	fmt.Printf("Uploading secrets to %s/%s...\n", cfg.GitHub.Owner, cfg.GitHub.Repo)
-
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := uploadSigningSecrets(ctx, ghClient, cfg, os.Stdout, set, certData, password, profileData); err != nil {
-		return err
+	fmt.Println()
+	if store != nil {
+		fmt.Printf("Uploading secrets to %s/%s...\n", cfg.GitHub.Owner, cfg.GitHub.Repo)
+		if err := uploadSigningSecrets(ctx, store, cfg, os.Stdout, set, certData, password, profileData); err != nil {
+			return err
+		}
+	} else {
+		printProviderSecrets(provider, config.SigningSecretNames(set), p12Path, profilePath)
 	}
 
-	// Update config to indicate signing is enabled
-	cfg.IOS.Signing = true
-	mgr := config.NewManager()
-	if err := mgr.Save(cfg); err != nil {
+	writeSigningProfile(cfg, profileName, typ)
+	if err := config.NewManager().Save(cfg); err != nil {
 		return fmt.Errorf("failed to update config: %w", err)
 	}
-	fmt.Println("  Updated: builder.json (signing enabled)")
+	fmt.Printf("  Updated: builder.json (profile %q, distribution %s)\n", profileName, typ)
 
 	fmt.Println()
 	fmt.Println("Code signing configured successfully!")
 	fmt.Println()
-	printSigningSetUsage(typ, set)
+	printSigningNext(profileName, typ)
 	fmt.Println("To build unsigned, use:")
-	fmt.Println("  builder ios build --unsigned")
+	fmt.Printf("  builder ios build --profile %s --unsigned\n", profileName)
 
 	return nil
 }
 
-// manualSigningType is the type of the profile being uploaded: --type when
-// given, else what the .mobileprovision says. A --type that disagrees with the
-// profile is taken, with a warning, since the runner will refuse the pair.
-func manualSigningType(profileData []byte, typeFlag string, typeGiven bool) (typ signing.Type, source string, err error) {
-	detected, detectErr := signing.ProfileType(profileData)
-	if !typeGiven {
-		if detectErr != nil {
-			return "", "", fmt.Errorf("%w; pass --type development|ad-hoc|app-store|enterprise", detectErr)
-		}
-		return detected, "read from the profile", nil
+// manualSigningType is what the .mobileprovision says it is. A --distribution
+// that disagrees is an error, since the runner refuses such a pair.
+func manualSigningType(profileData []byte, distributionFlag string) (signing.Type, error) {
+	typ, err := signing.ProfileType(profileData)
+	if err != nil {
+		return "", err
 	}
-	if typ, err = signing.ParseType(typeFlag); err != nil {
-		return "", "", err
+	if distributionFlag == "" {
+		return typ, nil
 	}
-	if detectErr == nil && detected != typ {
-		fmt.Printf("Warning: the profile is a %s profile but --type %s was given; builds with distribution %s will fail on this set until a %s profile is uploaded to it.\n", detected, typ, typ, typ)
+	want, err := signing.ParseType(distributionFlag)
+	if err != nil {
+		return "", err
 	}
-	return typ, "--type", nil
-}
-
-// printSigningSetUsage says which builds read the set that was just written.
-func printSigningSetUsage(typ signing.Type, set string) {
-	if typ == signing.TypeDevelopment {
-		fmt.Printf("Signed builds read the %s set unless their profile sets another distribution.\n", set)
-	} else {
-		fmt.Printf("Builds read the %s set when their builder.json profile has \"distribution\": \"%s\";\n", set, typ)
-		fmt.Printf("that profile needs \"configuration\": \"Release\", since a Debug build is refused by %s profiles.\n", typ)
+	if want != typ {
+		return "", fmt.Errorf("the profile is a %s profile, but --distribution %s was given; builds with distribution %s would refuse it", typ, want, want)
 	}
+	return typ, nil
 }

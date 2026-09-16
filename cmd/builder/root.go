@@ -727,6 +727,14 @@ func runBuild(ctx context.Context, cfg *config.Config, opts *build.BuildOptions)
 	if err != nil {
 		return err
 	}
+	// A GitHub build with a distribution needs its signing set in the
+	// repository; Codemagic and Bitrise have no secrets API, so their runner
+	// reports a missing set itself.
+	if ghClient != nil && !opts.Unsigned {
+		if err := ensureSigningSecrets(ctx, cfg, ghClient, getASCClient, opts.Profile, os.Stdout); err != nil {
+			return err
+		}
+	}
 
 	coordinator := build.NewCoordinator(cfg, ghClient)
 
