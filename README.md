@@ -317,8 +317,9 @@ Identifiers & Profiles*): Developer-role keys cannot create certificates.
    Distribution) is hit, the error names it and points at the portal.
 3. Registers **devices** from `--device <udid>` (repeatable) and
    `--devices-from-mobai` (name and UDID of every physical iOS device MobAI has
-   connected). Development and ad-hoc profiles cover every enabled iOS device on
-   the account, so with none given and none registered the command stops and
+   connected; simulators and cloud farm devices are skipped). Development and
+   ad-hoc profiles cover every enabled iOS device on the account, so with none
+   given and none registered the command stops and
    says so. App Store profiles take no devices. Apple allows 100 devices per
    membership year and never frees a slot; that error is passed through too.
 4. Creates the **profile** `Builder <type> <bundle id>` (iOS App Development,

@@ -11,6 +11,7 @@ type Device struct {
 	OSVersion     string `json:"osVersion"`
 	BridgeRunning bool   `json:"bridgeRunning"`
 	Virtual       bool   `json:"virtual"`
+	Cloud         bool   `json:"cloud"` // lives in a device farm; the ID is a farm handle, not a UDID
 }
 
 // InstallAppRequest is the request body for installing an app

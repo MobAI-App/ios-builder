@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/MobAI-App/ios-builder/internal/config"
@@ -190,7 +191,11 @@ func signingDevices(ctx context.Context, cmd *cobra.Command, cfg *config.Config,
 	}
 	var devices []signing.Device
 	for _, u := range udids {
-		devices = append(devices, signing.Device{UDID: strings.TrimSpace(u)})
+		u = strings.TrimSpace(u)
+		if !udidRe.MatchString(u) {
+			return nil, fmt.Errorf("--device %q is not a UDID (40 hex digits, or 8-16 hex digits like 00008030-000A1B2C3D4E5F60)", u)
+		}
+		devices = append(devices, signing.Device{UDID: u})
 	}
 	if !fromMobAI {
 		return devices, nil
@@ -203,18 +208,29 @@ func signingDevices(ctx context.Context, cmd *cobra.Command, cfg *config.Config,
 	if err != nil {
 		return nil, fmt.Errorf("list MobAI devices: %w (is MobAI running? try builder mobai ping)", err)
 	}
-	found := 0
+	physical := mobaiSigningDevices(connected)
+	if len(physical) == 0 {
+		return nil, errors.New("MobAI has no physical iOS device connected; plug one in or pass --device <udid>")
+	}
+	return append(devices, physical...), nil
+}
+
+// udidRe matches an iOS device UDID: 40 hex digits on devices before the
+// iPhone XS, 8-16 hex digits since.
+var udidRe = regexp.MustCompile(`^(?i)([0-9a-f]{40}|[0-9a-f]{8}-[0-9a-f]{16})$`)
+
+// mobaiSigningDevices keeps the devices whose MobAI ID is a UDID Apple can
+// register: physical iOS devices attached to this or a peer machine.
+// Simulators and cloud farm devices (their IDs are farm handles) are skipped.
+func mobaiSigningDevices(connected []mobai.Device) []signing.Device {
+	var devices []signing.Device
 	for _, d := range connected {
-		if d.Virtual || (d.Platform != "" && !strings.EqualFold(d.Platform, "ios")) {
+		if d.Virtual || d.Cloud || (d.Platform != "" && !strings.EqualFold(d.Platform, "ios")) || !udidRe.MatchString(d.ID) {
 			continue
 		}
 		devices = append(devices, signing.Device{Name: d.Name, UDID: d.ID})
-		found++
 	}
-	if found == 0 {
-		return nil, errors.New("MobAI has no physical iOS device connected; plug one in or pass --device <udid>")
-	}
-	return devices, nil
+	return devices
 }
 
 // signingKey returns --key, else the key a previous run left in outDir, else
