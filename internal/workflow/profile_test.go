@@ -101,8 +101,11 @@ const profiledBuilderJSON = `{
   "ios": {"path": "ios", "scheme": "Top", "signing": true, "configuration": "Debug"},
   "defaultProfile": "preview",
   "profiles": {
-    "preview": {"configuration": "Release", "signing": false, "distribution": "ad-hoc",
-                "env": {"API_URL": "https://staging.example.com", "NOTES": "line one\n__BUILDER_ENV__\nline \"two\""}}
+    "preview": {"distribution": "internal",
+                "env": {"API_URL": "https://staging.example.com", "NOTES": "line one\n__BUILDER_ENV__\nline \"two\""}},
+    "dev": {"distribution": "development"},
+    "debug-store": {"configuration": "Debug", "distribution": "store"},
+    "unsigned": {"scheme": "Other"}
   }
 }`
 
@@ -119,11 +122,13 @@ func TestResolveParametersApplyProfiles(t *testing.T) {
 	share := resolveStep(t, "ios-share.yml")
 
 	t.Run("tag build applies defaultProfile", func(t *testing.T) {
+		// A distribution signs the build and derives Release; internal is
+		// ad-hoc and its set is AD_HOC.
 		r := runResolve(t, build, profiledBuilderJSON, map[string]string{"GITHUB_EVENT_NAME": "push"})
 		if r.err != nil {
 			t.Fatalf("%v\n%s", r.err, r.log)
 		}
-		want := map[string]string{"build_id": "abcdef12", "ios_path": "ios", "scheme": "Top", "use_signing": "false",
+		want := map[string]string{"build_id": "abcdef12", "ios_path": "ios", "scheme": "Top", "use_signing": "true",
 			"configuration": "Release", "profile": "preview", "distribution": "ad-hoc", "signing_set": "AD_HOC", "jdk_version": "17"}
 		for k, v := range want {
 			if r.outputs[k] != v {
@@ -135,13 +140,33 @@ func TestResolveParametersApplyProfiles(t *testing.T) {
 		}
 	})
 
+	t.Run("tag build derives configuration and signing from the distribution", func(t *testing.T) {
+		for name, want := range map[string]map[string]string{
+			"dev":         {"use_signing": "true", "configuration": "Debug", "signing_set": "DEVELOPMENT"},
+			"debug-store": {"use_signing": "true", "configuration": "Debug", "signing_set": "STORE", "distribution": "store"},
+			// No distribution: unsigned whatever ios.signing says, ios.configuration applies.
+			"unsigned": {"use_signing": "false", "configuration": "Debug", "signing_set": "", "scheme": "Other"},
+		} {
+			withDefault := strings.Replace(profiledBuilderJSON, `"defaultProfile": "preview"`, `"defaultProfile": "`+name+`"`, 1)
+			r := runResolve(t, build, withDefault, map[string]string{"GITHUB_EVENT_NAME": "push"})
+			if r.err != nil {
+				t.Fatalf("%s: %v\n%s", name, r.err, r.log)
+			}
+			for k, v := range want {
+				if r.outputs[k] != v {
+					t.Errorf("%s: %s = %q, want %q\n%s", name, k, r.outputs[k], v, r.log)
+				}
+			}
+		}
+	})
+
 	t.Run("tag build without profiles is unchanged", func(t *testing.T) {
 		plain := `{"ios": {"scheme": "Top", "signing": true}}`
 		r := runResolve(t, build, plain, map[string]string{"GITHUB_EVENT_NAME": "push"})
 		if r.err != nil {
 			t.Fatalf("%v\n%s", r.err, r.log)
 		}
-		if r.outputs["scheme"] != "Top" || r.outputs["use_signing"] != "true" || r.outputs["configuration"] != "Debug" || r.outputs["profile"] != "" || r.outputs["signing_set"] != "DEVELOPMENT" || len(r.env) != 0 {
+		if r.outputs["scheme"] != "Top" || r.outputs["use_signing"] != "true" || r.outputs["configuration"] != "Debug" || r.outputs["profile"] != "" || r.outputs["signing_set"] != "" || len(r.env) != 0 {
 			t.Fatalf("outputs %v env %v\n%s", r.outputs, r.env, r.log)
 		}
 	})
@@ -149,26 +174,26 @@ func TestResolveParametersApplyProfiles(t *testing.T) {
 	t.Run("dispatch uses the profile input", func(t *testing.T) {
 		env := map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_BUILD_ID": "12345678", "IN_SCHEME": "Dispatched",
 			"IN_USE_SIGNING": "true", "IN_CONFIGURATION": "Release",
-			"IN_PROFILE": `{"name":"production","env":{"API_URL":"https://api.example.com"},"distribution":"app-store"}`}
+			"IN_PROFILE": `{"name":"production","env":{"API_URL":"https://api.example.com"},"distribution":"store"}`}
 		// builder.json on disk must be ignored for a dispatch.
 		r := runResolve(t, build, profiledBuilderJSON, env)
 		if r.err != nil {
 			t.Fatalf("%v\n%s", r.err, r.log)
 		}
 		if r.outputs["build_id"] != "12345678" || r.outputs["scheme"] != "Dispatched" || r.outputs["use_signing"] != "true" ||
-			r.outputs["profile"] != "production" || r.outputs["distribution"] != "app-store" || r.outputs["signing_set"] != "APP_STORE" || r.env["API_URL"] != "https://api.example.com" {
+			r.outputs["profile"] != "production" || r.outputs["distribution"] != "store" || r.outputs["signing_set"] != "STORE" || r.env["API_URL"] != "https://api.example.com" {
 			t.Fatalf("outputs %v env %v\n%s", r.outputs, r.env, r.log)
 		}
 		// Without a selected profile the input carries its default.
 		env["IN_PROFILE"] = "{}"
 		r = runResolve(t, build, "", env)
-		if r.err != nil || r.outputs["profile"] != "" || r.outputs["distribution"] != "" || r.outputs["signing_set"] != "DEVELOPMENT" || len(r.env) != 0 {
+		if r.err != nil || r.outputs["profile"] != "" || r.outputs["distribution"] != "" || r.outputs["signing_set"] != "" || len(r.env) != 0 {
 			t.Fatalf("default profile input: %v %v %v\n%s", r.err, r.outputs, r.env, r.log)
 		}
 	})
 
 	t.Run("share exports env and profile scheme", func(t *testing.T) {
-		withScheme := strings.Replace(profiledBuilderJSON, `"configuration": "Release",`, `"configuration": "Release", "scheme": "Preview",`, 1)
+		withScheme := strings.Replace(profiledBuilderJSON, `"preview": {"distribution": "internal",`, `"preview": {"distribution": "internal", "scheme": "Preview",`, 1)
 		r := runResolve(t, share, withScheme, map[string]string{"GITHUB_EVENT_NAME": "push"})
 		if r.err != nil {
 			t.Fatalf("%v\n%s", r.err, r.log)
@@ -185,6 +210,7 @@ func TestResolveParametersApplyProfiles(t *testing.T) {
 		}{
 			"unknown defaultProfile": {`{"defaultProfile": "nightly", "profiles": {"preview": {}}}`, map[string]string{"GITHUB_EVENT_NAME": "push"}},
 			"bad distribution":       {`{"defaultProfile": "p", "profiles": {"p": {"distribution": "adhoc"}}}`, map[string]string{"GITHUB_EVENT_NAME": "push"}},
+			"old app-store":          {`{"defaultProfile": "p", "profiles": {"p": {"distribution": "app-store"}}}`, map[string]string{"GITHUB_EVENT_NAME": "push"}},
 			"bad env name":           {``, map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_PROFILE": `{"name":"p","env":{"A B":"x"}}`}},
 			"env not an object":      {``, map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_PROFILE": `{"name":"p","env":"A=x"}`}},
 			"profile not JSON":       {``, map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_PROFILE": `preview`}},

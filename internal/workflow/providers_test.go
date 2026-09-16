@@ -295,9 +295,14 @@ func TestExportMethodFollowsProfile(t *testing.T) {
 		{"no entitlements", profile(devices), "ad-hoc"},
 	}
 	// signing setup reads the same type locally, from the plist inside the
-	// CMS blob, so the Go rules must agree with the shell's on every case.
+	// CMS blob, so the Go rules must agree with the shell's on every case;
+	// the export method's app-store is the store distribution.
 	for _, tc := range cases {
-		if got, err := signing.ProfileType([]byte("\x30\x82cms" + tc.plist + "\x00\xff")); err != nil || string(got) != tc.want {
+		want := tc.want
+		if want == "app-store" {
+			want = "store"
+		}
+		if got, err := signing.ProfileType([]byte("\x30\x82cms" + tc.plist + "\x00\xff")); err != nil || string(got) != want {
 			t.Errorf("%s: signing.ProfileType = %q, %v; detect_export_method says %q", tc.name, got, err, tc.want)
 		}
 	}
@@ -358,7 +363,7 @@ func TestSigningSetSelection(t *testing.T) {
 	if !strings.Contains(string(workflowTemplate), `SIGNING_SET: ${{ steps.params.outputs.signing_set }}`) || !strings.Contains(string(runner), `SIGNING_SET=$(signing_set "$DISTRIBUTION")`) {
 		t.Error("SIGNING_SET is not derived from the distribution")
 	}
-	for _, set := range []string{"DEVELOPMENT", "AD_HOC", "APP_STORE", "ENTERPRISE"} {
+	for _, set := range []string{"DEVELOPMENT", "AD_HOC", "STORE", "ENTERPRISE"} {
 		for _, secret := range []string{"IOS_CERTIFICATE_", "IOS_CERTIFICATE_PASSWORD_", "IOS_PROVISIONING_PROFILE_"} {
 			if line := secret + set + ": ${{ secrets." + secret + set + " }}"; !strings.Contains(string(workflowTemplate), line) {
 				t.Errorf("ios-build.yml does not pass %s%s to the signing step", secret, set)
@@ -385,7 +390,8 @@ func TestSigningSetSelection(t *testing.T) {
 		return string(out), err
 	}
 	legacy := map[string]string{"IOS_CERTIFICATE": "legacy-cert", "IOS_CERTIFICATE_PASSWORD": "legacy-pw", "IOS_PROVISIONING_PROFILE": "legacy-profile"}
-	appStore := map[string]string{"IOS_CERTIFICATE_APP_STORE": "store-cert", "IOS_CERTIFICATE_PASSWORD_APP_STORE": "store-pw", "IOS_PROVISIONING_PROFILE_APP_STORE": "store-profile"}
+	store := map[string]string{"IOS_CERTIFICATE_STORE": "store-cert", "IOS_CERTIFICATE_PASSWORD_STORE": "store-pw", "IOS_PROVISIONING_PROFILE_STORE": "store-profile"}
+	adHoc := map[string]string{"IOS_CERTIFICATE_AD_HOC": "adhoc-cert", "IOS_CERTIFICATE_PASSWORD_AD_HOC": "adhoc-pw", "IOS_PROVISIONING_PROFILE_AD_HOC": "adhoc-profile"}
 	with := func(sets ...map[string]string) map[string]string {
 		env := map[string]string{}
 		for _, s := range sets {
@@ -402,19 +408,17 @@ func TestSigningSetSelection(t *testing.T) {
 		want string // "" expects a failure whose message holds wantErr
 		errs []string
 	}{
-		{"suffixed set present", with(legacy, appStore, map[string]string{"DISTRIBUTION": "app-store", "METHOD": "app-store"}), "store-cert|store-pw|store-profile|APP_STORE", nil},
+		{"suffixed set present", with(legacy, store, map[string]string{"DISTRIBUTION": "store", "METHOD": "app-store"}), "store-cert|store-pw|store-profile|STORE", nil},
+		{"internal reads the ad-hoc set", with(adHoc, map[string]string{"DISTRIBUTION": "internal", "METHOD": "ad-hoc"}), "adhoc-cert|adhoc-pw|adhoc-profile|AD_HOC", nil},
 		{"only legacy, no distribution, any profile type", with(legacy, map[string]string{"DISTRIBUTION": "", "METHOD": "ad-hoc"}), "legacy-cert|legacy-pw|legacy-profile|legacy", nil},
 		{"only legacy without a password", map[string]string{"IOS_CERTIFICATE": "legacy-cert", "IOS_PROVISIONING_PROFILE": "legacy-profile", "DISTRIBUTION": "", "METHOD": "development"}, "legacy-cert||legacy-profile|legacy", nil},
-		{"only legacy, requested distribution matches", with(legacy, map[string]string{"DISTRIBUTION": "app-store", "METHOD": "app-store"}), "legacy-cert|legacy-pw|legacy-profile|legacy", nil},
-		{"development set for no distribution", with(legacy, map[string]string{"IOS_CERTIFICATE_DEVELOPMENT": "dev-cert", "IOS_CERTIFICATE_PASSWORD_DEVELOPMENT": "dev-pw", "IOS_PROVISIONING_PROFILE_DEVELOPMENT": "dev-profile", "DISTRIBUTION": "", "METHOD": "development"}), "dev-cert|dev-pw|dev-profile|DEVELOPMENT", nil},
-		{"requested set absent, legacy absent", map[string]string{"DISTRIBUTION": "ad-hoc", "METHOD": "ad-hoc"}, "", []string{"IOS_CERTIFICATE_AD_HOC", "IOS_CERTIFICATE_PASSWORD_AD_HOC", "IOS_PROVISIONING_PROFILE_AD_HOC", "unsuffixed IOS_CERTIFICATE", "--type ad-hoc"}},
-		{"suffixed set missing its profile", with(legacy, map[string]string{"IOS_CERTIFICATE_APP_STORE": "store-cert", "IOS_CERTIFICATE_PASSWORD_APP_STORE": "store-pw", "DISTRIBUTION": "app-store", "METHOD": "app-store"}), "", []string{"incomplete", "missing IOS_PROVISIONING_PROFILE_APP_STORE."}},
-		{"suffixed set with empty password", with(appStore, map[string]string{"IOS_CERTIFICATE_PASSWORD_APP_STORE": "", "DISTRIBUTION": "app-store", "METHOD": "app-store"}), "", []string{"incomplete", "missing IOS_CERTIFICATE_PASSWORD_APP_STORE."}},
-		{"suffixed password alone is not a legacy fallback", with(legacy, map[string]string{"IOS_CERTIFICATE_PASSWORD_APP_STORE": "store-pw", "DISTRIBUTION": "app-store", "METHOD": "app-store"}), "", []string{"incomplete", "missing IOS_CERTIFICATE_APP_STORE, IOS_PROVISIONING_PROFILE_APP_STORE."}},
-		{"legacy profile of the wrong type", with(legacy, map[string]string{"DISTRIBUTION": "app-store", "METHOD": "development"}), "", []string{"unsuffixed IOS_PROVISIONING_PROFILE", "development provisioning profile", "distribution app-store", "APP_STORE", "--type app-store"}},
-		{"suffixed profile of the wrong type", with(appStore, map[string]string{"DISTRIBUTION": "app-store", "METHOD": "ad-hoc"}), "", []string{"IOS_PROVISIONING_PROFILE_APP_STORE holds a ad-hoc", "distribution app-store"}},
-		{"development set holding a distribution profile", with(map[string]string{"IOS_CERTIFICATE_DEVELOPMENT": "c", "IOS_CERTIFICATE_PASSWORD_DEVELOPMENT": "pw", "IOS_PROVISIONING_PROFILE_DEVELOPMENT": "p", "DISTRIBUTION": "", "METHOD": "app-store"}), "", []string{"IOS_PROVISIONING_PROFILE_DEVELOPMENT", "distribution development"}},
-		{"unknown distribution", with(legacy, map[string]string{"DISTRIBUTION": "adhoc", "METHOD": "ad-hoc"}), "", []string{"bad distribution adhoc"}},
+		{"no distribution ignores the suffixed sets", with(store, map[string]string{"IOS_CERTIFICATE_DEVELOPMENT": "dev-cert", "IOS_CERTIFICATE_PASSWORD_DEVELOPMENT": "dev-pw", "IOS_PROVISIONING_PROFILE_DEVELOPMENT": "dev-profile", "DISTRIBUTION": "", "METHOD": "development"}), "", []string{"ios.signing needs IOS_CERTIFICATE", "IOS_*_<SET>"}},
+		{"requested set absent, legacy present", with(legacy, map[string]string{"DISTRIBUTION": "ad-hoc", "METHOD": "ad-hoc"}), "", []string{"Signing set AD_HOC for distribution ad-hoc is missing IOS_CERTIFICATE_AD_HOC, IOS_CERTIFICATE_PASSWORD_AD_HOC, IOS_PROVISIONING_PROFILE_AD_HOC", "--distribution ad-hoc"}},
+		{"suffixed set missing its profile", with(legacy, map[string]string{"IOS_CERTIFICATE_STORE": "store-cert", "IOS_CERTIFICATE_PASSWORD_STORE": "store-pw", "DISTRIBUTION": "store", "METHOD": "app-store"}), "", []string{"missing IOS_PROVISIONING_PROFILE_STORE.", "--distribution store"}},
+		{"suffixed set with empty password", with(store, map[string]string{"IOS_CERTIFICATE_PASSWORD_STORE": "", "DISTRIBUTION": "store", "METHOD": "app-store"}), "", []string{"missing IOS_CERTIFICATE_PASSWORD_STORE."}},
+		{"suffixed profile of the wrong type", with(store, map[string]string{"DISTRIBUTION": "store", "METHOD": "ad-hoc"}), "", []string{"IOS_PROVISIONING_PROFILE_STORE holds a ad-hoc", "distribution store", "--distribution store", "distribution to ad-hoc"}},
+		{"ad-hoc set holding a store profile, requested as internal", with(adHoc, map[string]string{"DISTRIBUTION": "internal", "METHOD": "app-store"}), "", []string{"IOS_PROVISIONING_PROFILE_AD_HOC holds a app-store", "distribution ad-hoc", "distribution to store"}},
+		{"unknown distribution", with(legacy, map[string]string{"DISTRIBUTION": "app-store", "METHOD": "app-store"}), "", []string{"bad distribution app-store"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := run(tc.env)

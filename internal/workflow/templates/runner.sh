@@ -7,9 +7,10 @@ mkdir -p "$ci_dir"
 mode="${1:-build}"
 export IOS_PATH="${IOS_PATH:-.}" SCHEME="${SCHEME:-}" CONFIGURATION="${CONFIGURATION:-Debug}"
 export USE_SIGNING="${USE_SIGNING:-false}" JDK_VERSION="${JDK_VERSION:-17}"
-# From the selected builder.json profile: DISTRIBUTION picks the signing set
-# (IOS_*_<SET> secrets) and the profile type install_signing expects; BUILD_ENV
-# is a JSON object exported by prepare().
+# From the selected builder.json profile: DISTRIBUTION (canonical: internal
+# arrives as ad-hoc) picks the signing set (IOS_*_<SET> secrets) and the
+# profile type install_signing expects; BUILD_ENV is a JSON object exported by
+# prepare().
 export DISTRIBUTION="${DISTRIBUTION:-}" BUILD_ENV="${BUILD_ENV:-}"
 
 fail() { echo "$*" >&2; exit 1; }
@@ -168,13 +169,15 @@ detect_export_method() {
   fi
 }
 
-# The suffix of the IOS_* secrets a distribution is signed with; no
-# distribution is development. Same table in ios-build.yml.
+# The suffix of the IOS_* secrets a distribution is signed with: its
+# canonical name upper-cased. No distribution has no set (the legacy
+# ios.signing path reads the unsuffixed secrets). Same table in ios-build.yml.
 signing_set() {
   case "$1" in
-    ''|development) echo DEVELOPMENT ;;
-    ad-hoc) echo AD_HOC ;;
-    app-store) echo APP_STORE ;;
+    '') echo '' ;;
+    development) echo DEVELOPMENT ;;
+    ad-hoc|internal) echo AD_HOC ;;
+    store) echo STORE ;;
     enterprise) echo ENTERPRISE ;;
     *) return 1 ;;
   esac
@@ -182,50 +185,50 @@ signing_set() {
 
 # Picks the secrets of the set the build profile's distribution names
 # (IOS_CERTIFICATE_<SET> and friends) into IOS_CERTIFICATE,
-# IOS_CERTIFICATE_PASSWORD and IOS_PROVISIONING_PROFILE, falling back to those
-# unsuffixed names when the set is absent. A set needs all three (builder
-# signing setup always writes a password); only the unsuffixed password may be
-# empty, as before signing sets. SIGNING_SET_USED says which it was. Same
-# function in ios-build.yml.
+# IOS_CERTIFICATE_PASSWORD and IOS_PROVISIONING_PROFILE. A set needs all three
+# (builder signing setup always writes a password). With no distribution —
+# ios.signing without a profile — the unsuffixed secrets are used as they are,
+# password optional. SIGNING_SET_USED says which it was. Same function in
+# ios-build.yml.
 select_signing_set() {
-  local cert="IOS_CERTIFICATE_$SIGNING_SET" pass="IOS_CERTIFICATE_PASSWORD_$SIGNING_SET" prof="IOS_PROVISIONING_PROFILE_$SIGNING_SET"
-  if [ -n "${!cert:-}${!pass:-}${!prof:-}" ]; then
+  if [ -z "$SIGNING_SET" ]; then
+    if [ -z "${IOS_CERTIFICATE:-}" ] || [ -z "${IOS_PROVISIONING_PROFILE:-}" ]; then
+      fail "No signing secrets: ios.signing needs IOS_CERTIFICATE, IOS_CERTIFICATE_PASSWORD and IOS_PROVISIONING_PROFILE; a build profile with a distribution reads its own IOS_*_<SET> secrets instead (builder signing setup --distribution <d> writes them)."
+    fi
+    IOS_CERTIFICATE_PASSWORD="${IOS_CERTIFICATE_PASSWORD:-}"
+    SIGNING_SET_USED=legacy
+  else
+    local cert="IOS_CERTIFICATE_$SIGNING_SET" pass="IOS_CERTIFICATE_PASSWORD_$SIGNING_SET" prof="IOS_PROVISIONING_PROFILE_$SIGNING_SET"
     local missing="" name
     for name in "$cert" "$pass" "$prof"; do
       [ -n "${!name:-}" ] || missing="${missing:+$missing, }$name"
     done
-    [ -z "$missing" ] || fail "Signing set $SIGNING_SET is incomplete: missing $missing. builder signing setup --type ${DISTRIBUTION:-development} writes all three."
+    [ -z "$missing" ] || fail "Signing set $SIGNING_SET for distribution $DISTRIBUTION is missing $missing. Run builder signing setup --distribution $DISTRIBUTION (builder ios build does it too when an App Store Connect key is configured)."
     IOS_CERTIFICATE="${!cert}"
     IOS_CERTIFICATE_PASSWORD="${!pass}"
     IOS_PROVISIONING_PROFILE="${!prof}"
     SIGNING_SET_USED="$SIGNING_SET"
-  elif [ -n "${IOS_CERTIFICATE:-}" ] && [ -n "${IOS_PROVISIONING_PROFILE:-}" ]; then
-    IOS_CERTIFICATE_PASSWORD="${IOS_CERTIFICATE_PASSWORD:-}"
-    SIGNING_SET_USED=legacy
-  else
-    fail "No signing secrets for distribution ${DISTRIBUTION:-development}: set $cert, $pass and $prof (builder signing setup --type ${DISTRIBUTION:-development} does), or the unsuffixed IOS_CERTIFICATE, IOS_CERTIFICATE_PASSWORD and IOS_PROVISIONING_PROFILE."
   fi
   echo "Signing set: $SIGNING_SET_USED"
 }
 
 # The profile in the set must be the type the build profile asked for, or the
-# export method, and the IPA, would not be what the profile promised. The
-# unsuffixed secrets with no distribution requested are taken as they are, as
-# before signing sets.
+# export method, and the IPA, would not be what the profile promised. Names
+# are compared canonically: the export method calls the store distribution
+# app-store, and a tag build may say internal for ad-hoc. The unsuffixed
+# secrets (no distribution) are taken as they are.
 check_signing_set() {
-  local want="$DISTRIBUTION" secret="IOS_PROVISIONING_PROFILE_$SIGNING_SET"
-  if [ "$SIGNING_SET_USED" = legacy ]; then
-    secret="the unsuffixed IOS_PROVISIONING_PROFILE"
-  elif [ -z "$want" ]; then
-    want=development
-  fi
-  if [ -n "$want" ] && [ "$1" != "$want" ]; then
-    fail "$secret holds a $1 provisioning profile, but the build profile asks for distribution $want (signing set $SIGNING_SET). Upload a $want profile with builder signing setup --type $want, or set the profile's distribution to $1."
+  [ "$SIGNING_SET_USED" != legacy ] || return 0
+  local have="$1" want="$DISTRIBUTION"
+  case "$have" in app-store) have=store ;; esac
+  case "$want" in internal) want=ad-hoc ;; esac
+  if [ "$have" != "$want" ]; then
+    fail "IOS_PROVISIONING_PROFILE_$SIGNING_SET holds a $1 provisioning profile, but the build profile asks for distribution $want. Run builder signing setup --distribution $want, or set the profile's distribution to $have."
   fi
 }
 
 install_signing() {
-  SIGNING_SET=$(signing_set "$DISTRIBUTION") || fail "DISTRIBUTION \"$DISTRIBUTION\" must be development, ad-hoc, app-store or enterprise"
+  SIGNING_SET=$(signing_set "$DISTRIBUTION") || fail "DISTRIBUTION \"$DISTRIBUTION\" must be development, ad-hoc (or internal), store or enterprise"
   select_signing_set
   signing_dir=$(mktemp -d "$ci_dir/signing.XXXXXX")
   trap cleanup_signing EXIT
@@ -243,7 +246,7 @@ install_signing() {
   # grants: the export fails, or an IPA that App Store Connect rejects comes
   # out. Say so now instead of after the whole build.
   if [ "$EXPORT_METHOD" != development ] && [ "$CONFIGURATION" = Debug ]; then
-    echo "The provisioning profile is an $EXPORT_METHOD profile, but the build configuration is Debug. A Debug build is signed with get-task-allow, which distribution profiles do not allow and App Store Connect rejects. Set \"configuration\": \"Release\" under \"ios\" in builder.json, or use a development profile." >&2
+    echo "The provisioning profile is an $EXPORT_METHOD profile, but the build configuration is Debug. A Debug build is signed with get-task-allow, which distribution profiles do not allow and App Store Connect rejects. Drop the profile's \"configuration\" (a distribution build defaults to Release) or set \"configuration\": \"Release\", or build with a development profile." >&2
     exit 1
   fi
   keychain_path="$signing_dir/signing.keychain-db"
