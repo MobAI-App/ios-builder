@@ -6,16 +6,16 @@ import (
 	"testing"
 )
 
-func boolPtr(b bool) *bool { return &b }
-
 func profileConfig() *Config {
 	return &Config{
 		Provider: "github",
 		IOS:      IOSConfig{Path: "ios", Scheme: "Top", Signing: true, Configuration: "Debug"},
 		Profiles: map[string]Profile{
-			"development": {Configuration: "Debug", Signing: boolPtr(false)},
-			"preview":     {Configuration: "Release", Env: map[string]string{"API_URL": "https://staging.example.com"}},
-			"production":  {Configuration: "Release", Scheme: "MyApp", Provider: "codemagic", Distribution: "app-store"},
+			"unsigned":    {Configuration: "Release"},
+			"development": {Distribution: "development"},
+			"preview":     {Distribution: "internal", Env: map[string]string{"API_URL": "https://staging.example.com"}},
+			"production":  {Scheme: "MyApp", Provider: "codemagic", Distribution: "store"},
+			"debug-store": {Configuration: "Debug", Distribution: "store"},
 		},
 	}
 }
@@ -27,9 +27,12 @@ func TestResolveProfile(t *testing.T) {
 		want          BuildSettings
 	}{
 		{"no profile keeps top-level settings", "", BuildSettings{Configuration: "Debug", Scheme: "Top", Signing: true, Provider: "github"}},
-		{"false overrides true", "development", BuildSettings{Profile: "development", Configuration: "Debug", Scheme: "Top", Signing: false, Provider: "github"}},
-		{"unset fields inherit", "preview", BuildSettings{Profile: "preview", Configuration: "Release", Scheme: "Top", Signing: true, Provider: "github", Env: map[string]string{"API_URL": "https://staging.example.com"}}},
-		{"every field overrides", "production", BuildSettings{Profile: "production", Configuration: "Release", Scheme: "MyApp", Signing: true, Provider: "codemagic", Distribution: "app-store"}},
+		// A profile without a distribution is unsigned, whatever ios.signing says.
+		{"no distribution is unsigned", "unsigned", BuildSettings{Profile: "unsigned", Configuration: "Release", Scheme: "Top", Provider: "github"}},
+		{"development derives Debug", "development", BuildSettings{Profile: "development", Configuration: "Debug", Scheme: "Top", Signing: true, Provider: "github", Distribution: "development"}},
+		{"internal is ad-hoc and derives Release", "preview", BuildSettings{Profile: "preview", Configuration: "Release", Scheme: "Top", Signing: true, Provider: "github", Distribution: "ad-hoc", Env: map[string]string{"API_URL": "https://staging.example.com"}}},
+		{"store derives Release and overrides the rest", "production", BuildSettings{Profile: "production", Configuration: "Release", Scheme: "MyApp", Signing: true, Provider: "codemagic", Distribution: "store"}},
+		{"an explicit configuration wins", "debug-store", BuildSettings{Profile: "debug-store", Configuration: "Debug", Scheme: "Top", Signing: true, Provider: "github", Distribution: "store"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := cfg.ResolveProfile(tt.profile)
@@ -42,6 +45,22 @@ func TestResolveProfile(t *testing.T) {
 				t.Fatalf("got %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseDistribution(t *testing.T) {
+	for in, want := range map[string]string{
+		"": "", "development": "development", "ad-hoc": "ad-hoc", "internal": "ad-hoc", "store": "store", "enterprise": "enterprise",
+	} {
+		// Flag values arrive with whatever spacing the user typed.
+		if got, err := ParseDistribution(" " + in + " "); err != nil || got != want {
+			t.Errorf("ParseDistribution(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"adhoc", "app-store", "AD_HOC", "Development", "distribution"} {
+		if _, err := ParseDistribution(bad); err == nil {
+			t.Errorf("ParseDistribution(%q) accepted", bad)
+		}
 	}
 }
 
@@ -66,7 +85,7 @@ func TestResolveProfileDefault(t *testing.T) {
 func TestResolveProfileErrors(t *testing.T) {
 	cfg := profileConfig()
 	_, err := cfg.ResolveProfile("staging")
-	if err == nil || !strings.Contains(err.Error(), "development, preview, production") {
+	if err == nil || !strings.Contains(err.Error(), "debug-store, development, preview, production, unsigned") {
 		t.Fatalf("unknown profile should list the available names: %v", err)
 	}
 	if _, err := (&Config{}).ResolveProfile("staging"); err == nil || !strings.Contains(err.Error(), "no profiles") {
@@ -74,11 +93,12 @@ func TestResolveProfileErrors(t *testing.T) {
 	}
 	for name, p := range map[string]Profile{
 		"bad distribution": {Distribution: "adhoc"},
+		"old app-store":    {Distribution: "app-store"},
 		"bad env name":     {Env: map[string]string{"API-URL": "x"}},
 		"env with equals":  {Env: map[string]string{"A=B": "x"}},
 		"reserved env":     {Env: map[string]string{"SCHEME": "Other"}},
 		"reserved secret":  {Env: map[string]string{"IOS_CERTIFICATE": "x"}},
-		"reserved set":     {Env: map[string]string{"IOS_PROVISIONING_PROFILE_APP_STORE": "x"}},
+		"reserved set":     {Env: map[string]string{"IOS_PROVISIONING_PROFILE_STORE": "x"}},
 		"reserved SIGNING": {Env: map[string]string{"SIGNING_SET": "AD_HOC"}},
 		"reserved PATH":    {Env: map[string]string{"PATH": "/tmp"}},
 		"GitHub namespace": {Env: map[string]string{"GITHUB_TOKEN": "x"}},
@@ -94,18 +114,23 @@ func TestResolveProfileErrors(t *testing.T) {
 
 func TestProfileJSONRoundTrip(t *testing.T) {
 	raw := `{"project":"App","github":{"owner":"o","repo":"r"},"defaultProfile":"preview",
-	  "profiles":{"preview":{"configuration":"Release","signing":false,"env":{"API_URL":"https://staging.example.com"},"distribution":"ad-hoc"}}}`
+	  "profiles":{"preview":{"configuration":"Release","env":{"API_URL":"https://staging.example.com"},"distribution":"ad-hoc"}}}`
 	var cfg Config
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		t.Fatal(err)
 	}
 	p := cfg.Profiles["preview"]
-	if p.Signing == nil || *p.Signing || p.Distribution != "ad-hoc" || cfg.DefaultProfile != "preview" {
+	if p.Distribution != "ad-hoc" || p.Configuration != "Release" || cfg.DefaultProfile != "preview" {
 		t.Fatalf("parsed %+v", cfg)
 	}
 	out, err := json.Marshal(&Config{Project: "App"})
 	if err != nil || strings.Contains(string(out), "profiles") || strings.Contains(string(out), "defaultProfile") {
 		t.Fatalf("empty profiles should be omitted: %s %v", out, err)
+	}
+	// A profile written by signing setup is just its distribution.
+	out, err = json.Marshal(Profile{Distribution: "store"})
+	if err != nil || string(out) != `{"distribution":"store"}` {
+		t.Fatalf("profile encoding: %s %v", out, err)
 	}
 }
 

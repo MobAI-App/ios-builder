@@ -16,14 +16,15 @@ type BuildSettings struct {
 	Profile       string // selected profile name, empty when none applies
 	Configuration string
 	Scheme        string
-	Signing       bool
-	Provider      string // profile provider, else the top-level provider; may be empty (GitHub)
-	Env           map[string]string
-	Distribution  string
+	// Signing is true when the profile has a distribution, or, with no
+	// profile, when ios.signing is set (the legacy path).
+	Signing  bool
+	Provider string // profile provider, else the top-level provider; may be empty (GitHub)
+	Env      map[string]string
+	// Distribution is the profile's distribution, canonical (internal is
+	// ad-hoc); empty for unsigned builds and the legacy path.
+	Distribution string
 }
-
-// Distributions are the accepted values of a profile's distribution field.
-var Distributions = []string{"development", "ad-hoc", "app-store", "enterprise"}
 
 // reservedEnv names the variables the runners read their parameters and
 // secrets from, and the ones the shell and the CI services own. A profile that
@@ -73,6 +74,10 @@ func (c *Config) ProfileNames() []string {
 // empty, over the top-level ios.* and provider settings. With neither, the
 // result is the top-level settings unchanged, so projects without profiles
 // build exactly as before.
+//
+// A profile signs exactly when it has a distribution; ios.signing does not
+// apply to it. Its configuration is the one it sets, else Debug for
+// development and Release for every other distribution, else ios.configuration.
 func (c *Config) ResolveProfile(name string) (BuildSettings, error) {
 	s := BuildSettings{
 		Configuration: c.IOS.Configuration,
@@ -94,8 +99,9 @@ func (c *Config) ResolveProfile(name string) (BuildSettings, error) {
 		}
 		return s, fmt.Errorf("%s %q is not defined; available profiles: %s", source, name, strings.Join(c.ProfileNames(), ", "))
 	}
-	if p.Distribution != "" && !slices.Contains(Distributions, p.Distribution) {
-		return s, fmt.Errorf("profile %q: distribution %q must be one of %s", name, p.Distribution, strings.Join(Distributions, ", "))
+	distribution, err := ParseDistribution(p.Distribution)
+	if err != nil {
+		return s, fmt.Errorf("profile %q: %w", name, err)
 	}
 	for k := range p.Env {
 		if !envNameRe.MatchString(k) {
@@ -106,14 +112,18 @@ func (c *Config) ResolveProfile(name string) (BuildSettings, error) {
 		}
 	}
 	s.Profile = name
-	if p.Configuration != "" {
+	s.Distribution = distribution
+	s.Signing = distribution != ""
+	switch {
+	case p.Configuration != "":
 		s.Configuration = p.Configuration
+	case distribution == DistributionDevelopment:
+		s.Configuration = "Debug"
+	case distribution != "":
+		s.Configuration = "Release"
 	}
 	if p.Scheme != "" {
 		s.Scheme = p.Scheme
-	}
-	if p.Signing != nil {
-		s.Signing = *p.Signing
 	}
 	if p.Provider != "" {
 		s.Provider = p.Provider
@@ -121,7 +131,6 @@ func (c *Config) ResolveProfile(name string) (BuildSettings, error) {
 	if len(p.Env) > 0 {
 		s.Env = p.Env
 	}
-	s.Distribution = p.Distribution
 	return s, nil
 }
 

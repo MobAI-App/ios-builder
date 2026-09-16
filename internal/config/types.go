@@ -28,14 +28,14 @@ type Config struct {
 // field is optional and overrides the matching top-level setting; unset fields
 // keep the top-level value. Runner and submit settings are planned here too.
 type Profile struct {
-	Configuration string            `json:"configuration,omitempty"` // overrides ios.configuration
+	Configuration string            `json:"configuration,omitempty"` // overrides ios.configuration; derived from distribution when empty
 	Scheme        string            `json:"scheme,omitempty"`        // overrides ios.scheme
-	Signing       *bool             `json:"signing,omitempty"`       // overrides ios.signing; a pointer so false can override true
 	Provider      string            `json:"provider,omitempty"`      // overrides provider
 	Env           map[string]string `json:"env,omitempty"`           // exported on the runner before dependencies and the build
-	// Distribution (development, ad-hoc, app-store, enterprise) selects the signing
-	// set the runner reads (IOS_*_<SET> secrets, see SigningSet) and the type the
-	// provisioning profile in it must have. Empty means development.
+	// Distribution is the only signing setting of a profile: development,
+	// ad-hoc (or internal), store or enterprise. It selects the signing set the
+	// runner reads (IOS_*_<SET> secrets, see SigningSet) and the type the
+	// provisioning profile in it must have. Empty means an unsigned build.
 	Distribution string `json:"distribution,omitempty"`
 }
 
@@ -130,7 +130,7 @@ type IOSConfig struct {
 	Path          string `json:"path,omitempty"`
 	Scheme        string `json:"scheme,omitempty"`        // Xcode scheme to build (auto-detected if empty)
 	BundleID      string `json:"bundleId,omitempty"`      // App bundle identifier, for signing setup (detected by init when unambiguous)
-	Signing       bool   `json:"signing,omitempty"`       // Whether code signing is configured
+	Signing       bool   `json:"signing,omitempty"`       // Legacy: sign builds without a profile with the unsuffixed IOS_* secrets
 	Configuration string `json:"configuration,omitempty"` // Build configuration: Debug (faster) or Release (production)
 }
 
