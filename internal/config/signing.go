@@ -36,6 +36,9 @@ func ParseDistribution(s string) (string, error) {
 	if s == "" {
 		return "", nil
 	}
+	if s == "app-store" {
+		return "", fmt.Errorf("distribution %q is now %q", s, DistributionStore)
+	}
 	return "", fmt.Errorf("distribution %q must be one of %s (internal is ad-hoc)", s, strings.Join(Distributions, ", "))
 }
 

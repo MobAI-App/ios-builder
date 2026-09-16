@@ -62,6 +62,10 @@ func TestParseDistribution(t *testing.T) {
 			t.Errorf("ParseDistribution(%q) accepted", bad)
 		}
 	}
+	// The old name of store points at the new one.
+	if _, err := ParseDistribution("app-store"); err == nil || !strings.Contains(err.Error(), `is now "store"`) {
+		t.Errorf("app-store: %v", err)
+	}
 }
 
 func TestResolveProfileDefault(t *testing.T) {
