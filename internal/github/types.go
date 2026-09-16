@@ -71,6 +71,20 @@ type PublicKey struct {
 	Key   string `json:"key"`
 }
 
+// Secret is a repository secret as listed by the API: its name and dates,
+// never its value.
+type Secret struct {
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// SecretsResponse is the response from listing repository secrets
+type SecretsResponse struct {
+	TotalCount int      `json:"total_count"`
+	Secrets    []Secret `json:"secrets"`
+}
+
 // CreateSecretRequest is the request body for creating/updating a secret
 type CreateSecretRequest struct {
 	EncryptedValue string `json:"encrypted_value"`

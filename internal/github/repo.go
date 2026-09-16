@@ -30,6 +30,25 @@ func (c *Client) GetPublicKey(ctx context.Context, owner, repo string) (*PublicK
 	return &key, nil
 }
 
+// ListSecretNames returns the names of the repository's Actions secrets
+// (values are never readable). It follows the pages GitHub returns.
+func (c *Client) ListSecretNames(ctx context.Context, owner, repo string) ([]string, error) {
+	var names []string
+	for page := 1; ; page++ {
+		path := fmt.Sprintf("/repos/%s/%s/actions/secrets?per_page=100&page=%d", owner, repo, page)
+		var list SecretsResponse
+		if err := c.do(ctx, path, &list); err != nil {
+			return nil, fmt.Errorf("failed to list secrets: %w", err)
+		}
+		for _, s := range list.Secrets {
+			names = append(names, s.Name)
+		}
+		if len(list.Secrets) == 0 || len(names) >= list.TotalCount {
+			return names, nil
+		}
+	}
+}
+
 // CreateOrUpdateSecret creates or updates a repository secret
 // The value should be encrypted using the repository's public key
 func (c *Client) CreateOrUpdateSecret(ctx context.Context, owner, repo, name, encryptedValue, keyID string) error {
