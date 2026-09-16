@@ -254,10 +254,11 @@ internal/
   deleted with it. `filter[identifier]` on bundleIds is a prefix match, so the exact identifier
   is checked client-side. The manual `--certificate`/`--profile` path in `runSigningSetup` is
   untouched; the automatic one lives in `cmd/builder/signing_auto.go`.
-- **Export Method Is Still `development`**: `ios-build.yml` and `runner.sh` hardcode
-  `method = development` in ExportOptions.plist, so an ad-hoc or App Store profile from
-  `signing setup --type ad-hoc|app-store` signs the archive but the export step needs the
-  matching method before those IPAs work (roadmap prerequisite under item 1).
+- **Export Method Follows The Profile**: the `method` in ExportOptions.plist must match the
+  uploaded profile's type (`development`, `ad-hoc`, `app-store`), or xcodebuild refuses the
+  export. `signing setup --type ad-hoc|app-store` only produces the material; deriving the
+  method from the profile in `ios-build.yml` and `runner.sh` is PR #17, so those IPAs work
+  once both are merged.
 - **Extension Points**: a future `ios release` (upload + TestFlight, automatic build numbers)
   composes `distribute.Upload` and `distribute.SubmitTestFlight` and reads `asc.Client.ListBuilds`
   for the latest build number; the `pkg/` wrappers do not expose `asc` yet.
