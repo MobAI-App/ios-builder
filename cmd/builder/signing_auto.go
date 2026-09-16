@@ -28,7 +28,10 @@ const providerSecretsDoc = "https://github.com/MobAI-App/ios-builder/blob/main/d
 // signingAutoResult is the JSON output of the automatic `signing setup`.
 type signingAutoResult struct {
 	*signing.AutoResult
-	Provider        string `json:"provider"`
+	Provider string `json:"provider"`
+	// SigningSet is the suffix of the secrets written (DEVELOPMENT, AD_HOC,
+	// APP_STORE), which builds select by their profile's distribution.
+	SigningSet      string `json:"signing_set"`
 	SecretsUploaded bool   `json:"secrets_uploaded"`
 	// GeneratedPassword is set when no password was given: it is printed
 	// exactly once, here.
@@ -48,6 +51,13 @@ func runSigningAuto(cmd *cobra.Command) error {
 	}
 	typeFlag, _ := cmd.Flags().GetString("type")
 	typ, err := signing.ParseType(typeFlag)
+	if err != nil {
+		return err
+	}
+	if typ == signing.TypeEnterprise {
+		return errors.New("enterprise (in-house) profiles are not issued through the App Store Connect API; download the certificate and profile from the portal and pass --certificate and --profile")
+	}
+	set, err := config.SigningSet(string(typ))
 	if err != nil {
 		return err
 	}
@@ -81,21 +91,21 @@ func runSigningAuto(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	keyPEM, keyPath, err := signingKey(cmd, outDir)
+	keyPEM, keyPath, err := signingKey(cmd, outDir, typ)
 	if err != nil {
 		return err
 	}
 
 	// The plan, then one confirmation before anything is created.
 	fmt.Fprintf(out.log, "Bundle ID: %s\n", bundleID)
-	fmt.Fprintf(out.log, "Type:      %s\n", typ)
+	fmt.Fprintf(out.log, "Type:      %s (signing set %s)\n", typ, set)
 	if typ.NeedsDevices() {
 		fmt.Fprintf(out.log, "Devices:   %s\n", describeDevices(devices))
 	}
 	if keyPath != "" {
 		fmt.Fprintf(out.log, "Key:       %s (reusing its certificate if one is valid)\n", keyPath)
 	} else {
-		fmt.Fprintf(out.log, "Key:       new, written to %s\n", filepath.Join(outDir, signing.KeyFileName))
+		fmt.Fprintf(out.log, "Key:       new, written to %s\n", filepath.Join(outDir, signing.KeyFileName(typ)))
 	}
 	fmt.Fprintf(out.log, "Provider:  %s\n", provider)
 	if force {
@@ -126,7 +136,7 @@ func runSigningAuto(cmd *cobra.Command) error {
 		}
 	}
 
-	res := &signingAutoResult{Provider: provider, GeneratedPassword: generated}
+	res := &signingAutoResult{Provider: provider, SigningSet: set, GeneratedPassword: generated}
 	res.AutoResult, err = signing.Auto(ctx, client, &signing.AutoOptions{
 		BundleID: bundleID, Type: typ, Devices: devices, KeyPEM: keyPEM, CommonName: cfg.Project,
 		Password: password, Force: force, OutDir: outDir, Log: out.log,
@@ -136,7 +146,7 @@ func runSigningAuto(cmd *cobra.Command) error {
 	}
 	if ghClient != nil {
 		fmt.Fprintf(out.log, "\nUploading secrets to %s/%s...\n", cfg.GitHub.Owner, cfg.GitHub.Repo)
-		if err := uploadSigningSecrets(ctx, ghClient, cfg, out.log, res.P12, password, res.ProfileContent); err != nil {
+		if err := uploadSigningSecrets(ctx, ghClient, cfg, out.log, set, res.P12, password, res.ProfileContent); err != nil {
 			return finish(out, cmd, res, err, nil)
 		}
 		res.SecretsUploaded = true
@@ -233,16 +243,21 @@ func mobaiSigningDevices(connected []mobai.Device) []signing.Device {
 	return devices
 }
 
-// signingKey returns --key, else the key a previous run left in outDir, else
-// nil so a key is generated. keyPath is "" when generating.
-func signingKey(cmd *cobra.Command, outDir string) (keyPEM []byte, keyPath string, err error) {
+// signingKey returns --key, else the key a previous run of this type left in
+// outDir (ios-signing-<type>.key, or the ios-signing.key of runs before
+// signing sets), else nil so a key is generated. keyPath is "" when generating.
+func signingKey(cmd *cobra.Command, outDir string, typ signing.Type) (keyPEM []byte, keyPath string, err error) {
 	keyPath, _ = cmd.Flags().GetString("key")
 	if keyPath == "" {
-		candidate := filepath.Join(outDir, signing.KeyFileName)
-		if _, err := os.Stat(candidate); err != nil {
+		for _, name := range []string{signing.KeyFileName(typ), signing.LegacyKeyFileName} {
+			if candidate := filepath.Join(outDir, name); fileExists(candidate) {
+				keyPath = candidate
+				break
+			}
+		}
+		if keyPath == "" {
 			return nil, "", nil
 		}
-		keyPath = candidate
 	}
 	keyPath = expandPath(keyPath)
 	keyPEM, err = os.ReadFile(keyPath)
@@ -276,16 +291,30 @@ func randomPassword() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// uploadSigningSecrets encrypts and stores the three signing secrets.
-func uploadSigningSecrets(ctx context.Context, gh *github.Client, cfg *config.Config, log io.Writer, p12 []byte, password string, profile []byte) error {
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// secretStore is the part of the GitHub client that signing setup writes through.
+type secretStore interface {
+	GetPublicKey(ctx context.Context, owner, repo string) (*github.PublicKey, error)
+	CreateOrUpdateSecret(ctx context.Context, owner, repo, name, encryptedValue, keyID string) error
+}
+
+// uploadSigningSecrets encrypts and stores the three signing secrets of a set
+// (IOS_CERTIFICATE_<SET>, ...). Other sets, and the unsuffixed secrets of
+// repositories set up before signing sets, are left alone.
+func uploadSigningSecrets(ctx context.Context, gh secretStore, cfg *config.Config, log io.Writer, set string, p12 []byte, password string, profile []byte) error {
 	publicKey, err := gh.GetPublicKey(ctx, cfg.GitHub.Owner, cfg.GitHub.Repo)
 	if err != nil {
 		return fmt.Errorf("failed to get repository public key: %w", err)
 	}
+	names := config.SigningSecretNames(set)
 	secrets := []struct{ name, value string }{
-		{"IOS_CERTIFICATE", base64.StdEncoding.EncodeToString(p12)},
-		{"IOS_CERTIFICATE_PASSWORD", password},
-		{"IOS_PROVISIONING_PROFILE", base64.StdEncoding.EncodeToString(profile)},
+		{names.Certificate, base64.StdEncoding.EncodeToString(p12)},
+		{names.Password, password},
+		{names.Profile, base64.StdEncoding.EncodeToString(profile)},
 	}
 	for _, s := range secrets {
 		encrypted, err := github.EncryptSecret(publicKey.Key, s.value)
@@ -328,19 +357,26 @@ func printSigningSummary(cfg *config.Config, res *signingAutoResult) {
 	}
 	fmt.Println("Keep these out of git (add them to .gitignore); gitignored files are also left out of build snapshots.")
 	fmt.Println()
+	names := config.SigningSecretNames(res.SigningSet)
 	if res.SecretsUploaded {
-		fmt.Printf("Secrets uploaded to %s/%s and ios.signing enabled in builder.json.\n", cfg.GitHub.Owner, cfg.GitHub.Repo)
+		fmt.Printf("Secrets %s, %s and %s uploaded to %s/%s and ios.signing enabled in builder.json.\n", names.Certificate, names.Password, names.Profile, cfg.GitHub.Owner, cfg.GitHub.Repo)
 	} else {
 		fmt.Printf("%s secrets are set in its dashboard, not by Builder. Add:\n", res.Provider)
-		fmt.Printf("  IOS_CERTIFICATE           base64 of %s\n", res.Files.P12)
-		fmt.Println("  IOS_CERTIFICATE_PASSWORD  the .p12 password")
-		fmt.Printf("  IOS_PROVISIONING_PROFILE  base64 of %s\n", res.Files.Profile)
+		fmt.Printf("  %-*s  base64 of %s\n", len(names.Password), names.Certificate, res.Files.P12)
+		fmt.Printf("  %s  the .p12 password\n", names.Password)
+		fmt.Printf("  %-*s  base64 of %s\n", len(names.Password), names.Profile, res.Files.Profile)
 		fmt.Printf("then set ios.signing to true in builder.json. Steps: %s\n", providerSecretsDoc)
 	}
 	fmt.Println()
-	fmt.Println("Next: builder ios build")
+	printSigningSetUsage(res.Type, res.SigningSet)
+	fmt.Println()
+	if res.Type == signing.TypeDevelopment {
+		fmt.Println("Next: builder ios build")
+	} else {
+		fmt.Printf("Next: builder ios build --profile <profile with distribution %s>\n", res.Type)
+	}
 	if res.Type == signing.TypeAppStore {
-		fmt.Println(`App Store builds need "configuration": "Release" under ios in builder.json; then builder ios upload --wait.`)
+		fmt.Println("then builder ios upload --wait.")
 	}
 	fmt.Println("Run builder signing setup again any time: it reuses what is valid and renews only what expired or changed.")
 }

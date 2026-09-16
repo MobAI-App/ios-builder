@@ -2,14 +2,12 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/MobAI-App/ios-builder/internal/config"
-	"github.com/MobAI-App/ios-builder/internal/github"
 	"github.com/MobAI-App/ios-builder/internal/signing"
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
@@ -36,18 +34,25 @@ changed is recreated. Nothing is ever revoked.
   --type development  Apple Development certificate, devices required (default)
   --type ad-hoc       Apple Distribution certificate, devices required
   --type app-store    Apple Distribution certificate, no devices; TestFlight/App
-                      Store uploads need this and ios.configuration Release
+                      Store uploads need this and a Release configuration
 
 With --certificate and --profile the files are taken as they are:
 - A .p12 file (exported from Keychain Access on a Mac)
 - A .cer file downloaded from the Apple Developer portal, together with the
   private key from 'builder signing csr' (--key) — the .p12 is then assembled
   locally, so no Mac is needed at any point
+The type is read from the .mobileprovision (development, ad-hoc, app-store or
+enterprise); --type overrides it.
 
-Either way the command uploads three GitHub repository secrets —
-IOS_CERTIFICATE, IOS_CERTIFICATE_PASSWORD, IOS_PROVISIONING_PROFILE — and sets
-ios.signing in builder.json. For Codemagic and Bitrise it writes the files and
-points at docs/provider-secrets.md instead.`,
+Either way the command uploads the three GitHub repository secrets of the
+type's signing set — IOS_CERTIFICATE_<SET>, IOS_CERTIFICATE_PASSWORD_<SET>,
+IOS_PROVISIONING_PROFILE_<SET>, with SET one of DEVELOPMENT, AD_HOC,
+APP_STORE, ENTERPRISE — and sets ios.signing in builder.json. A build reads
+the set named by its profile's distribution (development when there is
+none), so one repository can hold a development set for devices and an
+App Store set for releases; existing unsuffixed secrets stay in place and
+remain the fallback. For Codemagic and Bitrise it writes the files and points
+at docs/provider-secrets.md instead.`,
 	RunE: runSigningSetup,
 }
 
@@ -85,7 +90,7 @@ func init() {
 	signingSetupCmd.Flags().StringP("profile", "p", "", "Path to .mobileprovision file")
 	signingSetupCmd.Flags().StringP("key", "k", "", "Path to the private key from 'builder signing csr' (required with a .cer; automatic mode reuses it and its certificate)")
 	signingSetupCmd.Flags().String("bundle-id", "", "App bundle ID (default: ios.bundleId in builder.json, else the newest IPA in ./dist)")
-	signingSetupCmd.Flags().String("type", string(signing.TypeDevelopment), "Signing type: development, ad-hoc or app-store")
+	signingSetupCmd.Flags().String("type", string(signing.TypeDevelopment), "Signing type: development, ad-hoc, app-store or enterprise (with --profile: read from the profile unless given)")
 	signingSetupCmd.Flags().StringArray("device", nil, "Device UDID to register (repeatable)")
 	signingSetupCmd.Flags().Bool("devices-from-mobai", false, "Register the physical iOS devices connected to MobAI")
 	signingSetupCmd.Flags().String("out-dir", ".", "Directory for the private key, .p12 and .mobileprovision")
@@ -302,6 +307,17 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("Profile: %s (%.1f KB)\n", profilePath, float64(len(profileData))/1024)
 
+	typeFlag, _ := cmd.Flags().GetString("type")
+	typ, source, err := manualSigningType(profileData, typeFlag, cmd.Flags().Changed("type"))
+	if err != nil {
+		return err
+	}
+	set, err := config.SigningSet(string(typ))
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Type:    %s (%s), signing set %s\n", typ, source, set)
+
 	var password string
 	if isPortalCertificate(certPath) {
 		// A .cer from the Apple Developer portal: assemble the .p12 locally
@@ -327,7 +343,7 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 		}
 		// Save the .p12: it is the reusable signing identity (Sideloadly,
 		// another machine, re-running setup), not a throwaway.
-		p12Path := "ios-signing.p12"
+		p12Path := signing.P12FileName(typ)
 		if err := os.WriteFile(p12Path, certData, 0600); err != nil {
 			return fmt.Errorf("failed to write .p12: %w", err)
 		}
@@ -346,34 +362,8 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-
-	// Get repository public key for encryption
-	publicKey, err := ghClient.GetPublicKey(ctx, cfg.GitHub.Owner, cfg.GitHub.Repo)
-	if err != nil {
-		return fmt.Errorf("failed to get repository public key: %w", err)
-	}
-
-	// Base64 encode the files
-	certBase64 := base64.StdEncoding.EncodeToString(certData)
-	profileBase64 := base64.StdEncoding.EncodeToString(profileData)
-
-	// Encrypt and upload secrets
-	secrets := map[string]string{
-		"IOS_CERTIFICATE":          certBase64,
-		"IOS_CERTIFICATE_PASSWORD": password,
-		"IOS_PROVISIONING_PROFILE": profileBase64,
-	}
-
-	for name, value := range secrets {
-		encrypted, err := github.EncryptSecret(publicKey.Key, value)
-		if err != nil {
-			return fmt.Errorf("failed to encrypt %s: %w", name, err)
-		}
-
-		if err := ghClient.CreateOrUpdateSecret(ctx, cfg.GitHub.Owner, cfg.GitHub.Repo, name, encrypted, publicKey.KeyID); err != nil {
-			return fmt.Errorf("failed to upload %s: %w", name, err)
-		}
-		fmt.Printf("  Uploaded: %s\n", name)
+	if err := uploadSigningSecrets(ctx, ghClient, cfg, os.Stdout, set, certData, password, profileData); err != nil {
+		return err
 	}
 
 	// Update config to indicate signing is enabled
@@ -387,8 +377,39 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 	fmt.Println("Code signing configured successfully!")
 	fmt.Println()
-	fmt.Println("Your next build will be signed. To build unsigned, use:")
+	printSigningSetUsage(typ, set)
+	fmt.Println("To build unsigned, use:")
 	fmt.Println("  builder ios build --unsigned")
 
 	return nil
+}
+
+// manualSigningType is the type of the profile being uploaded: --type when
+// given, else what the .mobileprovision says. A --type that disagrees with the
+// profile is taken, with a warning, since the runner will refuse the pair.
+func manualSigningType(profileData []byte, typeFlag string, typeGiven bool) (typ signing.Type, source string, err error) {
+	detected, detectErr := signing.ProfileType(profileData)
+	if !typeGiven {
+		if detectErr != nil {
+			return "", "", fmt.Errorf("%w; pass --type development|ad-hoc|app-store|enterprise", detectErr)
+		}
+		return detected, "read from the profile", nil
+	}
+	if typ, err = signing.ParseType(typeFlag); err != nil {
+		return "", "", err
+	}
+	if detectErr == nil && detected != typ {
+		fmt.Printf("Warning: the profile is a %s profile but --type %s was given; builds with distribution %s will fail on this set until a %s profile is uploaded to it.\n", detected, typ, typ, typ)
+	}
+	return typ, "--type", nil
+}
+
+// printSigningSetUsage says which builds read the set that was just written.
+func printSigningSetUsage(typ signing.Type, set string) {
+	if typ == signing.TypeDevelopment {
+		fmt.Printf("Signed builds read the %s set unless their profile sets another distribution.\n", set)
+	} else {
+		fmt.Printf("Builds read the %s set when their builder.json profile has \"distribution\": \"%s\";\n", set, typ)
+		fmt.Printf("that profile needs \"configuration\": \"Release\", since a Debug build is refused by %s profiles.\n", typ)
+	}
 }
