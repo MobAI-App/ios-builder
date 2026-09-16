@@ -347,6 +347,7 @@ func TestSigningSetSelection(t *testing.T) {
 	// selection and before the certificate touches a keychain, and read the
 	// set the resolve step emits.
 	for name, data := range map[string]string{"ios-build.yml": string(workflowTemplate), "runner.sh": string(runner)} {
+		data = strings.ReplaceAll(data, "\r\n", "\n") // Windows checkouts
 		selected, checked, imported := strings.Index(data, "select_signing_set\n"), strings.Index(data, `check_signing_set "$EXPORT_METHOD"`), strings.Index(data, "security import ")
 		if selected < 0 || checked < 0 || imported < 0 {
 			t.Errorf("%s: selection %d, check %d, import %d", name, selected, checked, imported)
