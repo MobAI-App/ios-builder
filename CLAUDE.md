@@ -120,8 +120,9 @@ builder signing setup ───► Bundle ID: --bundle-id → ios.bundleId → d
                             └─ profiles?filter[name] → reuse / DELETE + POST profiles
                                 │
                                 ▼
-                          Writes key/.p12/.mobileprovision, uploads the three IOS_*
-                          secrets (GitHub) or prints them (Codemagic/Bitrise)
+                          Writes key/.p12/.mobileprovision (named by type), uploads the
+                          three IOS_*_<SET> secrets of the type's signing set (GitHub)
+                          or prints them (Codemagic/Bitrise)
 
 builder ios upload ──────► Reads bundle ID / version / build number from dist/*.ipa
                                 │
@@ -203,8 +204,30 @@ internal/
   GitHub the profile's env lands in `$GITHUB_ENV`, and step-level `env:` (the signing secrets, the
   build parameters) takes precedence over it. `distribution` reaches the runner as the
   `steps.params.outputs.distribution` output on GitHub and the `DISTRIBUTION` variable for
-  `runner.sh`; the export step is meant to consume it under those names.
+  `runner.sh`, where it selects the signing set (below).
   `env` is build-time configuration, not secrets: it sits in `builder.json` and in the run's inputs
+- **Signing Sets**: one trio of secrets per distribution type, `IOS_CERTIFICATE_<SET>`,
+  `IOS_CERTIFICATE_PASSWORD_<SET>`, `IOS_PROVISIONING_PROFILE_<SET>` with SET in DEVELOPMENT,
+  AD_HOC, APP_STORE, ENTERPRISE; the unsuffixed names are the fallback so repositories from before
+  keep building. The distribution → set table exists twice and must agree: `config.SigningSet`
+  (Go; `config.SigningSecretNames` builds the names) and the shell function `signing_set` in
+  `ios-build.yml`'s `Resolve parameters` (emits the `signing_set` output) and `runner.sh`
+  (`install_signing` derives it from `DISTRIBUTION`). No distribution means DEVELOPMENT. The
+  signing step receives every set's secrets as env (GitHub hands a missing secret over as empty;
+  Codemagic/Bitrise users define the suffixed variables); `select_signing_set` picks the set by
+  bash indirect expansion, falls back to the unsuffixed names, and fails naming both when neither
+  exists; `check_signing_set` compares `detect_export_method`'s result with the requested
+  distribution (a suffixed set is always checked, the legacy set only when a distribution was
+  requested) before the keychain work and the build. `select_signing_set`/`check_signing_set`/
+  `signing_set` are verbatim in both templates, each with its own `fail` (`::error::` vs stderr);
+  `TestSigningSetSelection` compares the bodies and runs them with stub secrets. `signing setup`
+  writes only the set of its type (automatic: `--type`; manual: `signing.ProfileType` reads the
+  plist out of the CMS blob, `--type` overrides) and never touches other sets or the legacy names.
+  Files are `ios-signing-<type>.key/.p12`, so two types coexist in one `--out-dir`; the key lookup
+  is `--key`, then the type's file, then the legacy `ios-signing.key`. `Progress.Settings` prints
+  `Signing set:` for signed builds. Enterprise is a valid set and profile type but `Auto` refuses
+  it (no ASC endpoint for in-house profiles). The suffixed secret names and `SIGNING_SET*` are
+  reserved env names.
 - **Flutter Detection**: Auto-detects Flutter projects, runs `flutter pub get`, uses `Runner` scheme
 - **DerivedData Caching**: `restore` keys on `github.run_id` and only the prefix in `restore-keys`
   ever hits, so every run must pair with a `cache/save` step or later builds stay cold. `ios-share`
@@ -268,9 +291,10 @@ internal/
   already in it, and rewrites ASC 409/422 with a "complete the metadata" hint.
 - **Automatic Signing** (`signing.Auto`, behind `signing setup` without `--certificate`/
   `--profile`): idempotent and never revokes. A certificate is reused only when its private key
-  is local (`--key`, or the `ios-signing.key` a previous run left in `--out-dir`), since a .p12
-  needs the key; otherwise a new one is issued and Apple's quota error (2 Development /
-  3 Distribution) gets a hint. Dev/ad-hoc profiles cover every ENABLED iOS device on the
+  is local (`--key`, or the `ios-signing-<type>.key` / legacy `ios-signing.key` a previous run
+  left in `--out-dir`), since a .p12 needs the key; otherwise a new one is issued and Apple's
+  quota error (2 Development / 3 Distribution) gets a hint. Dev/ad-hoc profiles cover every
+  ENABLED iOS device on the
   account, not just the ones passed; App Store profiles send no `devices` relationship at
   all (an empty one is rejected). Profile membership is read from
   `/v1/profiles/{id}/relationships/{certificates,devices}` (paginated), not `include=`, which
@@ -280,10 +304,10 @@ internal/
   is checked client-side. The manual `--certificate`/`--profile` path in `runSigningSetup` is
   untouched; the automatic one lives in `cmd/builder/signing_auto.go`.
 - **Export Method Follows The Profile**: the `method` in ExportOptions.plist must match the
-  uploaded profile's type (`development`, `ad-hoc`, `app-store`), or xcodebuild refuses the
-  export. `signing setup --type ad-hoc|app-store` only produces the material; deriving the
-  method from the profile in `ios-build.yml` and `runner.sh` is PR #17, so those IPAs work
-  once both are merged.
+  uploaded profile's type (`development`, `ad-hoc`, `app-store`, `enterprise`), or xcodebuild
+  refuses the export. `detect_export_method` in `ios-build.yml` and `runner.sh` reads it from
+  the profile of the selected signing set, and `check_signing_set` confirms it is the type the
+  build profile's `distribution` asked for.
 - **Extension Points**: a future `ios release` (upload + TestFlight, automatic build numbers)
   composes `distribute.Upload` and `distribute.SubmitTestFlight` and reads `asc.Client.ListBuilds`
   for the latest build number; the `pkg/` wrappers do not expose `asc` yet.
@@ -312,8 +336,9 @@ project has exactly one app target (test targets and `$(…)` values are skipped
 
 `profiles` and `defaultProfile` are optional. A profile's fields are `configuration`, `scheme`,
 `signing`, `provider`, `env` (string map) and `distribution` (`development`, `ad-hoc`, `app-store`,
-`enterprise`; reserved for the export step, passed through but not applied yet). `runner` and
-`submit` are planned for the same struct (`config.Profile`) but not read.
+`enterprise`; selects the signing set and the profile type the runner expects, and with it the
+export method; `signing: true` without it is development). `runner` and `submit` are planned for
+the same struct (`config.Profile`) but not read.
 
 ## Workflow Features
 
@@ -331,7 +356,7 @@ The embedded workflow template (`internal/workflow/templates/ios-build.yml`):
   `use_signing`, `configuration`, `flutter_version` and `jdk_version` from `builder.json` in the
   tagged tree, applying the profile named by `defaultProfile` (a tag cannot pick one per run);
   every later step reads `steps.params.outputs.*`, never `inputs.*`. The same step exports the
-  profile's `env` to `$GITHUB_ENV` and outputs `profile` and `distribution`. The job deletes
+  profile's `env` to `$GITHUB_ENV` and outputs `profile`, `distribution` and `signing_set`. The job deletes
   the tag when it ends (`permissions: contents: write`). Any other workflow in the repo with an
   unfiltered `on: push` also fires on these tags.
 - Runs on `macos-latest`

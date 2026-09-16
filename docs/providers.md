@@ -150,11 +150,14 @@ same build may consume different minutes on each provider.
 See [step-by-step signing and MobAI secret setup](provider-secrets.md).
 
 `builder signing setup` continues to upload signing secrets to **GitHub**.
-For Codemagic/Bitrise, separately configure these secrets on that provider:
+For Codemagic/Bitrise, separately configure these secrets on that provider,
+one set per distribution type (`<SET>` is `DEVELOPMENT`, `AD_HOC`, `APP_STORE`
+or `ENTERPRISE`; a build reads the set its profile's `distribution` names,
+`DEVELOPMENT` by default, and falls back to the unsuffixed names):
 
-- `IOS_CERTIFICATE`: base64-encoded `.p12`
-- `IOS_CERTIFICATE_PASSWORD`: the `.p12` password (can be empty)
-- `IOS_PROVISIONING_PROFILE`: base64-encoded `.mobileprovision`
+- `IOS_CERTIFICATE_<SET>`: base64-encoded `.p12`
+- `IOS_CERTIFICATE_PASSWORD_<SET>`: the `.p12` password (can be empty)
+- `IOS_PROVISIONING_PROFILE_<SET>`: base64-encoded `.mobileprovision`
 
 Set `ios.signing` to `true` after configuring the secrets. `--unsigned` disables
 signing for a particular build. The runner installs a temporary signing keychain

@@ -290,7 +290,7 @@ builder ios share --profile preview
 | `signing` | Overrides `ios.signing`; `false` in a profile turns signing off even when the top level has it on |
 | `provider` | Overrides the top-level `provider` (`github`, `codemagic`, `bitrise`) |
 | `env` | String map exported as environment variables on the runner before dependencies are installed and the app is built, so `pod install`, `npm install`, `flutter pub get`, Gradle and xcodebuild all see them |
-| `distribution` | Reserved: one of `development`, `ad-hoc`, `app-store`, `enterprise`. Validated and passed to the runner; the export step does not act on it yet |
+| `distribution` | One of `development`, `ad-hoc`, `app-store`, `enterprise`. Selects the [signing set](#signing-sets-one-certificate-per-distribution-type) the build signs with and the type the provisioning profile in it must have; the IPA is exported with the matching method. A profile with `signing: true` and no `distribution` is `development` |
 
 How a build's settings are resolved:
 
@@ -300,8 +300,8 @@ How a build's settings are resolved:
 - A profile only overrides the fields it sets; everything else comes from the
   top level. An unknown profile name is an error that lists the available ones.
 - `--unsigned` and `--provider` on the command line override the profile.
-- The resolved settings (profile, configuration, scheme, signing, provider, env
-  names) are printed before anything is dispatched.
+- The resolved settings (profile, configuration, scheme, signing, signing set,
+  provider, env names) are printed before anything is dispatched.
 - `ios share` only takes the profile's scheme, provider and env: simulator
   builds are always Debug and unsigned.
 
@@ -359,6 +359,60 @@ membership — Apple only issues certificates to paid accounts. (Without one,
 build unsigned and let [MobAI](https://mobai.run) re-sign on install with a free
 Apple ID.)
 
+### Signing sets: one certificate per distribution type
+
+A repository holds up to four sets of signing secrets, one per distribution
+type, so development builds for your devices and App Store builds for
+TestFlight can live side by side without swapping secrets between builds:
+
+| Set | Secrets | Used when the build profile's `distribution` is |
+|-----|---------|--------------------------------------------------|
+| `DEVELOPMENT` | `IOS_CERTIFICATE_DEVELOPMENT`, `IOS_CERTIFICATE_PASSWORD_DEVELOPMENT`, `IOS_PROVISIONING_PROFILE_DEVELOPMENT` | `development`, or not set |
+| `AD_HOC` | `IOS_CERTIFICATE_AD_HOC`, `IOS_CERTIFICATE_PASSWORD_AD_HOC`, `IOS_PROVISIONING_PROFILE_AD_HOC` | `ad-hoc` |
+| `APP_STORE` | `IOS_CERTIFICATE_APP_STORE`, `IOS_CERTIFICATE_PASSWORD_APP_STORE`, `IOS_PROVISIONING_PROFILE_APP_STORE` | `app-store` |
+| `ENTERPRISE` | `IOS_CERTIFICATE_ENTERPRISE`, `IOS_CERTIFICATE_PASSWORD_ENTERPRISE`, `IOS_PROVISIONING_PROFILE_ENTERPRISE` | `enterprise` |
+| legacy | `IOS_CERTIFICATE`, `IOS_CERTIFICATE_PASSWORD`, `IOS_PROVISIONING_PROFILE` | fallback whenever the set above is absent |
+
+`builder signing setup` writes the set of the type it produced (`--type`) or,
+with `--certificate`/`--profile`, the type it reads from the
+`.mobileprovision`. The runner picks the set named by the selected profile's
+`distribution` (no profile, or no `distribution`, means `DEVELOPMENT`) and
+falls back to the unsuffixed names, so a repository set up before signing sets
+keeps building with the secrets it has; `setup` never deletes those. The
+runner then checks that the profile in the set is the type the build asked
+for and fails by name — set, requested distribution, actual profile type —
+before anything is compiled. The unsuffixed secrets with no `distribution`
+requested are accepted whatever their type, as before.
+
+A project with a device profile and a release profile:
+
+```bash
+builder auth apple
+builder signing setup --devices-from-mobai       # DEVELOPMENT set: Apple Development + devices
+builder signing setup --type app-store           # APP_STORE set: Apple Distribution + App Store profile
+```
+
+```json
+{
+  "ios": { "path": "ios", "bundleId": "com.example.app" },
+  "defaultProfile": "development",
+  "profiles": {
+    "development": { "configuration": "Debug", "signing": true },
+    "production":  { "configuration": "Release", "signing": true, "distribution": "app-store" }
+  }
+}
+```
+
+`builder ios build` (the default profile) signs with the `DEVELOPMENT` set and
+exports a development IPA for the registered devices; `builder ios build
+--profile production` signs with the `APP_STORE` set and exports an App Store
+IPA for `builder ios upload`. Both sets stay in place. The same works with
+files from the portal: `builder signing setup --certificate dist.p12 --profile
+AppStore.mobileprovision` lands in `APP_STORE` because that is what the profile
+is (`--type` overrides the detection). On Codemagic and Bitrise the suffixed
+names are variables you add in the dashboard, see the
+[secrets guide](docs/provider-secrets.md).
+
 ### Automatic setup
 
 ```bash
@@ -376,7 +430,8 @@ Identifiers & Profiles*): Developer-role keys cannot create certificates.
    newest IPA in `./dist/`; in a terminal it asks as a last resort.
 2. Issues a **certificate** — Apple Development for `--type development`, Apple
    Distribution for `ad-hoc` and `app-store` — for a private key generated on
-   your machine (`ios-signing.key`, or `--key` to reuse one from `signing csr`).
+   your machine (`ios-signing-<type>.key`, or `--key` to reuse one from
+   `signing csr`; a `ios-signing.key` from an earlier version is picked up too).
    A valid certificate on the account is reused only when its private key is
    here, because that is the only way to build the `.p12`; otherwise a new one
    is issued. Nothing is ever revoked: when Apple's limit (2 Development, 3
@@ -393,12 +448,15 @@ Identifiers & Profiles*): Developer-role keys cannot create certificates.
    unexpired and still lists exactly this certificate and these devices;
    otherwise it is deleted and recreated, and the summary says why (`invalid`,
    `expired`, `certificate changed`, `devices changed`, `forced`).
-5. Writes `ios-signing.key` (when generated), `ios-signing.p12` and
-   `Builder-<type>-<bundle id>.mobileprovision` to `--out-dir` (default `.`),
-   uploads `IOS_CERTIFICATE`, `IOS_CERTIFICATE_PASSWORD` and
-   `IOS_PROVISIONING_PROFILE` to GitHub Secrets and sets `ios.signing` to
-   `true`. For Codemagic and Bitrise it prints the three values to paste
-   instead, following the [signing and MobAI secrets guide](docs/provider-secrets.md).
+5. Writes `ios-signing-<type>.key` (when generated), `ios-signing-<type>.p12`
+   and `Builder-<type>-<bundle id>.mobileprovision` to `--out-dir` (default
+   `.`) — one trio per type, so setting up a second type keeps the first —
+   uploads `IOS_CERTIFICATE_<SET>`, `IOS_CERTIFICATE_PASSWORD_<SET>` and
+   `IOS_PROVISIONING_PROFILE_<SET>` for the type's
+   [signing set](#signing-sets-one-certificate-per-distribution-type) to
+   GitHub Secrets and sets `ios.signing` to `true`. For Codemagic and Bitrise
+   it prints the three values to paste instead, following the
+   [signing and MobAI secrets guide](docs/provider-secrets.md).
 
 The command shows its plan and asks once before creating anything; `--yes`
 skips that (required without a terminal), and then the `.p12` password is
@@ -408,7 +466,8 @@ result as JSON with progress on stderr. Keep the written files out of git.
 Run it again whenever you like: it reports what it found and recreates only what
 is missing, expired, invalid or changed — add a device, re-run, rebuild.
 `--force` issues a fresh certificate and profile regardless. For TestFlight use
-`--type app-store` and set `ios.configuration` to `Release`.
+`--type app-store` and build with a profile that has `"distribution":
+"app-store"` and `"configuration": "Release"`.
 
 ### Manual path through the Apple Developer portal
 
@@ -439,10 +498,10 @@ gitignored files are also excluded from build snapshots).
 builder signing p12 --certificate development.cer --key ios-signing.key
 ```
 
-This combines the key and certificate into `ios-signing.p12`, protected by a
-password you choose — byte-for-byte the same kind of file Keychain Access
-exports, and usable anywhere one is: `builder signing setup`, Sideloadly,
-AltStore, or importing it on a Mac. Keep it, and don't commit it.
+This combines the key and certificate into `ios-signing.p12` (`--out` to name
+it), protected by a password you choose — byte-for-byte the same kind of file
+Keychain Access exports, and usable anywhere one is: `builder signing setup`,
+Sideloadly, AltStore, or importing it on a Mac. Keep it, and don't commit it.
 
 #### 4. Create a provisioning profile
 
@@ -456,10 +515,10 @@ The build reads the profile and exports the IPA with the matching method, so the
 profile type alone decides what the IPA is good for: development, ad-hoc,
 enterprise or App Store. Everything except a development profile is a
 distribution build, and those must be built with the **Release** configuration
-(`"configuration": "Release"` under `ios` in `builder.json`) — a Debug build is
-signed with `get-task-allow`, which distribution profiles do not allow and App
-Store Connect rejects. The build fails early with that message if the two
-disagree.
+(`"configuration": "Release"` in the build profile, or under `ios`) — a Debug
+build is signed with `get-task-allow`, which distribution profiles do not allow
+and App Store Connect rejects. The build fails early with that message if the
+two disagree.
 
 #### 5. Upload the signing secrets
 
@@ -468,15 +527,21 @@ builder signing setup --certificate ios-signing.p12 --profile MyApp.mobileprovis
 ```
 
 With `--certificate` and `--profile` given, `setup` takes the files as they are
-(no App Store Connect key involved) and uploads the signing material to GitHub
-Secrets:
-- `IOS_CERTIFICATE` - Base64-encoded .p12 file
-- `IOS_CERTIFICATE_PASSWORD` - Certificate password
-- `IOS_PROVISIONING_PROFILE` - Base64-encoded .mobileprovision file
+(no App Store Connect key involved), reads the type out of the
+`.mobileprovision` — development, ad-hoc, app-store or enterprise; `--type`
+overrides it — and uploads the signing material to the GitHub Secrets of that
+type's [signing set](#signing-sets-one-certificate-per-distribution-type):
+- `IOS_CERTIFICATE_<SET>` - Base64-encoded .p12 file
+- `IOS_CERTIFICATE_PASSWORD_<SET>` - Certificate password
+- `IOS_PROVISIONING_PROFILE_<SET>` - Base64-encoded .mobileprovision file
+
+It prints which set it wrote. Other sets, and the unsuffixed secrets of an
+earlier setup, are left untouched.
 
 You can also skip step 3 and hand `setup` the `.cer` together with the key —
 `builder signing setup --certificate development.cer --key ios-signing.key
---profile MyApp.mobileprovision` — and it assembles the `.p12` on the way.
+--profile MyApp.mobileprovision` — and it assembles the `.p12` on the way,
+saving it as `ios-signing-<type>.p12`.
 
 `setup` also sets `ios.signing` to `true` in `builder.json`, which is what
 tells `builder ios build` to sign. From then on builds produce signed IPAs; use
@@ -499,12 +564,14 @@ You need:
   membership and an app record in App Store Connect (My Apps → +) with your
   bundle ID
 - An IPA signed with an **Apple Distribution** certificate and an **App Store**
-  provisioning profile: `builder signing setup --type app-store` creates both,
-  or pick those types on the portal in the manual path. An IPA signed for
-  development is rejected at upload.
-- `"configuration": "Release"` under `ios` in `builder.json`: `ios build`
-  defaults to `Debug`, which is what the dev commands expect, not what you want
-  to ship.
+  provisioning profile: `builder signing setup --type app-store` creates both
+  and stores them as the `APP_STORE` signing set, or pick those types on the
+  portal in the manual path. An IPA signed for development is rejected at
+  upload.
+- A build profile with `"distribution": "app-store"` and `"configuration":
+  "Release"` (see [Build Profiles](#build-profiles)): `ios build` defaults to
+  `Debug` and the development set, which is what the dev commands expect, not
+  what you want to ship.
 - An App Store Connect API key: App Store Connect → Users and Access →
   Integrations → App Store Connect API → Team Keys. Give it the **App Manager**
   role, note the **Issuer ID** and **Key ID**, and download the
