@@ -3,6 +3,7 @@ package build
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"reflect"
 	"strings"
@@ -97,6 +98,25 @@ func TestGitHubInputsMapping(t *testing.T) {
 	if share["profile"] == "" || share["scheme"] != "AppPreview" {
 		t.Fatalf("share inputs: %v", share)
 	}
+
+	s, _, _ = c.settings("", "", false)
+	share = c.workflowInputs("abcdef12", "ref", s)
+	want = map[string]string{"build_id": "abcdef12", "snapshot_ref": "ref", "ios_path": "ios", "scheme": "App", "flutter_version": "3.24.0"}
+	if !reflect.DeepEqual(share, want) {
+		t.Fatalf("without a profile the share inputs must be unchanged:\n got %v\nwant %v", share, want)
+	}
+}
+
+func TestTriggerErrorExplainsOldWorkflow(t *testing.T) {
+	rejected := errors.New(`failed to trigger workflow (status 422): {"message":"Unexpected inputs provided: [\"profile\"]"}`)
+	err := triggerError(rejected, map[string]string{"profile": "{}"}, WorkflowFile)
+	if !strings.Contains(err.Error(), "builder init") || !strings.Contains(err.Error(), WorkflowFile) || !errors.Is(err, rejected) {
+		t.Fatalf("old workflow not explained: %v", err)
+	}
+	// Without the profile input the message is GitHub's, unchanged.
+	if err := triggerError(rejected, map[string]string{}, WorkflowFile); strings.Contains(err.Error(), "builder init") || !errors.Is(err, rejected) {
+		t.Fatalf("unrelated rejection rewritten: %v", err)
+	}
 }
 
 func TestRemoteInputsMapping(t *testing.T) {
@@ -104,13 +124,13 @@ func TestRemoteInputsMapping(t *testing.T) {
 
 	s, _, _ := c.settings("", "", false)
 	got := c.inputs("abcdef12", "ref", "sha", s)
-	for _, k := range []string{"BUILD_ENV", "DISTRIBUTION"} {
-		if _, ok := got[k]; ok {
-			t.Fatalf("%s must be absent without a profile: %v", k, got)
-		}
+	want := map[string]string{
+		"BUILD_ID": "abcdef12", "SNAPSHOT_REF": "ref", "SNAPSHOT_SHA": "sha", "IOS_PATH": "ios", "SCHEME": "App",
+		"CONFIGURATION": "Debug", "FLUTTER_VERSION": "3.24.0", "JDK_VERSION": "17", "USE_SIGNING": "false",
+		"BUILDER_REPOSITORY": "owner/repo",
 	}
-	if got["USE_SIGNING"] != "false" || got["SCHEME"] != "App" || got["CONFIGURATION"] != "Debug" {
-		t.Fatalf("top-level mapping: %v", got)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("without a profile the runner variables must be unchanged:\n got %v\nwant %v", got, want)
 	}
 
 	s, _, _ = c.settings("preview", "", false)

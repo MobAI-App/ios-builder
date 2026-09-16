@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/MobAI-App/ios-builder/internal/ci"
@@ -127,6 +128,16 @@ func (c *Coordinator) buildInputs(buildID, ref string, s config.BuildSettings) m
 	return inputs
 }
 
+// triggerError explains a rejected dispatch. GitHub answers 422 "Unexpected
+// inputs provided" when the committed workflow file does not declare an input,
+// which for `profile` means the file predates build profiles.
+func triggerError(err error, inputs map[string]string, file string) error {
+	if _, ok := inputs["profile"]; ok && strings.Contains(err.Error(), "Unexpected inputs") {
+		return fmt.Errorf("failed to trigger workflow: the committed .github/workflows/%s does not declare the `profile` input; run `builder init` to refresh it, then commit and push the workflow to the default branch: %w", file, err)
+	}
+	return fmt.Errorf("failed to trigger workflow: %w", err)
+}
+
 // BuildResult contains the result of a build
 type BuildResult struct {
 	BuildID     string
@@ -184,8 +195,9 @@ func (c *Coordinator) Build(ctx context.Context, opts BuildOptions) (*BuildResul
 	c.progress.Update(PhaseTriggering, "Triggering GitHub Actions build...")
 	inputs := c.buildInputs(buildID, ref, settings)
 	if err := c.github.TriggerWorkflow(ctx, c.config.GitHub.Owner, c.config.GitHub.Repo, WorkflowFile, inputs); err != nil {
+		err = triggerError(err, inputs, WorkflowFile)
 		c.progress.Error(PhaseTriggering, err)
-		return nil, fmt.Errorf("failed to trigger workflow: %w", err)
+		return nil, err
 	}
 	c.progress.Complete(PhaseTriggering, "Workflow triggered")
 

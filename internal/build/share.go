@@ -49,8 +49,10 @@ func (c *Coordinator) Share(ctx context.Context, opts ShareOptions) (*ShareResul
 	if err != nil {
 		return nil, err
 	}
-	// Simulator builds are always Debug and never signed, whatever the profile says.
+	// Simulator builds are always Debug, never signed and never exported,
+	// whatever the profile says.
 	settings.Configuration = "Debug"
+	settings.Distribution = ""
 	if name != "github" || c.provider != nil {
 		return c.shareRemote(ctx, opts, settings)
 	}
@@ -89,8 +91,9 @@ func (c *Coordinator) Share(ctx context.Context, opts ShareOptions) (*ShareResul
 	inputs := c.workflowInputs(buildID, ref, settings)
 	inputs["duration"] = opts.Duration.String()
 	if err := c.github.TriggerWorkflow(ctx, c.config.GitHub.Owner, c.config.GitHub.Repo, ShareWorkflowFile, inputs); err != nil {
+		err = triggerError(err, inputs, ShareWorkflowFile)
 		c.progress.Error(PhaseTriggering, err)
-		return nil, fmt.Errorf("failed to trigger workflow: %w", err)
+		return nil, err
 	}
 	c.progress.Complete(PhaseTriggering, "Session starting")
 
