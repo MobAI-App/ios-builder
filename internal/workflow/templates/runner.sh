@@ -128,6 +128,25 @@ cleanup_signing() {
   if [ -n "${signing_dir:-}" ]; then rm -rf "$signing_dir"; fi
 }
 
+# The export method has to match the profile, or -exportArchive fails and App
+# Store Connect rejects the IPA. Xcode 15.3+ also accepts
+# debugging/release-testing/app-store-connect, but these legacy names still work
+# in Xcode 16 and are the only ones older Xcodes (pinned or self-hosted runners)
+# understand, so both templates use them.
+detect_export_method() {
+  if [ "$(plutil -extract ProvisionsAllDevices raw -o - "$1" 2>/dev/null)" = "true" ]; then
+    echo enterprise
+  elif plutil -extract ProvisionedDevices xml1 -o /dev/null "$1" >/dev/null 2>&1; then
+    if [ "$(plutil -extract Entitlements.get-task-allow raw -o - "$1" 2>/dev/null)" = "true" ]; then
+      echo development
+    else
+      echo ad-hoc
+    fi
+  else
+    echo app-store
+  fi
+}
+
 install_signing() {
   : "${IOS_CERTIFICATE:?Set the IOS_CERTIFICATE secret on this provider}"
   : "${IOS_CERTIFICATE_PASSWORD?Set IOS_CERTIFICATE_PASSWORD on this provider (may be empty)}"
@@ -151,9 +170,20 @@ install_signing() {
   mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
   profile_dest="$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision"
   cp "$signing_dir/profile.mobileprovision" "$profile_dest"
+  export EXPORT_METHOD="$(detect_export_method "$signing_dir/profile.plist")"
+  echo "Signing with '$PROVISIONING_PROFILE_NAME' (team $DEVELOPMENT_TEAM), export method $EXPORT_METHOD"
+  # A Debug archive carries get-task-allow=true, which no distribution profile
+  # grants: the export fails, or an IPA that App Store Connect rejects comes
+  # out. Say so now instead of after the whole build.
+  if [ "$EXPORT_METHOD" != development ] && [ "$CONFIGURATION" = Debug ]; then
+    echo "The provisioning profile is an $EXPORT_METHOD profile, but the build configuration is Debug. A Debug build is signed with get-task-allow, which distribution profiles do not allow and App Store Connect rejects. Set \"configuration\": \"Release\" under \"ios\" in builder.json, or use a development profile." >&2
+    exit 1
+  fi
 }
 
 build_ipa() {
+  # Before the build, so a profile/configuration mismatch fails in seconds.
+  if [ "$USE_SIGNING" = true ]; then install_signing; fi
   if [ "$project_type" = flutter ]; then
     cd "$BUILDER_WORKSPACE"
     case "$CONFIGURATION" in Debug) flutter build ios --debug --no-codesign ;; *) flutter build ios --release --no-codesign ;; esac
@@ -163,16 +193,20 @@ build_ipa() {
     -derivedDataPath "$BUILDER_WORKSPACE/DerivedData" COMPILER_INDEX_STORE_ENABLE=NO)
   mkdir -p "$BUILDER_WORKSPACE/build"
   if [ "$USE_SIGNING" = true ]; then
-    install_signing
     xcodebuild "${args[@]}" DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" CODE_SIGN_STYLE=Manual \
       PROVISIONING_PROFILE_SPECIFIER="$PROVISIONING_PROFILE_NAME" -archivePath "$BUILDER_WORKSPACE/build/App.xcarchive" archive
     export APP_BUNDLE_ID="$(plutil -extract ApplicationProperties.CFBundleIdentifier raw -o - "$BUILDER_WORKSPACE/build/App.xcarchive/Info.plist")"
     python3 - "$signing_dir/ExportOptions.plist" <<'PY'
 import os, plistlib, sys
+options = {'method': os.environ['EXPORT_METHOD'], 'signingStyle': 'manual',
+           'teamID': os.environ['DEVELOPMENT_TEAM'],
+           'provisioningProfiles': {os.environ['APP_BUNDLE_ID']: os.environ['PROVISIONING_PROFILE_NAME']}}
+# Distribution exports keep the version numbers the archive was built with;
+# Xcode would otherwise renumber the build on export.
+if options['method'] != 'development':
+    options['manageAppVersionAndBuildNumber'] = False
 with open(sys.argv[1], 'wb') as out:
-    plistlib.dump({'method': 'development', 'signingStyle': 'manual',
-                  'teamID': os.environ['DEVELOPMENT_TEAM'],
-                  'provisioningProfiles': {os.environ['APP_BUNDLE_ID']: os.environ['PROVISIONING_PROFILE_NAME']}}, out)
+    plistlib.dump(options, out)
 PY
     xcodebuild -exportArchive -archivePath "$BUILDER_WORKSPACE/build/App.xcarchive" \
       -exportOptionsPlist "$signing_dir/ExportOptions.plist" -exportPath "$signing_dir/export"
