@@ -21,12 +21,20 @@ Builder is a CLI tool for iOS development without a Mac. It uses GitHub Actions 
 ```
 Your Repository                  GitHub Actions (macOS)
  └─ .github/workflows/            └─ ios-build.yml
-     └─ ios-build.yml                 ├─ Checkout code
+     └─ ios-build.yml                 ├─ Check out the snapshot
                                       ├─ Build with Xcode
 builder ios build ───────────────────► Upload IPA artifact
-     │
+     │  pushes a snapshot of
+     │  your working tree
      └─ Downloads IPA ◄─────────────── artifact: ipa
 ```
+
+`builder ios build` builds what is on disk, not your last commit: uncommitted
+and untracked files are included, so you can try a change without committing
+it. The snapshot is a throwaway commit pushed to a hidden ref that is deleted
+when the build finishes; no branch is created and nothing is committed on your
+behalf. `.gitignore` still applies, so ignored files such as `.env` or
+`GoogleService-Info.plist` are absent from the build.
 
 ## Quick Start
 
@@ -107,7 +115,8 @@ builder ios build --provider codemagic
 builder ios build --provider bitrise
 ```
 
-Commit the generated workflows and shared runner script to the configured branch
+`init` writes `codemagic.yaml` or `bitrise.yml` at the repo root plus the shared
+runner script `.builder/ci/runner.sh`. Commit them to the configured branch
 and connect the same repository to each provider before building. See
 [provider setup, signing, simulator sessions, and free allowances](docs/providers.md).
 
@@ -126,7 +135,7 @@ and connect the same repository to each provider before building. See
 
 ### Windows
 
-Download `builder.exe` from [Releases](https://github.com/MobAI-App/ios-builder/releases) and add to PATH.
+Download `builder-windows-amd64.exe` from [Releases](https://github.com/MobAI-App/ios-builder/releases), rename it to `builder.exe`, and add it to PATH.
 
 ### Homebrew (macOS/Linux)
 
@@ -155,12 +164,16 @@ go build -o builder ./cmd/builder
 ```bash
 # Setup
 builder auth github           # Authenticate with GitHub
-builder init                  # Set up workflow in current repo
+builder auth codemagic        # Authenticate with Codemagic (also: bitrise)
+builder auth status           # Show which providers you are signed in to
+builder auth logout [name]    # Remove stored credentials
+builder init                  # Set up workflows in current repo
 builder update                # Update builder to the latest release
 
-# Building
+# Building (builds the working tree, including uncommitted changes)
 builder ios build             # Trigger build and download IPA to ./dist/
 builder ios build --unsigned  # Build without code signing (if signing is configured)
+builder ios build --provider codemagic  # Build on another provider (also: bitrise)
 
 # Simulator (free, needs a MOBAI_API_KEY secret)
 builder ios share             # Try the build on a simulator in the MobAI app
@@ -170,10 +183,17 @@ builder ios share --duration 1h  # Keep it available longer while unused
 builder dev flutter           # Flutter hot reload with file watching
 builder dev flutter --no-watch  # Disable automatic file watching
 builder dev flutter --no-attach # Print flutter attach command instead of running it
-builder dev rn                # React Native hot reload (alias: react-native)
+builder dev rn                # React Native hot reload (short for: dev react-native)
 builder dev kmp               # Kotlin Multiplatform install + launch (alias: kotlin)
+builder dev kmp --logs        # Also stream the app's output
 builder dev flutter --skip-install --bundle-id <id>  # Use already installed app
 builder dev rn --metro-port 8082  # Use custom Metro port
+
+# MobAI (used by the dev commands; handy for troubleshooting)
+builder mobai ping            # Check MobAI connectivity
+builder mobai install <ipa>   # Install an IPA on the device
+builder mobai run-debug <bundle-id>  # Launch an app with the debugger attached
+builder mobai forward <device-port> <host-port>  # Forward a device port
 
 # Code signing
 builder signing csr           # Create a private key + certificate signing request
@@ -196,7 +216,8 @@ builder signing setup         # Upload code signing secrets to GitHub
   "ios": {
     "path": "ios",
     "scheme": "",
-    "signing": true
+    "signing": true,
+    "configuration": "Debug"
   },
   "mobai": {
     "url": "http://localhost:8686",
@@ -212,6 +233,15 @@ builder signing setup         # Upload code signing secrets to GitHub
   }
 }
 ```
+
+### iOS Build Configuration
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `ios.path` | Path to the Xcode project relative to the repo root | detected by `init` |
+| `ios.scheme` | Xcode scheme to build | auto-detected |
+| `ios.signing` | Sign the IPA with the uploaded certificate and profile | `false` |
+| `ios.configuration` | Xcode build configuration. **Builds are `Debug` unless you set `Release`**; Debug is faster and is what the dev commands expect | `Debug` |
 
 ### MobAI Configuration
 
@@ -305,11 +335,16 @@ You can also skip step 3 and hand `setup` the `.cer` together with the key —
 `builder signing setup --certificate development.cer --key ios-signing.key
 --profile MyApp.mobileprovision` — and it assembles the `.p12` on the way.
 
-Once configured, `builder ios build` will produce signed IPAs. Use `--unsigned` to skip signing.
+`setup` also sets `ios.signing` to `true` in `builder.json`, which is what
+tells `builder ios build` to sign. From then on builds produce signed IPAs; use
+`--unsigned` to skip signing for one build. For Codemagic and Bitrise, add the
+secrets by hand as described in the
+[signing and MobAI secrets guide](docs/provider-secrets.md), then set
+`ios.signing` to `true` yourself.
 
 ## Installing the IPA
 
-Use [MobAI](https://mobai.run) to sign and install your IPA directly to your device. MobAI handles code signing automatically and works with both signed and unsigned builds.
+Use [MobAI](https://mobai.run) to install your IPA directly on your device. It works with both signed and unsigned builds: an unsigned IPA can be re-signed on install with a free Apple ID (MobAI asks for the account).
 
 ## Development on Windows/Linux
 
@@ -329,7 +364,7 @@ Builder supports hot reload for Flutter and React Native on Windows/Linux using 
    ```bash
    builder dev flutter
    ```
-   MobAI will guide you through installation. Re-signing requires an iCloud account - we highly recommend creating a new one at [icloud.com](https://icloud.com) instead of using your primary account. If you re-sign, note the new bundle ID (includes team ID suffix, e.g., `com.example.myapp.TEAMID`).
+   Builder installs the IPA through MobAI and asks whether to re-sign it. Re-signing requires an iCloud account - we highly recommend creating a new one at [icloud.com](https://icloud.com) instead of using your primary account. A re-signed app gets a new bundle ID with a team ID suffix (e.g., `com.example.myapp.TEAMID`); Builder prefills it in the prompt that follows.
 
 ### Subsequent Runs
 
@@ -433,7 +468,7 @@ builder dev rn --metro-port 8082
 - Device must be on the same WiFi network as the computer running Metro
 - Check that Metro is running and accessible
 - Verify the Metro port is correct (default: 8081)
-- On WSL2, ensure MobAI has external connections enabled
+- On WSL with mirrored networking, the Hyper-V firewall blocks the phone from reaching Metro by default; see [Using Builder from WSL](docs/wsl.md#react-native) for the firewall rule
 
 **Hot reload not working**
 - Shake device or press `d` in Metro terminal to open dev menu
@@ -493,9 +528,10 @@ app that is already installed.
 ## Build Limits
 
 Free allowances belong to each provider account and depend on the plan and
-machine. Codemagic personal accounts include 500 macOS M2 minutes per month;
-Bitrise Hobby includes 300 credits. GitHub has separate allowances for private
-repositories and free standard runners for public repositories. See the
+machine. As published in September 2026: Codemagic personal accounts include
+500 macOS M2 minutes per month; Bitrise Hobby includes 300 credits. GitHub has
+separate allowances for private repositories and free standard runners for
+public repositories. Providers change these, so check the
 [current allowance links and switching guidance](docs/providers.md#free-allowances).
 
 ## License
