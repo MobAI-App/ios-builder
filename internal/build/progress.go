@@ -84,16 +84,16 @@ func (p *Progress) Settings(s *config.BuildSettings, provider string) {
 		return v
 	}
 	signing := "unsigned"
-	if s.Signing {
-		signing = "signed"
+	switch {
+	case s.Signing && s.Distribution != "":
+		signing = fmt.Sprintf("signed (set %s)", s.SigningSet())
+	case s.Signing:
+		signing = "signed (unsuffixed IOS_* secrets)"
 	}
 	fmt.Fprintf(p.writer, "   Profile:       %s\n", orDefault(s.Profile, "(none)"))
 	fmt.Fprintf(p.writer, "   Configuration: %s\n", orDefault(s.Configuration, "Debug"))
 	fmt.Fprintf(p.writer, "   Scheme:        %s\n", orDefault(s.Scheme, "(auto-detected)"))
 	fmt.Fprintf(p.writer, "   Signing:       %s\n", signing)
-	if s.Signing {
-		fmt.Fprintf(p.writer, "   Signing set:   %s\n", s.SigningSet())
-	}
 	fmt.Fprintf(p.writer, "   Provider:      %s\n", provider)
 	if len(s.Env) > 0 {
 		keys := slices.Sorted(maps.Keys(s.Env))

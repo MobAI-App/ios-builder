@@ -13,7 +13,6 @@ import (
 )
 
 func profiledConfig() *config.Config {
-	signed := true
 	return &config.Config{
 		Project: "App",
 		GitHub:  config.GitHubConfig{Owner: "owner", Repo: "repo"},
@@ -21,7 +20,7 @@ func profiledConfig() *config.Config {
 		Flutter: config.FlutterConfig{Version: "3.24.0"},
 		Profiles: map[string]config.Profile{
 			"preview": {
-				Configuration: "Release", Signing: &signed, Scheme: "AppPreview", Distribution: "ad-hoc",
+				Scheme: "AppPreview", Distribution: "internal",
 				Env: map[string]string{"API_URL": "https://staging.example.com", "FLAGS": "a b"},
 			},
 			"ci": {Provider: "codemagic"},
@@ -36,8 +35,9 @@ func TestSettingsPrecedence(t *testing.T) {
 	if err != nil || name != "github" || s.Profile != "" || s.Configuration != "Debug" || s.Signing {
 		t.Fatalf("top-level settings: %+v %s %v", s, name, err)
 	}
+	// The distribution signs the build and derives Release; internal is ad-hoc.
 	s, name, err = c.settings("preview", "", false)
-	if err != nil || name != "github" || !s.Signing || s.Configuration != "Release" {
+	if err != nil || name != "github" || !s.Signing || s.Configuration != "Release" || s.Distribution != "ad-hoc" {
 		t.Fatalf("profile settings: %+v %s %v", s, name, err)
 	}
 	// --unsigned beats the profile's signing.
@@ -149,7 +149,7 @@ func TestSettingsPrinted(t *testing.T) {
 	p := NewProgress(&out)
 	p.Start("abcdef12")
 	p.Settings(&config.BuildSettings{Profile: "preview", Configuration: "Release", Signing: true, Env: map[string]string{"B": "2", "A": "1"}, Distribution: "ad-hoc"}, "github")
-	for _, want := range []string{"Profile:       preview", "Configuration: Release", "Scheme:        (auto-detected)", "Signing:       signed", "Signing set:   AD_HOC", "Provider:      github", "Env:           A, B", "Distribution:  ad-hoc"} {
+	for _, want := range []string{"Profile:       preview", "Configuration: Release", "Scheme:        (auto-detected)", "Signing:       signed (set AD_HOC)", "Provider:      github", "Env:           A, B", "Distribution:  ad-hoc"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q in:\n%s", want, out.String())
 		}
@@ -158,16 +158,16 @@ func TestSettingsPrinted(t *testing.T) {
 		t.Fatal("env values should not be printed, only names")
 	}
 
-	// Signed without a distribution reads the development set; unsigned
-	// builds read none.
+	// Signed without a distribution is the legacy path with the unsuffixed
+	// secrets; --unsigned leaves a distribution build unsigned.
 	out.Reset()
 	p.Settings(&config.BuildSettings{Signing: true}, "github")
-	if !strings.Contains(out.String(), "Signing set:   DEVELOPMENT") {
-		t.Errorf("default set not printed:\n%s", out.String())
+	if !strings.Contains(out.String(), "Signing:       signed (unsuffixed IOS_* secrets)") {
+		t.Errorf("legacy path not printed:\n%s", out.String())
 	}
 	out.Reset()
-	p.Settings(&config.BuildSettings{Distribution: "app-store"}, "github")
-	if strings.Contains(out.String(), "Signing set") {
+	p.Settings(&config.BuildSettings{Distribution: "store"}, "github")
+	if !strings.Contains(out.String(), "Signing:       unsigned") || strings.Contains(out.String(), "set STORE") {
 		t.Errorf("unsigned build printed a signing set:\n%s", out.String())
 	}
 }
