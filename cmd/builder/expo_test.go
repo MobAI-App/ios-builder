@@ -66,7 +66,7 @@ func TestDetectIOSPathExpo(t *testing.T) {
 			name: "kmp keeps its own path",
 			files: map[string]string{
 				"iosApp/iosApp.xcodeproj/project.pbxproj": "// project",
-				"package.json":                            `{"dependencies":{"expo":"~51.0.0"}}`,
+				"package.json": `{"dependencies":{"expo":"~51.0.0"}}`,
 			},
 			wantPath:      "iosApp",
 			wantFramework: "Kotlin Multiplatform",
