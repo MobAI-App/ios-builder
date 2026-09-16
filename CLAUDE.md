@@ -203,14 +203,14 @@ The embedded workflow template (`internal/workflow/templates/ios-build.yml`):
 - Flutter: uses `Runner` scheme, runs `flutter pub get`
 - Installs CocoaPods if Podfile exists
 - Builds unsigned IPA with `CODE_SIGNING_ALLOWED=NO`
-- Signed builds derive the `ExportOptions.plist` `method` from the profile itself
-  (`ProvisionsAllDevices` → `enterprise`, `ProvisionedDevices` plus `get-task-allow` →
-  `development`, `ProvisionedDevices` without it → `ad-hoc`, neither → `app-store`), using the
-  legacy method names because older Xcodes reject the Xcode 15.3+ ones. Distribution exports also
-  set `manageAppVersionAndBuildNumber = false`, and a distribution profile with `CONFIGURATION`
-  `Debug` fails the job in the signing step — a Debug archive's `get-task-allow` is not allowed by
-  those profiles. `detect_export_method` is duplicated verbatim in `ios-build.yml` and `runner.sh`;
-  a test compares the two bodies and runs it against synthetic profile plists
+- **Export Method**: `detect_export_method` reads the profile — `ProvisionsAllDevices` →
+  `enterprise`, `ProvisionedDevices` with `get-task-allow` → `development`, without → `ad-hoc`,
+  neither → `app-store` — and that method goes into `ExportOptions.plist` (legacy names, since
+  older Xcodes reject the 15.3+ ones). Non-development exports add
+  `manageAppVersionAndBuildNumber = false`, and a distribution profile with configuration `Debug`
+  fails in the signing step, before the build. The function is duplicated verbatim in
+  `ios-build.yml` and `runner.sh`; a test compares the two bodies and runs one against
+  synthetic profile plists
 - Uploads IPA as GitHub artifact with 7-day retention
 
 ## Flutter Dev Requirements
