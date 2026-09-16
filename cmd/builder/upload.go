@@ -51,7 +51,7 @@ func getASCClient() (*asc.Client, error) {
 	creds, _, err := auth.GetAppleCredentials()
 	if err != nil {
 		if errors.Is(err, auth.ErrNotAuthenticated) {
-			return nil, fmt.Errorf("not authenticated with App Store Connect. Run: builder auth apple")
+			return nil, fmt.Errorf("no App Store Connect API key configured. Run: builder auth apple (or set ASC_ISSUER_ID, ASC_KEY_ID and ASC_PRIVATE_KEY or ASC_KEY_PATH)")
 		}
 		return nil, err
 	}
@@ -96,8 +96,9 @@ func newOutput(cmd *cobra.Command) output {
 }
 
 // finish prints the result (JSON, or the human summary on success) and
-// returns err with a timeout translated into something actionable.
-func (o output) finish(cmd *cobra.Command, result any, err error, human func()) error {
+// returns err with a timeout translated into something actionable. A partial
+// result on failure is still printed as JSON so agents see how far it got.
+func finish[T any](o output, cmd *cobra.Command, result *T, err error, human func()) error {
 	if o.json && result != nil {
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
@@ -130,8 +131,8 @@ func runIOSUpload(cmd *cobra.Command, _ []string) error {
 	defer cancel()
 	out := newOutput(cmd)
 
-	res, err := distribute.Upload(ctx, client, distribute.UploadOptions{IPAPath: ipaPath, Wait: wait, NoEncryption: noEncryption, Log: out.log})
-	return out.finish(cmd, res, err, func() {
+	res, err := distribute.Upload(ctx, client, &distribute.UploadOptions{IPAPath: ipaPath, Wait: wait, NoEncryption: noEncryption, Log: out.log})
+	return finish(out, cmd, res, err, func() {
 		fmt.Println()
 		fmt.Printf("Upload ID: %s (%s)\n", res.Upload.ID, res.Upload.State)
 		if res.Build != nil {

@@ -85,11 +85,11 @@ func runIOSSubmit(cmd *cobra.Command, _ []string) error {
 		groups, _ := cmd.Flags().GetStringArray("group")
 		notes, _ := cmd.Flags().GetString("notes")
 		locale, _ := cmd.Flags().GetString("locale")
-		res, err := distribute.SubmitTestFlight(ctx, client, distribute.TestFlightOptions{
+		res, err := distribute.SubmitTestFlight(ctx, client, &distribute.TestFlightOptions{
 			BundleID: bundleID, Version: version, BuildNumber: buildNumber, Groups: groups, Notes: notes, Locale: locale,
 			NoEncryption: noEncryption, Wait: wait, Log: out.log,
 		})
-		return out.finish(cmd, res, err, func() {
+		return finish(out, cmd, res, err, func() {
 			fmt.Println()
 			fmt.Printf("Build ID: %s (build %s)\n", res.Build.ID, res.Build.BuildNumber)
 			if res.BetaReview != nil {
@@ -104,10 +104,10 @@ func runIOSSubmit(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	res, err := distribute.SubmitAppStore(ctx, client, distribute.AppStoreOptions{
+	res, err := distribute.SubmitAppStore(ctx, client, &distribute.AppStoreOptions{
 		BundleID: bundleID, Version: version, BuildNumber: buildNumber, ReleaseType: releaseType, NoEncryption: noEncryption, Log: out.log,
 	})
-	return out.finish(cmd, res, err, func() {
+	return finish(out, cmd, res, err, func() {
 		fmt.Println()
 		fmt.Printf("Version:    %s (%s)\n", res.Version.VersionString, res.Version.State)
 		fmt.Printf("Build ID:   %s (build %s)\n", res.Build.ID, res.Build.BuildNumber)

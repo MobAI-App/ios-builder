@@ -176,7 +176,7 @@ func runAuthApple(cmd *cobra.Command, _ []string) error {
 		ctx = context.Background()
 	}
 	if err := client.CheckAccess(ctx); err != nil {
-		return fmt.Errorf("App Store Connect rejected the key: %w", err)
+		return fmt.Errorf("the key was rejected by App Store Connect: %w", err)
 	}
 	if err := auth.StoreAppleCredentials(creds); err != nil {
 		return err
