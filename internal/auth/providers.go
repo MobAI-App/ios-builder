@@ -31,20 +31,25 @@ func GetProviderToken(provider string) (string, error) {
 	if token := strings.TrimSpace(os.Getenv(strings.ToUpper(provider) + "_API_TOKEN")); token != "" {
 		return token, nil
 	}
+	return readSecret(provider + "-token")
+}
+
+// readSecret returns a saved secret by name, checking the fallback file before
+// the keyring: the file may contain a newer login than an inaccessible old
+// keyring entry, and a successful keyring save removes the file.
+func readSecret(name string) (string, error) {
 	dir, err := getConfigDir()
 	if err != nil {
 		return "", err
 	}
-	// A fallback file may contain a newer login than an inaccessible old
-	// keyring entry. A successful keyring save removes this file.
-	if token, err := readProviderFile(filepath.Join(dir, provider+"-token")); err == nil {
-		return token, nil
+	if value, err := readProviderFile(filepath.Join(dir, name)); err == nil {
+		return value, nil
 	} else if !errors.Is(err, ErrNotAuthenticated) {
 		return "", err
 	}
 	if runtime.GOOS != "linux" {
-		if token, err := keyring.Get(keyringService, provider+"-token"); err == nil && token != "" {
-			return token, nil
+		if value, err := keyring.Get(keyringService, name); err == nil && value != "" {
+			return value, nil
 		}
 	}
 	return "", ErrNotAuthenticated
@@ -78,20 +83,26 @@ func StoreProviderToken(provider, token string) error {
 	if provider == "github" {
 		return storeToken(token)
 	}
+	return writeSecret(provider+"-token", token)
+}
+
+// writeSecret saves a secret in the keyring, falling back to a 0600 file in
+// the config directory on Linux/WSL or when the keyring is unavailable.
+func writeSecret(name, value string) error {
 	dir, err := getConfigDir()
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(dir, provider+"-token")
+	path := filepath.Join(dir, name)
 	if runtime.GOOS != "linux" {
-		if err := keyring.Set(keyringService, provider+"-token", token); err == nil {
+		if err := keyring.Set(keyringService, name, value); err == nil {
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				return err
 			}
 			return nil
 		}
 	}
-	return writeProviderFile(path, token)
+	return writeProviderFile(path, value)
 }
 
 func writeProviderFile(path, token string) error {
@@ -113,15 +124,23 @@ func writeProviderFile(path, token string) error {
 // LogoutProvider removes only this provider's saved login, leaving others intact.
 // It does not unset environment variables in the parent shell.
 func LogoutProvider(provider string) error {
+	switch provider {
+	case "github":
+		return Logout()
+	case "apple":
+		return deleteSecret(appleSecretName)
+	}
 	if err := validateProvider(provider); err != nil {
 		return err
 	}
-	if provider == "github" {
-		return Logout()
-	}
+	return deleteSecret(provider + "-token")
+}
+
+// deleteSecret removes a secret from both the keyring and the fallback file.
+func deleteSecret(name string) error {
 	var keyringErr error
 	if runtime.GOOS != "linux" {
-		if err := keyring.Delete(keyringService, provider+"-token"); err != nil && err != keyring.ErrNotFound {
+		if err := keyring.Delete(keyringService, name); err != nil && err != keyring.ErrNotFound {
 			keyringErr = err
 		}
 	}
@@ -129,7 +148,7 @@ func LogoutProvider(provider string) error {
 	if err != nil {
 		return err
 	}
-	err = os.Remove(filepath.Join(dir, provider+"-token"))
+	err = os.Remove(filepath.Join(dir, name))
 	if os.IsNotExist(err) {
 		err = nil
 	}
