@@ -16,7 +16,8 @@ Existing GitHub secret values cannot be downloaded for copying to another servic
 
 ## 1. Prepare your signing files
 
-Builder's generated provider runner exports development-signed IPAs. Prepare:
+The generated runner exports the IPA with the method the profile calls for, so
+the profile you upload decides what the build is. For on-device testing prepare:
 
 - An **Apple Development** certificate in a `.p12` file, including its matching
   private key, and the P12 password.
@@ -27,8 +28,10 @@ Builder's generated provider runner exports development-signed IPAs. Prepare:
 Use [Apple Certificates](https://developer.apple.com/account/resources/certificates/list)
 and [Apple Profiles](https://developer.apple.com/account/resources/profiles/list).
 Apple's [development profile guide](https://developer.apple.com/help/account/provisioning-profiles/create-a-development-provisioning-profile)
-explains selecting the App ID, certificate, and devices. App Store/Ad Hoc export
-requires a corresponding change to the generated runner's export settings.
+explains selecting the App ID, certificate, and devices. An Ad Hoc, In House or
+App Store profile works too — pair it with an **Apple Distribution** certificate
+and set `"configuration": "Release"` under `ios` in `builder.json`, since those
+profiles reject the `get-task-allow` a Debug build is signed with.
 
 If you already have the P12 and profile, reuse them. If you have no certificate,
 the quickest way is the [automatic setup](../README.md#automatic-setup) with an

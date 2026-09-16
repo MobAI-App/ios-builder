@@ -187,6 +187,148 @@ fi
 	}
 }
 
+// shellFunc pulls a shell function body out of a template so the same code the
+// runner executes can be exercised here. Works for runner.sh and for the
+// indented run: blocks of the workflow YAML.
+func shellFunc(t *testing.T, template, name string) string {
+	t.Helper()
+	// Windows checkouts may have CRLF line endings; the closing brace
+	// comparison below needs bare lines.
+	lines := strings.Split(strings.ReplaceAll(template, "\r\n", "\n"), "\n")
+	start := -1
+	indent := ""
+	for i, line := range lines {
+		if strings.TrimSpace(line) == name+"() {" {
+			start = i
+			indent = line[:len(line)-len(strings.TrimLeft(line, " "))]
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("%s not found", name)
+	}
+	for i := start; i < len(lines); i++ {
+		if i > start && lines[i] == indent+"}" {
+			body := lines[start : i+1]
+			for j, line := range body {
+				body[j] = strings.TrimPrefix(line, indent)
+			}
+			return strings.Join(body, "\n")
+		}
+	}
+	t.Fatalf("%s not terminated", name)
+	return ""
+}
+
+func TestExportMethodFollowsProfile(t *testing.T) {
+	workflowTemplate, err := GetWorkflowTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := GetTemplate("runner.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromWorkflow := shellFunc(t, string(workflowTemplate), "detect_export_method")
+	fromRunner := shellFunc(t, string(runner), "detect_export_method")
+	if fromWorkflow != fromRunner {
+		t.Fatalf("templates disagree on the export method:\n%s\n---\n%s", fromWorkflow, fromRunner)
+	}
+	// Both must refuse a Debug distribution build, whose get-task-allow
+	// entitlement no distribution profile grants, and both must feed the
+	// detected method — not a constant — into ExportOptions.plist.
+	wiring := map[string][]string{
+		"ios-build.yml": {
+			`EXPORT_METHOD=$(detect_export_method "$PROFILE_PLIST")`,
+			`"    <string>${EXPORT_METHOD}</string>"`,
+			"plutil -insert manageAppVersionAndBuildNumber -bool NO",
+		},
+		"runner.sh": {
+			`detect_export_method "$signing_dir/profile.plist"`,
+			`'method': os.environ['EXPORT_METHOD']`,
+			"options['manageAppVersionAndBuildNumber'] = False",
+		},
+	}
+	for name, data := range map[string]string{"ios-build.yml": string(workflowTemplate), "runner.sh": string(runner)} {
+		if !strings.Contains(data, `configuration\": \"Release`) {
+			t.Errorf("%s: no Debug + distribution guard", name)
+		}
+		if strings.Contains(data, "<string>development</string>") || strings.Contains(data, "'method': 'development'") {
+			t.Errorf("%s: export method still hardcoded", name)
+		}
+		for _, want := range wiring[name] {
+			if !strings.Contains(data, want) {
+				t.Errorf("%s: export options no longer wired to the profile, missing %q", name, want)
+			}
+		}
+	}
+
+	if runtime.GOOS != "darwin" {
+		t.Skip("plutil is macOS only")
+	}
+	profile := func(body string) string {
+		return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>` + body + `</dict></plist>`
+	}
+	devices := "<key>ProvisionedDevices</key><array><string>00008030-001</string></array>"
+	allow := func(v bool) string {
+		if v {
+			return "<key>Entitlements</key><dict><key>get-task-allow</key><true/></dict>"
+		}
+		return "<key>Entitlements</key><dict><key>get-task-allow</key><false/></dict>"
+	}
+	cases := []struct{ name, plist, want string }{
+		{"development", profile(devices + allow(true)), "development"},
+		{"adhoc", profile(devices + allow(false)), "ad-hoc"},
+		{"appstore", profile(allow(false)), "app-store"},
+		{"enterprise", profile("<key>ProvisionsAllDevices</key><true/>" + allow(false)), "enterprise"},
+		// An enterprise profile ships devices too on some accounts; it still wins.
+		{"enterprise with devices", profile("<key>ProvisionsAllDevices</key><true/>" + devices + allow(false)), "enterprise"},
+	}
+	dir := t.TempDir()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, tc.name+".plist")
+			if err := os.WriteFile(path, []byte(tc.plist), 0644); err != nil {
+				t.Fatal(err)
+			}
+			out, err := exec.Command("bash", "-c", fromRunner+"\ndetect_export_method \"$1\"", "bash", path).CombinedOutput()
+			if err != nil {
+				t.Fatalf("%s %v", out, err)
+			}
+			if got := strings.TrimSpace(string(out)); got != tc.want {
+				t.Fatalf("method = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWorkflowTemplatesParse(t *testing.T) {
+	for _, name := range []string{"ios-build.yml", "ios-share.yml"} {
+		data, err := GetTemplate(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var parsed struct {
+			Jobs map[string]struct {
+				Steps []map[string]any
+			}
+		}
+		if err := yaml.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(parsed.Jobs) == 0 {
+			t.Fatalf("%s: no jobs", name)
+		}
+		for job, spec := range parsed.Jobs {
+			if len(spec.Steps) == 0 {
+				t.Fatalf("%s: job %s has no steps", name, job)
+			}
+		}
+	}
+}
+
 func TestBitriseSSHActivationRequiresKey(t *testing.T) {
 	data, err := GetTemplate("bitrise.yml")
 	if err != nil {

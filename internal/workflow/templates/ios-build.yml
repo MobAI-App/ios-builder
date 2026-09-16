@@ -275,8 +275,28 @@ jobs:
           IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
           IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
           IOS_PROVISIONING_PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE }}
+          CONFIGURATION: ${{ steps.params.outputs.configuration }}
         run: |
           set -e
+
+          # The export method has to match the profile, or -exportArchive fails
+          # and App Store Connect rejects the IPA. Xcode 15.3+ also accepts
+          # debugging/release-testing/app-store-connect, but these legacy names
+          # still work in Xcode 16 and are the only ones older Xcodes (pinned or
+          # self-hosted runners) understand, so both templates use them.
+          detect_export_method() {
+            if [ "$(plutil -extract ProvisionsAllDevices raw -o - "$1" 2>/dev/null)" = "true" ]; then
+              echo enterprise
+            elif plutil -extract ProvisionedDevices xml1 -o /dev/null "$1" >/dev/null 2>&1; then
+              if [ "$(plutil -extract Entitlements.get-task-allow raw -o - "$1" 2>/dev/null)" = "true" ]; then
+                echo development
+              else
+                echo ad-hoc
+              fi
+            else
+              echo app-store
+            fi
+          }
 
           # Create temporary keychain
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
@@ -311,13 +331,25 @@ jobs:
           APP_ID=$(plutil -extract Entitlements.application-identifier raw -o - "$PROFILE_PLIST")
           PROFILE_BUNDLE_ID=${APP_ID#"$TEAM_ID".}
 
+          EXPORT_METHOD=$(detect_export_method "$PROFILE_PLIST")
+
+          # A Debug archive carries get-task-allow=true, which no distribution
+          # profile grants: the export fails, or an IPA that App Store Connect
+          # rejects comes out. Say so now instead of after the whole build.
+          if [ "$EXPORT_METHOD" != "development" ] && [ "$CONFIGURATION" = "Debug" ]; then
+            echo "::error::The provisioning profile is an $EXPORT_METHOD profile, but the build configuration is Debug. A Debug build is signed with get-task-allow, which distribution profiles do not allow and App Store Connect rejects. Set \"configuration\": \"Release\" under \"ios\" in builder.json, or use a development profile."
+            exit 1
+          fi
+
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
           echo "DEVELOPMENT_TEAM=$TEAM_ID" >> $GITHUB_ENV
           echo "PROVISIONING_PROFILE_NAME=$PROFILE_NAME" >> $GITHUB_ENV
+          echo "EXPORT_METHOD=$EXPORT_METHOD" >> $GITHUB_ENV
           echo "Certificate and provisioning profile installed"
           echo "  team:    $TEAM_ID"
           echo "  profile: $PROFILE_NAME ($PROFILE_UUID)"
           echo "  app id:  $PROFILE_BUNDLE_ID"
+          echo "  export:  $EXPORT_METHOD"
           echo "If the build fails on a provisioning mismatch, the app's PRODUCT_BUNDLE_IDENTIFIER must match the app id above."
 
       - name: Build IPA
@@ -533,7 +565,7 @@ jobs:
             # The export has to use the same manual signing as the archive, and
             # it needs the app's real bundle id to map it to the profile.
             APP_BUNDLE_ID=$(plutil -extract ApplicationProperties.CFBundleIdentifier raw -o - build/App.xcarchive/Info.plist)
-            echo "Exporting $APP_BUNDLE_ID with profile '$PROVISIONING_PROFILE_NAME' (team $DEVELOPMENT_TEAM)"
+            echo "Exporting $APP_BUNDLE_ID with profile '$PROVISIONING_PROFILE_NAME' (team $DEVELOPMENT_TEAM), method $EXPORT_METHOD"
 
             printf '%s\n' \
               '<?xml version="1.0" encoding="UTF-8"?>' \
@@ -541,7 +573,7 @@ jobs:
               '<plist version="1.0">' \
               '<dict>' \
               '    <key>method</key>' \
-              '    <string>development</string>' \
+              "    <string>${EXPORT_METHOD}</string>" \
               '    <key>signingStyle</key>' \
               '    <string>manual</string>' \
               '    <key>teamID</key>' \
@@ -553,6 +585,13 @@ jobs:
               '    </dict>' \
               '</dict>' \
               '</plist>' > ExportOptions.plist
+
+            # Distribution exports keep the version numbers the archive was
+            # built with; Xcode would otherwise renumber the build on export.
+            if [ "$EXPORT_METHOD" != "development" ]; then
+              plutil -insert manageAppVersionAndBuildNumber -bool NO ExportOptions.plist
+            fi
+
             xcodebuild -exportArchive \
               -archivePath build/App.xcarchive \
               -exportOptionsPlist ExportOptions.plist \

@@ -364,7 +364,7 @@ gitignored files are also excluded from build snapshots).
 #### 2. Create the certificate
 
 1. Go to [Certificates](https://developer.apple.com/account/resources/certificates/add) on the Apple Developer portal
-2. Choose **Apple Development** (installs on registered devices) or **Apple Distribution** (App Store/Ad Hoc)
+2. Choose **Apple Development** (installs on registered devices) or **Apple Distribution** (App Store/Ad Hoc). TestFlight and App Store uploads need **Apple Distribution** together with an App Store profile in step 4
 3. Upload `ios-signing.csr` and download the resulting `.cer` file
 
 #### 3. Assemble the .p12
@@ -384,7 +384,16 @@ On the portal:
 
 1. **Identifiers** → register an App ID matching your app's bundle identifier
 2. **Devices** → register your device's UDID (shown in [MobAI](https://mobai.run) when the device is connected; on Windows, iTunes shows it when you click the serial number on the device page)
-3. **Profiles** → create an **iOS App Development** (or Ad Hoc) profile, select your App ID, certificate, and devices, then download the `.mobileprovision` file
+3. **Profiles** → create an **iOS App Development** (or Ad Hoc, App Store) profile, select your App ID, certificate, and devices, then download the `.mobileprovision` file
+
+The build reads the profile and exports the IPA with the matching method, so the
+profile type alone decides what the IPA is good for: development, ad-hoc,
+enterprise or App Store. Everything except a development profile is a
+distribution build, and those must be built with the **Release** configuration
+(`"configuration": "Release"` under `ios` in `builder.json`) — a Debug build is
+signed with `get-task-allow`, which distribution profiles do not allow and App
+Store Connect rejects. The build fails early with that message if the two
+disagree.
 
 #### 5. Upload the signing secrets
 

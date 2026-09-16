@@ -300,6 +300,14 @@ The embedded workflow template (`internal/workflow/templates/ios-build.yml`):
 - Flutter: uses `Runner` scheme, runs `flutter pub get`
 - Installs CocoaPods if Podfile exists
 - Builds unsigned IPA with `CODE_SIGNING_ALLOWED=NO`
+- **Export Method**: `detect_export_method` reads the profile — `ProvisionsAllDevices` →
+  `enterprise`, `ProvisionedDevices` with `get-task-allow` → `development`, without → `ad-hoc`,
+  neither → `app-store` — and that method goes into `ExportOptions.plist` (legacy names, since
+  older Xcodes reject the 15.3+ ones). Non-development exports add
+  `manageAppVersionAndBuildNumber = false`, and a distribution profile with configuration `Debug`
+  fails in the signing step, before the build. The function is duplicated verbatim in
+  `ios-build.yml` and `runner.sh`; a test compares the two bodies and runs one against
+  synthetic profile plists
 - Uploads IPA as GitHub artifact with 7-day retention
 
 ## Flutter Dev Requirements
