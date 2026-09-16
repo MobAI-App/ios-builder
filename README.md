@@ -429,9 +429,12 @@ create certificates. It then:
    "<distribution>"`. Other fields of an existing profile are kept; a
    different `distribution` in it is replaced, and the command says so.
    `defaultProfile` is not touched: point it at the profile for a plain
-   `ios build` to use it, or pass `--profile`. For Codemagic and Bitrise it
-   prints the three secret names and file paths to paste instead, following
-   the [secrets guide](docs/provider-secrets.md).
+   `ios build` to use it, or pass `--profile`. For Codemagic and Bitrise
+   (`provider` in `builder.json`, or `--provider codemagic|bitrise`) it prints
+   the three secret names and file paths to paste instead, following the
+   [secrets guide](docs/provider-secrets.md). Builder cannot check those
+   providers' secrets before a build, so `ios build` only reminds you of this
+   command when the profile signs there.
 
 The command shows its plan and asks once before creating anything; `--yes`
 skips that (required without a terminal), and then the `.p12` password is

@@ -322,8 +322,12 @@ func TestEnsureSigningSecretsChecksTheSet(t *testing.T) {
 	store.listErr = nil
 	store.listed = 0
 	cfg.Profiles["cm"] = config.Profile{Distribution: "store", Provider: "codemagic"}
-	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "cm", "", io.Discard); err != nil || store.listed != 0 {
+	var warn strings.Builder
+	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "cm", "", &warn); err != nil || store.listed != 0 {
 		t.Fatalf("codemagic profile: %v, listed %d", err, store.listed)
+	}
+	if !strings.Contains(warn.String(), "builder signing setup --distribution store --provider codemagic") {
+		t.Fatalf("no hint for the unchecked provider: %q", warn.String())
 	}
 	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "store", "bitrise", io.Discard); err != nil || store.listed != 0 {
 		t.Fatalf("--provider bitrise: %v, listed %d", err, store.listed)

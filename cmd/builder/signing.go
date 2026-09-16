@@ -99,6 +99,7 @@ func init() {
 	signingSetupCmd.Flags().Bool("force", false, "Issue a new certificate and profile even when valid ones exist")
 	signingSetupCmd.Flags().BoolP("yes", "y", false, "Skip confirmations")
 	signingSetupCmd.Flags().Bool("json", false, "Print the result as JSON (progress goes to stderr)")
+	signingSetupCmd.Flags().String("provider", "", "CI provider the secrets are for: github, codemagic or bitrise (default: provider in builder.json, else github)")
 
 	signingCSRCmd.Flags().String("name", "", "Your name (certificate common name)")
 	signingCSRCmd.Flags().String("email", "", "Email address of your Apple Developer account")
@@ -268,7 +269,8 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	provider, err := cfg.ProviderName("")
+	providerFlag, _ := cmd.Flags().GetString("provider")
+	provider, err := cfg.ProviderName(providerFlag)
 	if err != nil {
 		return err
 	}

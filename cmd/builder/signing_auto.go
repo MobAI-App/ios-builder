@@ -73,7 +73,8 @@ func runSigningAuto(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	provider, err := cfg.ProviderName("")
+	providerFlag, _ := cmd.Flags().GetString("provider")
+	provider, err := cfg.ProviderName(providerFlag)
 	if err != nil {
 		return err
 	}
@@ -444,7 +445,14 @@ func ensureSigningSecrets(ctx context.Context, cfg *config.Config, store secretS
 	if err != nil {
 		return err
 	}
-	if name != "github" || s.Distribution == "" {
+	if s.Distribution == "" {
+		return nil
+	}
+	if name != "github" {
+		// Codemagic and Bitrise have no secrets API, so the set cannot be
+		// checked or provisioned from here; the runner fails by name if it
+		// is missing.
+		fmt.Fprintf(log, "Profile %q signs with set %s. Builder cannot check %s secrets; if the build fails on signing, run: builder signing setup --distribution %s --provider %s\n", s.Profile, s.SigningSet(), name, s.Distribution, name)
 		return nil
 	}
 	typ, set := signing.Type(s.Distribution), s.SigningSet()
