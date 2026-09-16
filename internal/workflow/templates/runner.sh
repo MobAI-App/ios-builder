@@ -25,6 +25,121 @@ snapshot_checkout() {
   echo "Building snapshot $SNAPSHOT_SHA"
 }
 
+# >>> js toolchain (keep identical across ios-build.yml, ios-share.yml, runner.sh)
+# The package manager the project actually uses: the packageManager field
+# first, then the lockfile, then npm. Guessing npm is not safe — `npm install`
+# in a pnpm or yarn workspace fails with
+# 'EUNSUPPORTEDPROTOCOL Unsupported URL Type "workspace:"'.
+js_detect_manager() {
+  if [ -z "${JS_MANAGER:-}" ]; then
+    case "$(jq -r '.packageManager // empty' package.json 2>/dev/null || true)" in
+      pnpm|pnpm@*) JS_MANAGER=pnpm ;;
+      yarn|yarn@*) JS_MANAGER=yarn ;;
+      bun|bun@*) JS_MANAGER=bun ;;
+      npm|npm@*) JS_MANAGER=npm ;;
+      *)
+        if [ -f pnpm-lock.yaml ]; then JS_MANAGER=pnpm
+        elif [ -f yarn.lock ]; then JS_MANAGER=yarn
+        elif [ -f bun.lock ] || [ -f bun.lockb ]; then JS_MANAGER=bun
+        else JS_MANAGER=npm # package-lock.json, or no lockfile at all
+        fi
+        ;;
+    esac
+  fi
+  case "$JS_MANAGER" in
+    pnpm) JS_EXEC='pnpm exec' ;;
+    yarn) JS_EXEC=yarn ;;
+    bun) JS_EXEC=bunx ;;
+    *) JS_EXEC=npx ;;
+  esac
+  export JS_MANAGER JS_EXEC
+  echo "Package manager: $JS_MANAGER"
+}
+
+# The Node version the project asks for: .nvmrc or .node-version verbatim,
+# else the first comparator of engines.node with the range prefix stripped
+# ("24.x" is a version setup-node takes as it is), else 22.
+js_node_version() {
+  js_version=""
+  for js_file in .nvmrc .node-version; do
+    if [ -f "$js_file" ]; then
+      js_version=$(tr -d ' \t\r' < "$js_file" | head -n1)
+      break
+    fi
+  done
+  if [ -z "$js_version" ]; then
+    js_version=$(jq -r '.engines.node // empty' package.json 2>/dev/null || true)
+    js_version=$(printf '%s' "${js_version%%|*}" | awk '{print $1}' | sed -E 's/^(>=|<=|>|<|=|\^|~|v)+//')
+  fi
+  case "$js_version" in
+    [0-9]*|lts/*) ;;
+    *) js_version=22 ;;
+  esac
+  printf '%s\n' "$js_version"
+}
+
+# Put the manager on PATH first, then install — unless a cache already restored
+# node_modules, in which case the manager is still wanted for `expo prebuild`
+# and for the React Native build phases that shell out to it.
+js_install() {
+  js_detect_manager
+  case "$JS_MANAGER" in
+    pnpm|yarn)
+      corepack enable || true # ships with Node 16.10+, installs the pinned version
+      command -v "$JS_MANAGER" >/dev/null 2>&1 || npm install -g "$JS_MANAGER"
+      ;;
+    bun)
+      if ! command -v bun >/dev/null 2>&1; then
+        curl -fsSL https://bun.sh/install | bash
+        export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+        export PATH="$BUN_INSTALL/bin:$PATH"
+        # A step's PATH does not survive into the next GitHub Actions step.
+        if [ -n "${GITHUB_PATH:-}" ]; then echo "$BUN_INSTALL/bin" >> "$GITHUB_PATH"; fi
+      fi
+      ;;
+  esac
+  if [ "${JS_DEPS_CACHED:-}" = "true" ]; then
+    echo "node_modules restored from cache; skipping install"
+    return 0
+  fi
+  case "$JS_MANAGER" in
+    pnpm)
+      if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else pnpm install; fi
+      ;;
+    yarn)
+      if [ -f .yarnrc.yml ]; then yarn install --immutable
+      elif [ -f yarn.lock ]; then yarn install --frozen-lockfile
+      else yarn install
+      fi
+      ;;
+    bun)
+      if [ -f bun.lock ] || [ -f bun.lockb ]; then bun install --frozen-lockfile; else bun install; fi
+      ;;
+    *)
+      if [ -f package-lock.json ]; then npm ci; else npm install; fi
+      ;;
+  esac
+}
+# <<< js toolchain
+
+# Codemagic and Bitrise images ship Node already, so a mismatch is worth a log
+# line, not a failed build. Switch only when a version manager is right there.
+js_use_node_version() {
+  wanted_node=$(js_node_version)
+  nvm_node="${wanted_node%.x}" # nvm and n want 24, not the setup-node spelling 24.x
+  nvm_sh="${NVM_DIR:-$HOME/.nvm}/nvm.sh"
+  if [ -s "$nvm_sh" ]; then
+    set +u # nvm.sh reads variables it has not set yet
+    # shellcheck source=/dev/null
+    . "$nvm_sh"
+    nvm install "$nvm_node" || true
+    set -u
+  elif command -v n >/dev/null; then
+    n install "$nvm_node" || true
+  fi
+  echo "Node $(node --version 2>/dev/null || echo unknown); the project asks for $wanted_node"
+}
+
 # A managed Expo project keeps no ios/ directory in git; `expo prebuild`
 # generates it from app.json / app.config.js. An ejected project already has
 # one and must keep it. CI=1 stops prebuild from prompting, which on a runner
@@ -34,7 +149,7 @@ expo_prebuild() {
     echo "$IOS_PATH already holds an Xcode project (ejected Expo); skipping prebuild"
     return 0
   fi
-  bundle_id=$(npx expo config --type public --json 2>/dev/null | jq -r '.ios.bundleIdentifier // empty' 2>/dev/null || true)
+  bundle_id=$(${JS_EXEC:-npx} expo config --type public --json 2>/dev/null | jq -r '.ios.bundleIdentifier // empty' 2>/dev/null || true)
   if [ -z "$bundle_id" ]; then
     for manifest in app.json app.config.json; do
       if [ -f "$manifest" ]; then
@@ -48,7 +163,7 @@ expo_prebuild() {
     exit 1
   fi
   echo "Prebuilding $bundle_id into $IOS_PATH"
-  CI=1 npx expo prebuild --platform ios --no-install
+  CI=1 ${JS_EXEC:-npx} expo prebuild --platform ios --no-install
   if [ -z "$(find "$IOS_PATH" -maxdepth 1 -name '*.xcodeproj' -print -quit 2>/dev/null)" ]; then
     echo "'expo prebuild' produced no Xcode project in $IOS_PATH; set ios.path in builder.json if it lands elsewhere" >&2
     exit 1
@@ -91,12 +206,8 @@ prepare() {
     flutter pub get
   elif [ "$project_type" = reactnative ] || [ "$project_type" = expo ]; then
     if ! command -v node >/dev/null; then brew install node@22; export PATH="$(brew --prefix node@22)/bin:$PATH"; fi
-    if [ -f yarn.lock ]; then
-      if ! command -v yarn >/dev/null; then npm install -g yarn; fi
-      yarn install --frozen-lockfile
-    elif [ -f package-lock.json ]; then npm ci
-    else npm install
-    fi
+    js_use_node_version
+    js_install
     if [ "$project_type" = expo ]; then expo_prebuild; fi
   elif [ "$project_type" = kmp ]; then
     if ! [[ "$JDK_VERSION" =~ ^[0-9]+$ ]]; then echo "JDK_VERSION must be a major version" >&2; exit 1; fi

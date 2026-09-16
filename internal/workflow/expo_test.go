@@ -74,7 +74,7 @@ func TestExpoPrebuildStep(t *testing.T) {
 					t.Fatalf("prebuild script is missing %q", want)
 				}
 			}
-			if prebuild < indexOfStep(t, all, "Install npm dependencies") {
+			if prebuild < indexOfStep(t, all, "Install JS dependencies") {
 				t.Fatal("prebuild runs before the node dependencies it needs")
 			}
 			if template == "ios-build.yml" && prebuild > indexOfStep(t, all, "Restore Pods cache") {
