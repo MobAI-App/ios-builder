@@ -370,7 +370,7 @@ func TestAutoFirstRunCreatesEverything(t *testing.T) {
 	}
 
 	// Files: key, .p12 and profile in the output directory; the .p12 opens with the password and holds the issued certificate.
-	if res.Files.Key != filepath.Join(dir, "ios-signing.key") || res.Files.P12 != filepath.Join(dir, "ios-signing.p12") || res.Files.Profile != filepath.Join(dir, "Builder-development-com.example.app.mobileprovision") {
+	if res.Files.Key != filepath.Join(dir, "ios-signing-development.key") || res.Files.P12 != filepath.Join(dir, "ios-signing-development.p12") || res.Files.Profile != filepath.Join(dir, "Builder-development-com.example.app.mobileprovision") {
 		t.Errorf("files = %+v", res.Files)
 	}
 	keyPEM, err := os.ReadFile(res.Files.Key)
@@ -543,7 +543,7 @@ func TestAutoDevelopmentWithoutDevicesFails(t *testing.T) {
 	if p.count("POST /v1/certificates") != 0 || p.count("POST /v1/profiles") != 0 {
 		t.Errorf("certificate or profile created without devices: %v", p.calls)
 	}
-	if _, err := os.Stat(filepath.Join(opts.OutDir, KeyFileName)); err == nil {
+	if _, err := os.Stat(filepath.Join(opts.OutDir, KeyFileName(TypeDevelopment))); err == nil {
 		t.Error("a key was written although no certificate was requested")
 	}
 }
@@ -596,7 +596,7 @@ func TestAutoCertificateLimitHint(t *testing.T) {
 	// The key is on disk before the request goes out, so whatever Apple did
 	// with it, the next run can carry on with the same key.
 	keyPEM, readErr := os.ReadFile(res.Files.Key)
-	if readErr != nil || res.Files.Key != filepath.Join(dir, KeyFileName) {
+	if readErr != nil || res.Files.Key != filepath.Join(dir, KeyFileName(TypeDevelopment)) {
 		t.Fatalf("key after a refused certificate: %+v, %v", res.Files, readErr)
 	}
 	p.refuseCertificates = false
@@ -635,18 +635,34 @@ func TestAutoRejectsBadOptions(t *testing.T) {
 	}
 }
 
-func TestParseType(t *testing.T) {
-	for in, want := range map[string]Type{"development": TypeDevelopment, "Ad-Hoc": TypeAdHoc, "adhoc": TypeAdHoc, "app-store": TypeAppStore, "appstore": TypeAppStore} {
-		got, err := ParseType(in)
-		if err != nil || got != want {
-			t.Errorf("ParseType(%q) = %q, %v; want %q", in, got, err, want)
+// A second type in the same directory leaves the first type's key, .p12 and
+// profile in place: each set is a separate file trio.
+func TestAutoTypesKeepSeparateFiles(t *testing.T) {
+	p := newPortal(t)
+	dir := t.TempDir()
+	dev := run(t, p, devOpts(dir))
+	opts := devOpts(dir)
+	opts.Type, opts.Devices = TypeAppStore, nil
+	store := run(t, p, opts)
+	if dev.Files.Key == store.Files.Key || dev.Files.P12 == store.Files.P12 || dev.Files.Profile == store.Files.Profile {
+		t.Fatalf("files collide: %+v vs %+v", dev.Files, store.Files)
+	}
+	for _, f := range []string{dev.Files.Key, dev.Files.P12, dev.Files.Profile, store.Files.Key, store.Files.P12, store.Files.Profile} {
+		if _, err := os.Stat(f); err != nil {
+			t.Errorf("%s: %v", f, err)
 		}
 	}
-	if _, err := ParseType("enterprise"); err == nil || !strings.Contains(err.Error(), "enterprise") {
-		t.Errorf("err = %v", err)
+	if len(p.profiles) != 2 || len(p.certs) != 2 {
+		t.Errorf("one certificate and profile per type expected: %d profiles, %d certificates", len(p.profiles), len(p.certs))
 	}
-	if TypeAppStore.NeedsDevices() || !TypeAdHoc.NeedsDevices() || !TypeDevelopment.NeedsDevices() {
-		t.Error("NeedsDevices: only App Store profiles list no devices")
+}
+
+func TestAutoRefusesEnterprise(t *testing.T) {
+	p := newPortal(t)
+	opts := devOpts(t.TempDir())
+	opts.Type = TypeEnterprise
+	if _, err := Auto(context.Background(), p.client(t), opts); err == nil || !strings.Contains(err.Error(), "--certificate") || len(p.calls) != 0 {
+		t.Errorf("err = %v, calls %v", err, p.calls)
 	}
 }
 

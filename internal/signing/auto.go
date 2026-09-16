@@ -19,30 +19,36 @@ import (
 // which profile type wraps it.
 type Type string
 
-// Signing types, as accepted by --type.
+// Signing types, as accepted by --type. They are the values of a build
+// profile's distribution, and each one has a signing set of secrets.
 const (
 	TypeDevelopment Type = "development"
 	TypeAdHoc       Type = "ad-hoc"
 	TypeAppStore    Type = "app-store"
+	// TypeEnterprise is an in-house profile. Auto cannot issue one; it is
+	// only reached with --certificate/--profile.
+	TypeEnterprise Type = "enterprise"
 )
 
 // ParseType validates a --type value.
 func ParseType(s string) (Type, error) {
 	switch t := Type(strings.ToLower(strings.TrimSpace(s))); t {
-	case TypeDevelopment, TypeAdHoc, TypeAppStore:
+	case TypeDevelopment, TypeAdHoc, TypeAppStore, TypeEnterprise:
 		return t, nil
 	case "adhoc":
 		return TypeAdHoc, nil
 	case "appstore":
 		return TypeAppStore, nil
+	case "in-house", "inhouse":
+		return TypeEnterprise, nil
 	default:
-		return "", fmt.Errorf("--type must be development, ad-hoc or app-store, got %q", s)
+		return "", fmt.Errorf("--type must be development, ad-hoc, app-store or enterprise, got %q", s)
 	}
 }
 
 // NeedsDevices reports whether profiles of this type list the devices the
-// app may run on; App Store profiles do not.
-func (t Type) NeedsDevices() bool { return t != TypeAppStore }
+// app may run on; App Store and enterprise profiles do not.
+func (t Type) NeedsDevices() bool { return t == TypeDevelopment || t == TypeAdHoc }
 
 func (t Type) certificateType() string {
 	if t == TypeDevelopment {
@@ -68,11 +74,17 @@ type Device struct {
 	UDID string `json:"udid"`
 }
 
-// File names written to the output directory.
-const (
-	KeyFileName = "ios-signing.key"
-	P12FileName = "ios-signing.p12"
-)
+// LegacyKeyFileName is where runs before signing sets wrote the private key.
+// A key found under it is still reused, so no certificate slot is spent on
+// the upgrade.
+const LegacyKeyFileName = "ios-signing.key"
+
+// KeyFileName is the private key file of a signing type, ios-signing-<type>.key,
+// so setting up a second type does not overwrite the first type's key.
+func KeyFileName(t Type) string { return fmt.Sprintf("ios-signing-%s.key", t) }
+
+// P12FileName is the .p12 file of a signing type, ios-signing-<type>.p12.
+func P12FileName(t Type) string { return fmt.Sprintf("ios-signing-%s.p12", t) }
 
 // AutoOptions configures Auto.
 type AutoOptions struct {
@@ -82,7 +94,7 @@ type AutoOptions struct {
 	// then cover every enabled iOS device on the account.
 	Devices []Device
 	// KeyPEM is an existing private key. When nil a key is generated and
-	// written to OutDir/ios-signing.key.
+	// written to OutDir/ios-signing-<type>.key.
 	KeyPEM []byte
 	// CommonName goes into the CSR subject of a new certificate.
 	CommonName string
@@ -172,6 +184,9 @@ func Auto(ctx context.Context, client *asc.Client, opts *AutoOptions) (*AutoResu
 	if _, err := ParseType(string(opts.Type)); err != nil {
 		return nil, err
 	}
+	if opts.Type == TypeEnterprise {
+		return nil, errors.New("enterprise (in-house) profiles are not issued through the App Store Connect API; pass --certificate and --profile with the files from the portal")
+	}
 	if opts.Password == "" {
 		return nil, errors.New("a .p12 password is required")
 	}
@@ -221,7 +236,7 @@ func Auto(ctx context.Context, client *asc.Client, opts *AutoOptions) (*AutoResu
 		if keyPEM, err = generateKey(); err != nil {
 			return res, err
 		}
-		res.Files.Key = filepath.Join(opts.OutDir, KeyFileName)
+		res.Files.Key = filepath.Join(opts.OutDir, KeyFileName(opts.Type))
 		if err := os.WriteFile(res.Files.Key, keyPEM, 0600); err != nil {
 			return res, fmt.Errorf("write private key: %w", err)
 		}
@@ -243,7 +258,7 @@ func Auto(ctx context.Context, client *asc.Client, opts *AutoOptions) (*AutoResu
 	res.ProfileContent = profile.Content
 
 	// 5. Files
-	res.Files.P12 = filepath.Join(opts.OutDir, P12FileName)
+	res.Files.P12 = filepath.Join(opts.OutDir, P12FileName(opts.Type))
 	if err := os.WriteFile(res.Files.P12, res.P12, 0600); err != nil {
 		return res, fmt.Errorf("write .p12: %w", err)
 	}
