@@ -18,16 +18,19 @@ import (
 // GenerateKeyAndCSR creates an RSA-2048 private key and a certificate signing
 // request for the Apple Developer portal, both PEM-encoded. Apple requires
 // RSA 2048 for signing certificates; the subject mirrors what Keychain Access
-// puts in its CSRs (email address and common name).
+// puts in its CSRs (email address and common name). The key is written in
+// PKCS#8 ("PRIVATE KEY"), the form openssl and zsign read without a legacy
+// flag.
 func GenerateKeyAndCSR(commonName, email string) (keyPEM, csrPEM []byte, err error) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to generate private key: %w", err)
 	}
-	keyPEM = pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(key),
-	})
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to encode private key: %w", err)
+	}
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
 	csrPEM, err = CreateCSR(keyPEM, commonName, email)
 	if err != nil {
 		return nil, nil, err
@@ -67,14 +70,27 @@ func CreateCSR(keyPEM []byte, commonName, email string) ([]byte, error) {
 	}), nil
 }
 
+// parseKey reads a PEM RSA key in PKCS#8 ("PRIVATE KEY", as written now) or
+// PKCS#1 ("RSA PRIVATE KEY", as earlier Builder versions wrote it).
 func parseKey(keyPEM []byte) (*rsa.PrivateKey, error) {
 	block, _ := pem.Decode(keyPEM)
 	if block == nil {
 		return nil, fmt.Errorf("invalid private key: not PEM encoded")
 	}
-	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	if block.Type == "RSA PRIVATE KEY" {
+		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse private key: %w", err)
+		}
+		return key, nil
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse private key: %w", err)
+	}
+	key, ok := parsed.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("private key is %T, Apple signing certificates need an RSA key", parsed)
 	}
 	return key, nil
 }
