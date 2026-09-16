@@ -131,7 +131,18 @@ and connect the same repository to each provider before building. See
 | Kotlin Multiplatform | `iosApp/` | Yes |
 | Cordova/Ionic | `platforms/ios/` | Yes |
 
+### React Native
+
+The runner installs JavaScript dependencies with the package manager the project
+already uses — npm, Yarn, pnpm or Bun, from `packageManager` in `package.json` or
+from the lockfile — on the Node version from `.nvmrc`, `.node-version` or
+`engines.node`.
+
 ### Expo
+
+Dependencies install the way they do for React Native: the project's own package
+manager (npm, Yarn, pnpm or Bun) and Node version, with `expo prebuild` running
+through that same manager.
 
 A managed Expo project has no `ios/` directory in git. `builder init` detects it
 as *Expo (managed)*, still records `"ios": { "path": "ios" }`, and the runner
