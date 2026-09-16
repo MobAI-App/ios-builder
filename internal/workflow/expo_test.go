@@ -197,11 +197,12 @@ func TestRunnerExpoPrebuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	start := strings.Index(string(data), "\nexpo_prebuild() {\n")
+	script := string(data)
+	start := strings.Index(script, "\nexpo_prebuild() {\n")
 	if start < 0 {
 		t.Fatal("runner.sh has no expo_prebuild function")
 	}
-	body := string(data)[start:]
+	body := script[start:]
 	end := strings.Index(body, "\n}\n")
 	if end < 0 {
 		t.Fatal("expo_prebuild is not terminated")
