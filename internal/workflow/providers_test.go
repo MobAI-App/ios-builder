@@ -187,6 +187,137 @@ fi
 	}
 }
 
+// shellFunction returns the body of the named shell function from a template,
+// dedented, so the same function can be checked for drift between templates
+// and run under stubs.
+func shellFunction(t *testing.T, data []byte, name string) string {
+	t.Helper()
+	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimLeft(line, " ")
+		if trimmed != name+"() {" {
+			continue
+		}
+		indent := line[:len(line)-len(trimmed)]
+		var body []string
+		for _, l := range lines[i:] {
+			body = append(body, strings.TrimPrefix(l, indent))
+			if l == indent+"}" {
+				return strings.Join(body, "\n") + "\n"
+			}
+		}
+	}
+	t.Fatalf("function %s not found", name)
+	return ""
+}
+
+func TestApplyBuildNumber(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("macOS/Linux shell test")
+	}
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq unavailable for the xcodebuild stub")
+	}
+	runner, err := GetTemplate("runner.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := GetTemplate("ios-build.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn := shellFunction(t, runner, "apply_build_number")
+	if got := shellFunction(t, workflow, "apply_build_number"); got != fn {
+		t.Fatalf("apply_build_number differs between runner.sh and ios-build.yml:\n%s\n---\n%s", fn, got)
+	}
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// xcodebuild answers -showBuildSettings with the app target's plist path
+	// and records that it was asked; plutil works on key=value files.
+	stubs := map[string]string{
+		"xcodebuild": `#!/bin/bash
+echo "$@" >> "$STUB_LOG"
+printf '[{"buildSettings":{"PRODUCT_TYPE":"com.apple.product-type.application","SRCROOT":"%s","INFOPLIST_FILE":"%s"}}]\n' "$SRCROOT" "$INFOPLIST_FILE"
+`,
+		"plutil": `#!/bin/bash
+echo "plutil $@" >> "$STUB_LOG"
+case "$1" in
+  -extract) grep "^$2=" "$6" | cut -d= -f2- ;;
+  -replace) grep -v "^$2=" "$5" > "$5.tmp"; echo "$2=$4" >> "$5.tmp"; mv "$5.tmp" "$5" ;;
+  *) exit 2 ;;
+esac
+`,
+	}
+	for name, body := range stubs {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script := filepath.Join(dir, "apply.sh")
+	if err := os.WriteFile(script, []byte("set -euo pipefail\n"+fn+`apply_build_number "$@"
+printf '%s|%s|%s\n' "$build_number" "$build_name" "$version_settings"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tt := range []struct {
+		name, input, plist, want, wantPlist string
+		noPlist, fail                       bool
+	}{
+		{name: "unset leaves the build alone", input: "", want: "||"},
+		{name: "project version setting", input: "42", plist: "CFBundleVersion=$(CURRENT_PROJECT_VERSION)\n", want: "42||CURRENT_PROJECT_VERSION=42", wantPlist: "CFBundleVersion=$(CURRENT_PROJECT_VERSION)\n"},
+		{name: "flutter setting", input: "42", plist: "CFBundleVersion=$(FLUTTER_BUILD_NUMBER)\n", want: "42||CURRENT_PROJECT_VERSION=42", wantPlist: "CFBundleVersion=$(FLUTTER_BUILD_NUMBER)\n"},
+		{name: "hardcoded plist", input: "1.2.3+42", plist: "CFBundleVersion=7\nCFBundleShortVersionString=1.0\n", want: "42|1.2.3|CURRENT_PROJECT_VERSION=42 MARKETING_VERSION=1.2.3", wantPlist: "CFBundleVersion=42\nCFBundleShortVersionString=1.2.3\n"},
+		{name: "generated plist", input: "42", noPlist: true, want: "42||CURRENT_PROJECT_VERSION=42"},
+		{name: "rejects shell metacharacters", input: "42; touch pwned", fail: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			work := t.TempDir()
+			plist := filepath.Join(work, "Info.plist")
+			infoPlistFile := "Info.plist"
+			if tt.noPlist {
+				infoPlistFile = ""
+			} else if err := os.WriteFile(plist, []byte(tt.plist), 0644); err != nil {
+				t.Fatal(err)
+			}
+			log := filepath.Join(work, "stub.log")
+			cmd := exec.Command("bash", script, "-project", "App.xcodeproj", "-scheme", "App")
+			cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"BUILD_NUMBER="+tt.input, "SRCROOT="+work, "INFOPLIST_FILE="+infoPlistFile, "STUB_LOG="+log)
+			out, err := cmd.CombinedOutput()
+			if tt.fail {
+				if err == nil {
+					t.Fatalf("accepted %q: %s", tt.input, out)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("%s %v", out, err)
+			}
+			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+			if got := lines[len(lines)-1]; got != tt.want {
+				t.Errorf("result = %q, want %q\n%s", got, tt.want, out)
+			}
+			calls, _ := os.ReadFile(log)
+			if tt.input == "" && len(calls) != 0 {
+				t.Errorf("tools invoked without a build number: %s", calls)
+			}
+			if tt.noPlist && strings.Contains(string(calls), "plutil") {
+				t.Errorf("plutil run without a plist: %s", calls)
+			}
+			if tt.wantPlist != "" {
+				if got, _ := os.ReadFile(plist); string(got) != tt.wantPlist {
+					t.Errorf("plist = %q, want %q", got, tt.wantPlist)
+				}
+			}
+		})
+	}
+}
+
 func TestBitriseSSHActivationRequiresKey(t *testing.T) {
 	data, err := GetTemplate("bitrise.yml")
 	if err != nil {

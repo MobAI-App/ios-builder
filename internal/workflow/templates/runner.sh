@@ -6,7 +6,7 @@ ci_dir="${BUILDER_CI_DIR:-$HOME/.ios-builder-ci}"
 mkdir -p "$ci_dir"
 mode="${1:-build}"
 export IOS_PATH="${IOS_PATH:-.}" SCHEME="${SCHEME:-}" CONFIGURATION="${CONFIGURATION:-Debug}"
-export USE_SIGNING="${USE_SIGNING:-false}" JDK_VERSION="${JDK_VERSION:-17}"
+export USE_SIGNING="${USE_SIGNING:-false}" JDK_VERSION="${JDK_VERSION:-17}" BUILD_NUMBER="${BUILD_NUMBER:-}"
 
 snapshot_checkout() {
   case "${SNAPSHOT_REF:-}" in
@@ -153,14 +153,67 @@ install_signing() {
   cp "$signing_dir/profile.mobileprovision" "$profile_dest"
 }
 
+# BUILD_NUMBER is "N", or "X.Y.Z+N" to set the marketing version as
+# well (the pubspec convention). Sets build_number, build_name and
+# version_settings, the xcodebuild settings that carry them. Given an
+# xcodebuild target and scheme it also rewrites an Info.plist that
+# hardcodes CFBundleVersion, which CURRENT_PROJECT_VERSION never
+# reaches. Same function in ios-build.yml; keep them identical.
+apply_build_number() {
+  build_number="" build_name="" version_settings=""
+  [ -n "${BUILD_NUMBER:-}" ] || return 0
+  if ! [[ "$BUILD_NUMBER" =~ ^([0-9]+(\.[0-9]+)*\+)?[0-9]+(\.[0-9]+)*$ ]]; then
+    echo "BUILD_NUMBER must be N or X.Y.Z+N, got '$BUILD_NUMBER'" >&2
+    return 1
+  fi
+  build_number="${BUILD_NUMBER##*+}"
+  case "$BUILD_NUMBER" in *+*) build_name="${BUILD_NUMBER%+*}" ;; esac
+  version_settings="CURRENT_PROJECT_VERSION=$build_number${build_name:+ MARKETING_VERSION=$build_name}"
+  echo "Build number: $build_number${build_name:+ (version $build_name)}"
+  [ $# -gt 0 ] || return 0
+  plist=$(xcodebuild "$@" -showBuildSettings -json 2>/dev/null \
+    | jq -r 'map(.buildSettings)
+             | map(select(.PRODUCT_TYPE == "com.apple.product-type.application" and .INFOPLIST_FILE != null and .INFOPLIST_FILE != ""))
+             | map(.SRCROOT + "/" + .INFOPLIST_FILE) | first // empty' || true)
+  if [ -z "$plist" ] || [ ! -f "$plist" ]; then
+    echo "No Info.plist file in the app target; CFBundleVersion comes from CURRENT_PROJECT_VERSION"
+    return 0
+  fi
+  current=$(plutil -extract CFBundleVersion raw -o - "$plist" 2>/dev/null || true)
+  case "$current" in
+    '$(CURRENT_PROJECT_VERSION)'|'$(FLUTTER_BUILD_NUMBER)')
+      echo "$plist reads CFBundleVersion from $current" ;;
+    *)
+      echo "$plist hardcodes CFBundleVersion '$current'; setting $build_number in the plist"
+      plutil -replace CFBundleVersion -string "$build_number" "$plist" ;;
+  esac
+  [ -n "$build_name" ] || return 0
+  current=$(plutil -extract CFBundleShortVersionString raw -o - "$plist" 2>/dev/null || true)
+  case "$current" in
+    '$(MARKETING_VERSION)'|'$(FLUTTER_BUILD_NAME)') ;;
+    *)
+      echo "$plist hardcodes CFBundleShortVersionString '$current'; setting $build_name in the plist"
+      plutil -replace CFBundleShortVersionString -string "$build_name" "$plist" ;;
+  esac
+}
+
 build_ipa() {
+  apply_build_number
   if [ "$project_type" = flutter ]; then
     cd "$BUILDER_WORKSPACE"
-    case "$CONFIGURATION" in Debug) flutter build ios --debug --no-codesign ;; *) flutter build ios --release --no-codesign ;; esac
+    flutter_flags=(--no-codesign)
+    if [ -n "$build_number" ]; then flutter_flags+=("--build-number=$build_number"); fi
+    if [ -n "$build_name" ]; then flutter_flags+=("--build-name=$build_name"); fi
+    case "$CONFIGURATION" in Debug) flutter build ios --debug "${flutter_flags[@]}" ;; *) flutter build ios --release "${flutter_flags[@]}" ;; esac
   fi
   select_project
+  # Flutter wrote the build number into Generated.xcconfig; for it this only
+  # catches a Runner Info.plist that hardcodes CFBundleVersion.
+  apply_build_number "${target[@]}" -scheme "$SCHEME"
+  # version_settings is unquoted on purpose: validated above, it holds zero
+  # to two KEY=VALUE words.
   args=("${target[@]}" -scheme "$SCHEME" -configuration "$CONFIGURATION" -destination 'generic/platform=iOS'
-    -derivedDataPath "$BUILDER_WORKSPACE/DerivedData" COMPILER_INDEX_STORE_ENABLE=NO)
+    -derivedDataPath "$BUILDER_WORKSPACE/DerivedData" COMPILER_INDEX_STORE_ENABLE=NO $version_settings)
   mkdir -p "$BUILDER_WORKSPACE/build"
   if [ "$USE_SIGNING" = true ]; then
     install_signing
