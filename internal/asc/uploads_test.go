@@ -135,7 +135,7 @@ func TestUploadBuildFlow(t *testing.T) {
 	ctx := context.Background()
 
 	var progress []int64
-	upload, err := c.UploadBuild(ctx, UploadBuildOptions{AppID: "app-1", Version: "1.2.3", BuildNumber: "42", Path: path, Progress: func(sent, total int64) {
+	upload, err := c.UploadBuild(ctx, &UploadBuildOptions{AppID: "app-1", Version: "1.2.3", BuildNumber: "42", Path: path, Progress: func(sent, total int64) {
 		progress = append(progress, sent)
 		if total != int64(len(data)) {
 			t.Errorf("total = %d", total)
@@ -149,19 +149,18 @@ func TestUploadBuildFlow(t *testing.T) {
 	}
 
 	fake.mu.Lock()
-	created := fake.created["data"].(map[string]any)
-	attrs := created["attributes"].(map[string]any)
+	attrs := obj(t, fake.created, "data", "attributes")
 	if attrs["cfBundleShortVersionString"] != "1.2.3" || attrs["cfBundleVersion"] != "42" || attrs["platform"] != "IOS" {
 		t.Errorf("buildUploads attributes = %v", attrs)
 	}
-	if created["relationships"].(map[string]any)["app"].(map[string]any)["data"].(map[string]any)["id"] != "app-1" {
-		t.Errorf("buildUploads relationships = %v", created["relationships"])
+	if obj(t, fake.created, "data", "relationships", "app", "data")["id"] != "app-1" {
+		t.Errorf("buildUploads relationships = %v", fake.created)
 	}
-	fileAttrs := fake.fileReq["data"].(map[string]any)["attributes"].(map[string]any)
+	fileAttrs := obj(t, fake.fileReq, "data", "attributes")
 	if fileAttrs["assetType"] != "ASSET" || fileAttrs["fileName"] != "App.ipa" || fileAttrs["fileSize"] != float64(len(data)) || fileAttrs["uti"] != "com.apple.ipa" {
 		t.Errorf("buildUploadFiles attributes = %v", fileAttrs)
 	}
-	if fake.fileReq["data"].(map[string]any)["relationships"].(map[string]any)["buildUpload"].(map[string]any)["data"].(map[string]any)["id"] != "up-1" {
+	if obj(t, fake.fileReq, "data", "relationships", "buildUpload", "data")["id"] != "up-1" {
 		t.Errorf("buildUploadFiles relationships = %v", fake.fileReq)
 	}
 	got := append(append([]byte{}, fake.chunks[0]...), fake.chunks[int64(len(data))/2]...)
@@ -171,11 +170,11 @@ func TestUploadBuildFlow(t *testing.T) {
 	if fake.headers[0].Get("X-Chunk") != "first" || fake.headers[0].Get("Content-Type") != "application/octet-stream" || fake.headers[int64(len(data))/2].Get("X-Chunk") != "second" {
 		t.Errorf("request headers not honored: %v %v", fake.headers[0], fake.headers[int64(len(data))/2])
 	}
-	commit := fake.commit["data"].(map[string]any)
-	if commit["id"] != "file-1" || commit["attributes"].(map[string]any)["uploaded"] != true {
+	commit := obj(t, fake.commit, "data")
+	if commit["id"] != "file-1" || obj(t, commit, "attributes")["uploaded"] != true {
 		t.Errorf("commit body = %v", fake.commit)
 	}
-	if _, has := commit["attributes"].(map[string]any)["sourceFileChecksums"]; has {
+	if _, has := obj(t, commit, "attributes")["sourceFileChecksums"]; has {
 		t.Error("checksum must not be sent")
 	}
 	fake.mu.Unlock()
@@ -204,7 +203,7 @@ func TestUploadBuildRejected(t *testing.T) {
 	fake.failing = true
 	c := newTestClient(t, fake.srv)
 	ctx := context.Background()
-	upload, err := c.UploadBuild(ctx, UploadBuildOptions{AppID: "app-1", Version: "1.2.3", BuildNumber: "42", Path: path})
+	upload, err := c.UploadBuild(ctx, &UploadBuildOptions{AppID: "app-1", Version: "1.2.3", BuildNumber: "42", Path: path})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,12 +222,12 @@ func TestUploadChunkRetriesOn5xx(t *testing.T) {
 	fake := newFakeASC(t, int64(len(data)))
 	fake.chunk500 = 2
 	c := newTestClient(t, fake.srv)
-	if _, err := c.UploadBuild(context.Background(), UploadBuildOptions{AppID: "app-1", Version: "1.0", BuildNumber: "1", Path: path}); err != nil {
+	if _, err := c.UploadBuild(context.Background(), &UploadBuildOptions{AppID: "app-1", Version: "1.0", BuildNumber: "1", Path: path}); err != nil {
 		t.Fatal(err)
 	}
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	if fake.fileReq["data"].(map[string]any)["attributes"].(map[string]any)["uti"] != "com.apple.pkg" {
+	if obj(t, fake.fileReq, "data", "attributes")["uti"] != "com.apple.pkg" {
 		t.Error("pkg uti not detected")
 	}
 	if len(fake.chunks[0]) != 50 || len(fake.chunks[50]) != 50 {

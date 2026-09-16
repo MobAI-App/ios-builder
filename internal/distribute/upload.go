@@ -54,7 +54,7 @@ type UploadResult struct {
 
 // Upload delivers the IPA to App Store Connect and, with Wait, follows it
 // until the build is VALID and its export compliance is answered.
-func Upload(ctx context.Context, client *asc.Client, opts UploadOptions) (*UploadResult, error) {
+func Upload(ctx context.Context, client *asc.Client, opts *UploadOptions) (*UploadResult, error) {
 	info, err := ipa.ReadInfo(opts.IPAPath)
 	if err != nil {
 		return nil, err
@@ -76,7 +76,7 @@ func Upload(ctx context.Context, client *asc.Client, opts UploadOptions) (*Uploa
 
 	logf(opts.Log, "Uploading %s (%s build %s) to %s...", opts.IPAPath, info.Version, info.BuildNumber, app.Name)
 	var lastPercent int64 = -1
-	upload, err := client.UploadBuild(ctx, asc.UploadBuildOptions{
+	upload, err := client.UploadBuild(ctx, &asc.UploadBuildOptions{
 		AppID: app.ID, Version: info.Version, BuildNumber: info.BuildNumber, Platform: asc.PlatformIOS, Path: opts.IPAPath,
 		Progress: func(sent, total int64) {
 			if total == 0 {

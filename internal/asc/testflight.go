@@ -3,6 +3,7 @@ package asc
 import (
 	"context"
 	"net/url"
+	"time"
 )
 
 // BetaGroup is a TestFlight tester group.
@@ -150,6 +151,28 @@ func (c *Client) GetBetaAppReviewSubmission(ctx context.Context, id string) (*Be
 		return nil, err
 	}
 	return &BetaAppReviewSubmission{ID: r.ID, State: r.Attributes.BetaReviewState}, nil
+}
+
+// WaitForBetaAppReview polls the beta review until Apple has decided it
+// (APPROVED or REJECTED). onPoll, when set, sees every state change.
+func (c *Client) WaitForBetaAppReview(ctx context.Context, id string, interval time.Duration, onPoll func(*BetaAppReviewSubmission)) (*BetaAppReviewSubmission, error) {
+	p := c.newPoller(interval)
+	for {
+		review, err := c.GetBetaAppReviewSubmission(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if onPoll != nil {
+			onPoll(review)
+		}
+		switch review.State {
+		case BetaReviewApproved, BetaReviewRejected:
+			return review, nil
+		}
+		if err := p.wait(ctx); err != nil {
+			return review, err
+		}
+	}
 }
 
 // SubmitBuildForBetaReview submits the build for external TestFlight review.

@@ -42,7 +42,7 @@ type AppStoreResult struct {
 }
 
 // SubmitAppStore attaches a build to the App Store version and submits it for review.
-func SubmitAppStore(ctx context.Context, client *asc.Client, opts AppStoreOptions) (*AppStoreResult, error) {
+func SubmitAppStore(ctx context.Context, client *asc.Client, opts *AppStoreOptions) (*AppStoreResult, error) {
 	if opts.Version == "" {
 		return nil, fmt.Errorf("a marketing version is required (--version, or --ipa to read it from the archive)")
 	}
@@ -81,7 +81,7 @@ func SubmitAppStore(ctx context.Context, client *asc.Client, opts AppStoreOption
 	}
 	res.Version.ID, res.Version.VersionString, res.Version.State, res.Version.ReleaseType = version.ID, version.VersionString, version.State, version.ReleaseType
 	switch version.State {
-	case asc.ReviewStateWaitingForReview, asc.ReviewStateInReview:
+	case asc.VersionStateWaitingForReview, asc.VersionStateInReview:
 		return res, fmt.Errorf("version %s is already %s; cancel that submission in App Store Connect before submitting another build", version.VersionString, version.State)
 	}
 

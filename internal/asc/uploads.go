@@ -122,29 +122,20 @@ type UploadOperation struct {
 	RequestHeaders []HTTPHeader `json:"requestHeaders,omitempty"`
 }
 
-// AssetDeliveryState reports whether Apple received the file.
-type AssetDeliveryState struct {
-	State    string        `json:"state,omitempty"`
-	Errors   []StateDetail `json:"errors,omitempty"`
-	Warnings []StateDetail `json:"warnings,omitempty"`
-}
-
 // BuildUploadFile is the reserved slot for the IPA within a delivery.
 type BuildUploadFile struct {
-	ID                 string
-	FileName           string
-	FileSize           int64
-	UploadOperations   []UploadOperation
-	AssetDeliveryState *AssetDeliveryState
+	ID               string
+	FileName         string
+	FileSize         int64
+	UploadOperations []UploadOperation
 }
 
 type buildUploadFileAttributes struct {
-	AssetType          string              `json:"assetType,omitempty"`
-	FileName           string              `json:"fileName,omitempty"`
-	FileSize           int64               `json:"fileSize,omitempty"`
-	UTI                string              `json:"uti,omitempty"`
-	UploadOperations   []UploadOperation   `json:"uploadOperations,omitempty"`
-	AssetDeliveryState *AssetDeliveryState `json:"assetDeliveryState,omitempty"`
+	AssetType        string            `json:"assetType,omitempty"`
+	FileName         string            `json:"fileName,omitempty"`
+	FileSize         int64             `json:"fileSize,omitempty"`
+	UTI              string            `json:"uti,omitempty"`
+	UploadOperations []UploadOperation `json:"uploadOperations,omitempty"`
 }
 
 // The reference implementation sends no checksum: ASC accepts the upload
@@ -155,11 +146,10 @@ type buildUploadFileCommit struct {
 
 func toBuildUploadFile(r Resource[buildUploadFileAttributes]) BuildUploadFile {
 	return BuildUploadFile{
-		ID:                 r.ID,
-		FileName:           r.Attributes.FileName,
-		FileSize:           r.Attributes.FileSize,
-		UploadOperations:   r.Attributes.UploadOperations,
-		AssetDeliveryState: r.Attributes.AssetDeliveryState,
+		ID:               r.ID,
+		FileName:         r.Attributes.FileName,
+		FileSize:         r.Attributes.FileSize,
+		UploadOperations: r.Attributes.UploadOperations,
 	}
 }
 
@@ -179,16 +169,6 @@ func (c *Client) CreateBuildUploadFile(ctx context.Context, uploadID, fileName s
 		Relationships: Relationships{"buildUpload": ToOne("buildUploads", uploadID)},
 	}
 	r, err := post[buildUploadFileAttributes, buildUploadFileAttributes](ctx, c, "/v1/buildUploadFiles", req)
-	if err != nil {
-		return nil, err
-	}
-	f := toBuildUploadFile(*r)
-	return &f, nil
-}
-
-// GetBuildUploadFile fetches the file slot, including its delivery state.
-func (c *Client) GetBuildUploadFile(ctx context.Context, id string) (*BuildUploadFile, error) {
-	r, err := getOne[buildUploadFileAttributes](ctx, c, "/v1/buildUploadFiles/"+id, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -232,12 +212,8 @@ func (c *Client) uploadChunk(ctx context.Context, file io.ReaderAt, op UploadOpe
 	var lastErr error
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
-			timer := time.NewTimer(c.retryDelay << (attempt - 1))
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return ctx.Err()
-			case <-timer.C:
+			if err := c.sleep(ctx, c.retryDelay<<(attempt-1)); err != nil {
+				return err
 			}
 		}
 		req, err := http.NewRequestWithContext(ctx, method, op.URL, io.NewSectionReader(file, op.Offset, op.Length))
@@ -253,7 +229,9 @@ func (c *Client) uploadChunk(ctx context.Context, file io.ReaderAt, op UploadOpe
 			lastErr = err
 			continue
 		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		// Storage error bodies are short XML; 1 KB keeps the reason without
+		// echoing a whole presigned request back into the error.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		resp.Body.Close()
 		if resp.StatusCode < 300 {
 			return nil
@@ -280,9 +258,10 @@ type UploadBuildOptions struct {
 // UploadBuild runs the buildUploads flow end to end: create the delivery,
 // reserve the file, PUT the chunks and commit. It returns as soon as App
 // Store Connect has the file; use WaitForBuildUpload to follow processing.
-func (c *Client) UploadBuild(ctx context.Context, opts UploadBuildOptions) (*BuildUpload, error) {
-	if opts.Platform == "" {
-		opts.Platform = PlatformIOS
+func (c *Client) UploadBuild(ctx context.Context, opts *UploadBuildOptions) (*BuildUpload, error) {
+	platform := opts.Platform
+	if platform == "" {
+		platform = PlatformIOS
 	}
 	f, err := os.Open(opts.Path)
 	if err != nil {
@@ -293,7 +272,7 @@ func (c *Client) UploadBuild(ctx context.Context, opts UploadBuildOptions) (*Bui
 	if err != nil {
 		return nil, err
 	}
-	upload, err := c.CreateBuildUpload(ctx, opts.AppID, opts.Version, opts.BuildNumber, opts.Platform)
+	upload, err := c.CreateBuildUpload(ctx, opts.AppID, opts.Version, opts.BuildNumber, platform)
 	if err != nil {
 		return nil, fmt.Errorf("create build upload: %w", err)
 	}
@@ -329,9 +308,31 @@ func (e *UploadFailedError) Error() string {
 	return "App Store Connect rejected the upload: " + strings.Join(msgs, "; ")
 }
 
+// poller spaces out status polls: the wait starts at the base interval and
+// grows by half each time, capped at four times the base, so a long
+// processing run costs fewer requests without making short ones sluggish.
+type poller struct {
+	c       *Client
+	next    time.Duration
+	maximum time.Duration
+}
+
+func (c *Client) newPoller(interval time.Duration) *poller {
+	return &poller{c: c, next: interval, maximum: 4 * interval}
+}
+
+func (p *poller) wait(ctx context.Context) error {
+	d := p.next
+	if p.next = p.next * 3 / 2; p.next > p.maximum {
+		p.next = p.maximum
+	}
+	return p.c.sleep(ctx, d)
+}
+
 // WaitForBuildUpload polls the delivery until it is COMPLETE, returning an
 // *UploadFailedError when it FAILED. onPoll, when set, sees every poll result.
 func (c *Client) WaitForBuildUpload(ctx context.Context, id string, interval time.Duration, onPoll func(*BuildUpload)) (*BuildUpload, error) {
+	p := c.newPoller(interval)
 	for {
 		u, err := c.GetBuildUpload(ctx, id)
 		if err != nil {
@@ -346,7 +347,7 @@ func (c *Client) WaitForBuildUpload(ctx context.Context, id string, interval tim
 		case UploadStateFailed:
 			return u, &UploadFailedError{Upload: u}
 		}
-		if err := sleep(ctx, interval); err != nil {
+		if err := p.wait(ctx); err != nil {
 			return u, err
 		}
 	}
@@ -355,8 +356,9 @@ func (c *Client) WaitForBuildUpload(ctx context.Context, id string, interval tim
 // WaitForBuild polls until the build for the version pair exists and has
 // left PROCESSING. A FAILED or INVALID build is returned with an error.
 func (c *Client) WaitForBuild(ctx context.Context, appID, version, buildNumber string, interval time.Duration, onPoll func(*Build)) (*Build, error) {
+	p := c.newPoller(interval)
 	for {
-		builds, err := c.ListBuilds(ctx, BuildFilter{AppID: appID, Platform: PlatformIOS, Version: version, BuildNumber: buildNumber, Limit: 1})
+		builds, err := c.ListBuilds(ctx, &BuildFilter{AppID: appID, Platform: PlatformIOS, Version: version, BuildNumber: buildNumber, Limit: 1})
 		if err != nil {
 			return nil, err
 		}
@@ -374,19 +376,8 @@ func (c *Client) WaitForBuild(ctx context.Context, appID, version, buildNumber s
 		} else if onPoll != nil {
 			onPoll(nil)
 		}
-		if err := sleep(ctx, interval); err != nil {
+		if err := p.wait(ctx); err != nil {
 			return nil, err
 		}
-	}
-}
-
-func sleep(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
 	}
 }

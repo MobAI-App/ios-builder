@@ -75,7 +75,7 @@ func pollInterval(d time.Duration) time.Duration {
 
 // pickBuild returns the newest VALID, unexpired build matching the filters.
 func pickBuild(ctx context.Context, client *asc.Client, appID, version, buildNumber string) (*asc.Build, error) {
-	f := asc.BuildFilter{AppID: appID, Platform: asc.PlatformIOS, Version: version, BuildNumber: buildNumber, ProcessingState: asc.ProcessingStateValid, ExcludeExpired: true, Limit: 1}
+	f := &asc.BuildFilter{AppID: appID, Platform: asc.PlatformIOS, Version: version, BuildNumber: buildNumber, ProcessingState: asc.ProcessingStateValid, ExcludeExpired: true, Limit: 1}
 	builds, err := client.ListBuilds(ctx, f)
 	if err != nil {
 		return nil, err
@@ -85,7 +85,7 @@ func pickBuild(ctx context.Context, client *asc.Client, appID, version, buildNum
 	}
 	// Explain why rather than just "not found": the build may still be processing.
 	f.ProcessingState, f.ExcludeExpired = "", false
-	any, err := client.ListBuilds(ctx, f)
+	matches, err := client.ListBuilds(ctx, f)
 	if err != nil {
 		return nil, err
 	}
@@ -96,10 +96,10 @@ func pickBuild(ctx context.Context, client *asc.Client, appID, version, buildNum
 	if version != "" {
 		what += " of version " + version
 	}
-	if len(any) == 0 {
+	if len(matches) == 0 {
 		return nil, fmt.Errorf("%s is available in App Store Connect; upload one with builder ios upload --wait", what)
 	}
-	b := any[0]
+	b := matches[0]
 	if b.Expired {
 		return nil, fmt.Errorf("%s (%s) has expired; upload a new build", what, b.ID)
 	}

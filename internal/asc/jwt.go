@@ -34,13 +34,7 @@ type Credentials struct {
 
 // Validate checks that every field is present and that the key is a P-256 key.
 func (c Credentials) Validate() error {
-	if strings.TrimSpace(c.IssuerID) == "" {
-		return errors.New("issuer ID is empty")
-	}
-	if strings.TrimSpace(c.KeyID) == "" {
-		return errors.New("key ID is empty")
-	}
-	_, err := ParsePrivateKey(c.PrivateKey)
+	_, err := newTokenSource(c)
 	return err
 }
 
@@ -95,8 +89,11 @@ type tokenSource struct {
 }
 
 func newTokenSource(creds Credentials) (*tokenSource, error) {
-	if err := creds.Validate(); err != nil {
-		return nil, err
+	if strings.TrimSpace(creds.IssuerID) == "" {
+		return nil, errors.New("issuer ID is empty")
+	}
+	if strings.TrimSpace(creds.KeyID) == "" {
+		return nil, errors.New("key ID is empty")
 	}
 	key, err := ParsePrivateKey(creds.PrivateKey)
 	if err != nil {

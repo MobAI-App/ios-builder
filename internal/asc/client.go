@@ -25,6 +25,8 @@ type Client struct {
 	tokens     *tokenSource
 	retryDelay time.Duration
 	maxRetries int
+	// sleep waits between retries and polls; tests replace it.
+	sleep func(context.Context, time.Duration) error
 }
 
 // Option configures a Client.
@@ -60,6 +62,7 @@ func NewClient(creds Credentials, opts ...Option) (*Client, error) {
 		tokens:     tokens,
 		retryDelay: time.Second,
 		maxRetries: 3,
+		sleep:      sleep,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -130,16 +133,6 @@ func (d ErrorDetail) String() string {
 	return strings.ReplaceAll(s, "\n", " ")
 }
 
-// HasCode reports whether any error carries the code or a code with that prefix.
-func (e *Error) HasCode(prefix string) bool {
-	for _, d := range e.Errors {
-		if strings.HasPrefix(d.Code, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
 // IsStatus reports whether err is an App Store Connect error with the given HTTP status.
 func IsStatus(err error, status int) bool {
 	var e *Error
@@ -185,13 +178,21 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		if apiErr.RetryAfter > delay {
 			delay = apiErr.RetryAfter
 		}
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
+		if err := c.sleep(ctx, delay); err != nil {
+			return err
 		}
+	}
+}
+
+// sleep waits for d or until ctx is done.
+func sleep(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 

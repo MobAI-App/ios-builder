@@ -73,12 +73,16 @@ func TestTokenClaimsAndSignature(t *testing.T) {
 	if claims["iss"] != "issuer-1" || claims["aud"] != audience {
 		t.Errorf("claims = %v", claims)
 	}
-	iat, exp := int64(claims["iat"].(float64)), int64(claims["exp"].(float64))
-	if iat != now.Unix() {
-		t.Errorf("iat = %d, want %d", iat, now.Unix())
+	iat, iatOK := claims["iat"].(float64)
+	exp, expOK := claims["exp"].(float64)
+	if !iatOK || !expOK {
+		t.Fatalf("iat/exp are not numbers: %v", claims)
+	}
+	if int64(iat) != now.Unix() {
+		t.Errorf("iat = %v, want %d", iat, now.Unix())
 	}
 	if lifetime := exp - iat; lifetime <= 0 || lifetime > 20*60 {
-		t.Errorf("exp-iat = %ds, must be within Apple's 20 minute cap", lifetime)
+		t.Errorf("exp-iat = %vs, must be within Apple's 20 minute cap", lifetime)
 	}
 
 	sig, err := base64.RawURLEncoding.DecodeString(parts[2])

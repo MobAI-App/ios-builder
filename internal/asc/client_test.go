@@ -30,6 +30,46 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// obj walks decoded JSON down the given object keys; a missing or non-object
+// step fails the test and yields nil, which later lookups tolerate.
+func obj(t *testing.T, v any, keys ...string) map[string]any {
+	t.Helper()
+	for i := 0; ; i++ {
+		m, ok := v.(map[string]any)
+		if !ok {
+			t.Errorf("JSON path %v: %T is not an object", keys[:i], v)
+			return nil
+		}
+		if i == len(keys) {
+			return m
+		}
+		v = m[keys[i]]
+	}
+}
+
+// arr is obj for a final array value.
+func arr(t *testing.T, v any, keys ...string) []any {
+	t.Helper()
+	if len(keys) > 0 {
+		v = obj(t, v, keys[:len(keys)-1]...)[keys[len(keys)-1]]
+	}
+	a, ok := v.([]any)
+	if !ok {
+		t.Errorf("JSON path %v: %T is not an array", keys, v)
+	}
+	return a
+}
+
+// recordSleeps makes the client's waits instant and returns the requested durations.
+func recordSleeps(c *Client) *[]time.Duration {
+	var slept []time.Duration
+	c.sleep = func(_ context.Context, d time.Duration) error {
+		slept = append(slept, d)
+		return nil
+	}
+	return &slept
+}
+
 func TestGetSendsBearerTokenAndDecodes(t *testing.T) {
 	var authz string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +120,7 @@ func TestErrorDecoding(t *testing.T) {
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("err = %T %v", err, err)
 	}
-	if apiErr.StatusCode != 409 || len(apiErr.Errors) != 2 || !apiErr.HasCode("STATE_ERROR") || !IsStatus(err, 409) {
+	if apiErr.StatusCode != 409 || len(apiErr.Errors) != 2 || apiErr.Errors[0].Code != "STATE_ERROR.ENTITY_STATE_INVALID" || !IsStatus(err, 409) {
 		t.Errorf("apiErr = %+v", apiErr)
 	}
 	msg := err.Error()
@@ -148,16 +188,37 @@ func TestRetryOn429HonorsRetryAfter(t *testing.T) {
 		writeJSON(w, 201, map[string]any{"data": map[string]any{"type": "reviewSubmissions", "id": "rs-1", "attributes": map[string]any{"state": "READY_FOR_REVIEW"}}})
 	}))
 	defer srv.Close()
-	start := time.Now()
-	sub, err := newTestClient(t, srv).CreateReviewSubmission(context.Background(), "app-1", PlatformIOS)
+	c := newTestClient(t, srv)
+	slept := recordSleeps(c)
+	sub, err := c.CreateReviewSubmission(context.Background(), "app-1", PlatformIOS)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if sub.ID != "rs-1" || calls.Load() != 2 {
 		t.Errorf("sub = %+v, calls = %d", sub, calls.Load())
 	}
-	if time.Since(start) < time.Second {
-		t.Error("Retry-After was not honored")
+	if len(*slept) != 1 || (*slept)[0] != time.Second {
+		t.Errorf("slept %v, want the 1s Retry-After over the 1ms base delay", *slept)
+	}
+}
+
+func TestPollerBacksOffToCap(t *testing.T) {
+	c := &Client{}
+	slept := recordSleeps(c)
+	p := c.newPoller(10 * time.Second)
+	for range 6 {
+		if err := p.wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []time.Duration{10 * time.Second, 15 * time.Second, 22500 * time.Millisecond, 33750 * time.Millisecond, 40 * time.Second, 40 * time.Second}
+	if len(*slept) != len(want) {
+		t.Fatalf("slept %v, want %v", *slept, want)
+	}
+	for i := range want {
+		if (*slept)[i] != want[i] {
+			t.Errorf("wait %d = %v, want %v", i, (*slept)[i], want[i])
+		}
 	}
 }
 
@@ -232,16 +293,16 @@ func TestRequestBodiesAreJSONAPI(t *testing.T) {
 	if err != nil || b.UsesNonExemptEncryption == nil || *b.UsesNonExemptEncryption {
 		t.Fatalf("build = %+v, err = %v", b, err)
 	}
-	data := body["data"].(map[string]any)
-	if data["type"] != "builds" || data["id"] != "b1" || data["attributes"].(map[string]any)["usesNonExemptEncryption"] != false {
+	data := obj(t, body, "data")
+	if data["type"] != "builds" || data["id"] != "b1" || obj(t, data, "attributes")["usesNonExemptEncryption"] != false {
 		t.Errorf("PATCH body = %v", body)
 	}
 
 	if err := c.AddBuildToBetaGroups(ctx, "b1", []string{"g1", "g2"}); err != nil {
 		t.Fatal(err)
 	}
-	linkages := body["data"].([]any)
-	if len(linkages) != 2 || linkages[1].(map[string]any)["id"] != "g2" || linkages[0].(map[string]any)["type"] != "betaGroups" {
+	linkages := arr(t, body, "data")
+	if len(linkages) != 2 || obj(t, linkages[1])["id"] != "g2" || obj(t, linkages[0])["type"] != "betaGroups" {
 		t.Errorf("relationship body = %v", body)
 	}
 
@@ -249,11 +310,11 @@ func TestRequestBodiesAreJSONAPI(t *testing.T) {
 	if err != nil || sub.ID != "bar-1" || sub.State != BetaReviewWaiting {
 		t.Fatalf("sub = %+v, err = %v", sub, err)
 	}
-	data = body["data"].(map[string]any)
+	data = obj(t, body, "data")
 	if _, has := data["attributes"]; has {
 		t.Errorf("empty attributes must be omitted: %v", body)
 	}
-	if data["relationships"].(map[string]any)["build"].(map[string]any)["data"].(map[string]any)["id"] != "b1" {
+	if obj(t, data, "relationships", "build", "data")["id"] != "b1" {
 		t.Errorf("POST body = %v", body)
 	}
 }

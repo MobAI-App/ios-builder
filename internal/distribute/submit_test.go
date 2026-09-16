@@ -14,7 +14,7 @@ import (
 func TestSubmitTestFlightExternalGroup(t *testing.T) {
 	f := newFake(t)
 	var log bytes.Buffer
-	res, err := SubmitTestFlight(context.Background(), f.client(t), TestFlightOptions{
+	res, err := SubmitTestFlight(context.Background(), f.client(t), &TestFlightOptions{
 		BundleID: "com.example.app", Groups: []string{"team", "Beta Testers"}, Notes: "Try the new login", NoEncryption: true, Wait: true, PollInterval: time.Millisecond, Log: &log,
 	})
 	if err != nil {
@@ -27,12 +27,12 @@ func TestSubmitTestFlightExternalGroup(t *testing.T) {
 		t.Errorf("beta review = %+v", res.BetaReview)
 	}
 	// Notes go to the app's primary locale, which has no localization yet, so it is created.
-	notes := f.body("POST /v1/betaBuildLocalizations")["data"].(map[string]any)
-	if notes["attributes"].(map[string]any)["locale"] != "de-DE" || notes["attributes"].(map[string]any)["whatsNew"] != "Try the new login" {
+	notes := obj(t, f.body("POST /v1/betaBuildLocalizations"), "data", "attributes")
+	if notes["locale"] != "de-DE" || notes["whatsNew"] != "Try the new login" {
 		t.Errorf("localization body = %v", notes)
 	}
-	links := f.body("POST /v1/builds/build-9/relationships/betaGroups")["data"].([]any)
-	if len(links) != 2 || links[1].(map[string]any)["id"] != "g-ext" {
+	links := arr(t, f.body("POST /v1/builds/build-9/relationships/betaGroups"), "data")
+	if len(links) != 2 || obj(t, links[1])["id"] != "g-ext" {
 		t.Errorf("group linkage = %v", links)
 	}
 	// Review must be requested before the build lands in the external group.
@@ -54,7 +54,7 @@ func TestSubmitTestFlightUpdatesExistingNotesAndSkipsReviewForInternal(t *testin
 	f := newFake(t)
 	yes := false
 	f.buildEncryption = &yes
-	res, err := SubmitTestFlight(context.Background(), f.client(t), TestFlightOptions{BundleID: "com.example.app", BuildNumber: "7", Groups: []string{"Team"}, Notes: "n", Locale: "en-US"})
+	res, err := SubmitTestFlight(context.Background(), f.client(t), &TestFlightOptions{BundleID: "com.example.app", BuildNumber: "7", Groups: []string{"Team"}, Notes: "n", Locale: "en-US"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestSubmitTestFlightUpdatesExistingNotesAndSkipsReviewForInternal(t *testin
 
 func TestSubmitTestFlightListsGroupsWithoutGroupFlag(t *testing.T) {
 	f := newFake(t)
-	res, err := SubmitTestFlight(context.Background(), f.client(t), TestFlightOptions{BundleID: "com.example.app"})
+	res, err := SubmitTestFlight(context.Background(), f.client(t), &TestFlightOptions{BundleID: "com.example.app"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,19 +80,19 @@ func TestSubmitTestFlightListsGroupsWithoutGroupFlag(t *testing.T) {
 func TestSubmitTestFlightErrors(t *testing.T) {
 	f := newFake(t)
 	c := f.client(t)
-	_, err := SubmitTestFlight(context.Background(), c, TestFlightOptions{BundleID: "com.example.app", Groups: []string{"Nobody"}, NoEncryption: true})
+	_, err := SubmitTestFlight(context.Background(), c, &TestFlightOptions{BundleID: "com.example.app", Groups: []string{"Nobody"}, NoEncryption: true})
 	if err == nil || !strings.Contains(err.Error(), "Nobody") || !strings.Contains(err.Error(), "Beta Testers") {
 		t.Errorf("unknown group: %v", err)
 	}
 	f.mu.Lock()
 	f.buildEncryption = nil // the call above answered it
 	f.mu.Unlock()
-	_, err = SubmitTestFlight(context.Background(), c, TestFlightOptions{BundleID: "com.example.app", Groups: []string{"Team"}})
+	_, err = SubmitTestFlight(context.Background(), c, &TestFlightOptions{BundleID: "com.example.app", Groups: []string{"Team"}})
 	if err == nil || !strings.Contains(err.Error(), "export compliance") {
 		t.Errorf("missing compliance: %v", err)
 	}
 	f.buildState = "PROCESSING"
-	_, err = SubmitTestFlight(context.Background(), c, TestFlightOptions{BundleID: "com.example.app", BuildNumber: "7"})
+	_, err = SubmitTestFlight(context.Background(), c, &TestFlightOptions{BundleID: "com.example.app", BuildNumber: "7"})
 	if err == nil || !strings.Contains(err.Error(), "PROCESSING") {
 		t.Errorf("processing build: %v", err)
 	}
@@ -101,27 +101,27 @@ func TestSubmitTestFlightErrors(t *testing.T) {
 func TestSubmitAppStoreCreatesVersionAndSubmission(t *testing.T) {
 	f := newFake(t)
 	var log bytes.Buffer
-	res, err := SubmitAppStore(context.Background(), f.client(t), AppStoreOptions{BundleID: "com.example.app", Version: "2.0.0", ReleaseType: asc.ReleaseTypeAfterApproval, NoEncryption: true, Log: &log})
+	res, err := SubmitAppStore(context.Background(), f.client(t), &AppStoreOptions{BundleID: "com.example.app", Version: "2.0.0", ReleaseType: asc.ReleaseTypeAfterApproval, NoEncryption: true, Log: &log})
 	if err != nil {
 		t.Fatalf("%v\n%s", err, log.String())
 	}
 	if !res.Version.Created || res.Version.ID != "ver-1" || res.Version.ReleaseType != "AFTER_APPROVAL" || res.Submission.ID != "rs-1" || res.Submission.State != "WAITING_FOR_REVIEW" {
 		t.Errorf("result = %+v", res)
 	}
-	create := f.body("POST /v1/appStoreVersions")["data"].(map[string]any)
-	if create["attributes"].(map[string]any)["versionString"] != "2.0.0" || create["attributes"].(map[string]any)["platform"] != "IOS" || create["relationships"].(map[string]any)["app"].(map[string]any)["data"].(map[string]any)["id"] != "app-1" {
+	create := obj(t, f.body("POST /v1/appStoreVersions"), "data")
+	if attrs := obj(t, create, "attributes"); attrs["versionString"] != "2.0.0" || attrs["platform"] != "IOS" || obj(t, create, "relationships", "app", "data")["id"] != "app-1" {
 		t.Errorf("version create = %v", create)
 	}
-	upd := f.body("PATCH /v1/appStoreVersions/ver-1")["data"].(map[string]any)
-	if upd["attributes"].(map[string]any)["releaseType"] != "AFTER_APPROVAL" || upd["relationships"].(map[string]any)["build"].(map[string]any)["data"].(map[string]any)["id"] != "build-9" {
+	upd := obj(t, f.body("PATCH /v1/appStoreVersions/ver-1"), "data")
+	if obj(t, upd, "attributes")["releaseType"] != "AFTER_APPROVAL" || obj(t, upd, "relationships", "build", "data")["id"] != "build-9" {
 		t.Errorf("version update = %v", upd)
 	}
-	item := f.body("POST /v1/reviewSubmissionItems")["data"].(map[string]any)["relationships"].(map[string]any)
-	if item["reviewSubmission"].(map[string]any)["data"].(map[string]any)["id"] != "rs-1" || item["appStoreVersion"].(map[string]any)["data"].(map[string]any)["id"] != "ver-1" {
+	item := obj(t, f.body("POST /v1/reviewSubmissionItems"), "data", "relationships")
+	if obj(t, item, "reviewSubmission", "data")["id"] != "rs-1" || obj(t, item, "appStoreVersion", "data")["id"] != "ver-1" {
 		t.Errorf("item = %v", item)
 	}
-	submit := f.body("PATCH /v1/reviewSubmissions/rs-1")["data"].(map[string]any)
-	if submit["attributes"].(map[string]any)["submitted"] != true {
+	submit := f.body("PATCH /v1/reviewSubmissions/rs-1")
+	if obj(t, submit, "data", "attributes")["submitted"] != true {
 		t.Errorf("submit = %v", submit)
 	}
 }
@@ -131,7 +131,7 @@ func TestSubmitAppStoreReusesOpenSubmission(t *testing.T) {
 	f.versionExists, f.openSubmission = true, true
 	yes := true
 	f.buildEncryption = &yes
-	res, err := SubmitAppStore(context.Background(), f.client(t), AppStoreOptions{BundleID: "com.example.app", Version: "2.0.0"})
+	res, err := SubmitAppStore(context.Background(), f.client(t), &AppStoreOptions{BundleID: "com.example.app", Version: "2.0.0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestSubmitAppStoreReusesOpenSubmission(t *testing.T) {
 func TestSubmitAppStoreMetadataConflict(t *testing.T) {
 	f := newFake(t)
 	f.submitStatus = 409
-	_, err := SubmitAppStore(context.Background(), f.client(t), AppStoreOptions{BundleID: "com.example.app", Version: "2.0.0", NoEncryption: true})
+	_, err := SubmitAppStore(context.Background(), f.client(t), &AppStoreOptions{BundleID: "com.example.app", Version: "2.0.0", NoEncryption: true})
 	var apiErr *asc.Error
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != 409 {
 		t.Fatalf("err = %v", err)
@@ -165,11 +165,11 @@ func TestSubmitAppStoreMetadataConflict(t *testing.T) {
 func TestSubmitAppStoreRefusesVersionInReview(t *testing.T) {
 	f := newFake(t)
 	f.versionExists, f.versionState = true, "IN_REVIEW"
-	_, err := SubmitAppStore(context.Background(), f.client(t), AppStoreOptions{BundleID: "com.example.app", Version: "2.0.0", NoEncryption: true})
+	_, err := SubmitAppStore(context.Background(), f.client(t), &AppStoreOptions{BundleID: "com.example.app", Version: "2.0.0", NoEncryption: true})
 	if err == nil || !strings.Contains(err.Error(), "IN_REVIEW") {
 		t.Errorf("err = %v", err)
 	}
-	if _, err := SubmitAppStore(context.Background(), f.client(t), AppStoreOptions{BundleID: "com.example.app"}); err == nil {
+	if _, err := SubmitAppStore(context.Background(), f.client(t), &AppStoreOptions{BundleID: "com.example.app"}); err == nil {
 		t.Error("missing version accepted")
 	}
 }

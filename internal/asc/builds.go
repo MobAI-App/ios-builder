@@ -76,7 +76,7 @@ type BuildFilter struct {
 }
 
 // ListBuilds lists builds, newest first.
-func (c *Client) ListBuilds(ctx context.Context, f BuildFilter) ([]Build, error) {
+func (c *Client) ListBuilds(ctx context.Context, f *BuildFilter) ([]Build, error) {
 	q := url.Values{"sort": {"-uploadedDate"}}
 	if f.AppID != "" {
 		q.Set("filter[app]", f.AppID)

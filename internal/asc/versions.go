@@ -13,13 +13,19 @@ const (
 	ReleaseTypeScheduled     = "SCHEDULED"
 )
 
+// App Store version states (appVersionState) the flows act on; others include
+// PREPARE_FOR_SUBMISSION, READY_FOR_REVIEW, REJECTED and READY_FOR_DISTRIBUTION.
+const (
+	VersionStateWaitingForReview = "WAITING_FOR_REVIEW"
+	VersionStateInReview         = "IN_REVIEW"
+)
+
 // AppStoreVersion is a version of the app on the App Store.
 type AppStoreVersion struct {
 	ID            string
 	Platform      string
 	VersionString string
-	// State is appVersionState (e.g. PREPARE_FOR_SUBMISSION, READY_FOR_REVIEW,
-	// WAITING_FOR_REVIEW, IN_REVIEW, READY_FOR_DISTRIBUTION).
+	// State is appVersionState.
 	State         string
 	AppStoreState string
 	ReleaseType   string

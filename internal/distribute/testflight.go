@@ -57,7 +57,7 @@ type TestFlightResult struct {
 }
 
 // SubmitTestFlight hands a processed build to TestFlight groups.
-func SubmitTestFlight(ctx context.Context, client *asc.Client, opts TestFlightOptions) (*TestFlightResult, error) {
+func SubmitTestFlight(ctx context.Context, client *asc.Client, opts *TestFlightOptions) (*TestFlightResult, error) {
 	app, err := client.AppByBundleID(ctx, opts.BundleID)
 	if err != nil {
 		return nil, err
@@ -164,25 +164,16 @@ func SubmitTestFlight(ctx context.Context, client *asc.Client, opts TestFlightOp
 	logf(opts.Log, "Added build %s to %s", build.BuildNumber, strings.Join(opts.Groups, ", "))
 
 	if opts.Wait && res.BetaReview != nil {
-		interval := pollInterval(opts.PollInterval)
-		for res.BetaReview.State == asc.BetaReviewWaiting || res.BetaReview.State == asc.BetaReviewInReview || res.BetaReview.State == "" {
-			timer := time.NewTimer(interval)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return res, ctx.Err()
-			case <-timer.C:
+		review, err := client.WaitForBetaAppReview(ctx, res.BetaReview.ID, pollInterval(opts.PollInterval), func(r *asc.BetaAppReviewSubmission) {
+			if r.State != res.BetaReview.State {
+				logf(opts.Log, "  beta review: %s", r.State)
 			}
-			review, err := client.GetBetaAppReviewSubmission(ctx, res.BetaReview.ID)
-			if err != nil {
-				return res, err
-			}
-			if review.State != res.BetaReview.State {
-				logf(opts.Log, "  beta review: %s", review.State)
-			}
-			res.BetaReview.State = review.State
+			res.BetaReview.State = r.State
+		})
+		if err != nil {
+			return res, fmt.Errorf("wait for beta review: %w", err)
 		}
-		if res.BetaReview.State == asc.BetaReviewRejected {
+		if review.State == asc.BetaReviewRejected {
 			return res, fmt.Errorf("beta review rejected build %s; see the resolution center in App Store Connect", build.BuildNumber)
 		}
 	}

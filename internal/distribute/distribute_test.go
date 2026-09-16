@@ -129,7 +129,7 @@ func newFake(t *testing.T) *fake {
 		one(w, 201, res("buildUploads", "up-1", map[string]any{"state": map[string]any{"state": "AWAITING_UPLOAD"}}, nil))
 	}))
 	mux.HandleFunc("POST /v1/buildUploadFiles", wrap(func(w http.ResponseWriter, r *http.Request) {
-		size := f.bodies["POST /v1/buildUploadFiles"]["data"].(map[string]any)["attributes"].(map[string]any)["fileSize"].(float64)
+		size, _ := obj(f.t, f.bodies["POST /v1/buildUploadFiles"], "data", "attributes")["fileSize"].(float64)
 		one(w, 201, res("buildUploadFiles", "file-1", map[string]any{"uploadOperations": []map[string]any{{"method": "PUT", "url": f.srv.URL + "/chunk", "offset": 0, "length": int64(size), "requestHeaders": []map[string]string{{"name": "X-Test", "value": "1"}}}}}, nil))
 	}))
 	mux.HandleFunc("PUT /chunk", wrap(func(w http.ResponseWriter, r *http.Request) {
@@ -154,7 +154,7 @@ func newFake(t *testing.T) *fake {
 		many(w, build())
 	}))
 	mux.HandleFunc("PATCH /v1/builds/{id}", wrap(func(w http.ResponseWriter, r *http.Request) {
-		v := f.bodies["PATCH /v1/builds/build-9"]["data"].(map[string]any)["attributes"].(map[string]any)["usesNonExemptEncryption"].(bool)
+		v, _ := obj(f.t, f.bodies["PATCH /v1/builds/build-9"], "data", "attributes")["usesNonExemptEncryption"].(bool)
 		f.buildEncryption = &v
 		one(w, 200, build())
 	}))
@@ -202,7 +202,7 @@ func newFake(t *testing.T) *fake {
 	mux.HandleFunc("POST /v1/appStoreVersions", wrap(func(w http.ResponseWriter, r *http.Request) { f.versionExists = true; one(w, 201, version()) }))
 	mux.HandleFunc("PATCH /v1/appStoreVersions/{id}", wrap(func(w http.ResponseWriter, r *http.Request) {
 		v := version()
-		v["attributes"].(map[string]any)["releaseType"] = "AFTER_APPROVAL"
+		obj(f.t, v, "attributes")["releaseType"] = "AFTER_APPROVAL"
 		v["relationships"] = map[string]any{"build": map[string]any{"data": map[string]string{"type": "builds", "id": "build-9"}}}
 		one(w, 200, v)
 	}))
@@ -251,6 +251,33 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// obj walks decoded JSON down the given object keys; a missing or non-object
+// step fails the test and yields nil, which later lookups tolerate.
+func obj(t *testing.T, v any, keys ...string) map[string]any {
+	t.Helper()
+	for i := 0; ; i++ {
+		m, ok := v.(map[string]any)
+		if !ok {
+			t.Errorf("JSON path %v: %T is not an object", keys[:i], v)
+			return nil
+		}
+		if i == len(keys) {
+			return m
+		}
+		v = m[keys[i]]
+	}
+}
+
+// arr is obj for a final array value.
+func arr(t *testing.T, v any, keys ...string) []any {
+	t.Helper()
+	a, ok := obj(t, v, keys[:len(keys)-1]...)[keys[len(keys)-1]].([]any)
+	if !ok {
+		t.Errorf("JSON path %v is not an array", keys)
+	}
+	return a
+}
+
 func (f *fake) client(t *testing.T) *asc.Client {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -286,7 +313,7 @@ func (f *fake) body(key string) map[string]any {
 func TestUploadWithWaitSetsCompliance(t *testing.T) {
 	f := newFake(t)
 	var log bytes.Buffer
-	res, err := Upload(context.Background(), f.client(t), UploadOptions{IPAPath: writeIPA(t, plistExempt), Wait: true, PollInterval: time.Millisecond, Log: &log})
+	res, err := Upload(context.Background(), f.client(t), &UploadOptions{IPAPath: writeIPA(t, plistExempt), Wait: true, PollInterval: time.Millisecond, Log: &log})
 	if err != nil {
 		t.Fatalf("%v\n%s", err, log.String())
 	}
@@ -307,7 +334,7 @@ func TestUploadWithWaitSetsCompliance(t *testing.T) {
 			t.Errorf("%s not called; calls = %v", key, f.calls)
 		}
 	}
-	attrs := f.body("POST /v1/buildUploads")["data"].(map[string]any)["attributes"].(map[string]any)
+	attrs := obj(t, f.body("POST /v1/buildUploads"), "data", "attributes")
 	if attrs["cfBundleShortVersionString"] != "2.0.0" || attrs["cfBundleVersion"] != "7" || attrs["platform"] != "IOS" {
 		t.Errorf("upload attributes = %v", attrs)
 	}
@@ -315,7 +342,7 @@ func TestUploadWithWaitSetsCompliance(t *testing.T) {
 
 func TestUploadWithoutWaitLeavesComplianceForLater(t *testing.T) {
 	f := newFake(t)
-	res, err := Upload(context.Background(), f.client(t), UploadOptions{IPAPath: writeIPA(t, plistUndeclared), NoEncryption: true})
+	res, err := Upload(context.Background(), f.client(t), &UploadOptions{IPAPath: writeIPA(t, plistUndeclared), NoEncryption: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +356,7 @@ func TestUploadWithoutWaitLeavesComplianceForLater(t *testing.T) {
 
 func TestUploadUndeclaredEncryptionStaysPending(t *testing.T) {
 	f := newFake(t)
-	res, err := Upload(context.Background(), f.client(t), UploadOptions{IPAPath: writeIPA(t, plistUndeclared), Wait: true, PollInterval: time.Millisecond})
+	res, err := Upload(context.Background(), f.client(t), &UploadOptions{IPAPath: writeIPA(t, plistUndeclared), Wait: true, PollInterval: time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +367,7 @@ func TestUploadUndeclaredEncryptionStaysPending(t *testing.T) {
 
 func TestUploadUnknownApp(t *testing.T) {
 	f := newFake(t)
-	_, err := Upload(context.Background(), f.client(t), UploadOptions{IPAPath: writeIPA(t, strings.ReplaceAll(plistExempt, "com.example.app", "com.other"))})
+	_, err := Upload(context.Background(), f.client(t), &UploadOptions{IPAPath: writeIPA(t, strings.ReplaceAll(plistExempt, "com.example.app", "com.other"))})
 	if err == nil || !strings.Contains(err.Error(), "com.other") {
 		t.Errorf("err = %v", err)
 	}
