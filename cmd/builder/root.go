@@ -508,7 +508,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 		return runBuild(context.Background(), cfg, build.BuildOptions{
 			OutputDir: "dist",
-			Timeout:   30 * time.Minute,
+			Timeout:   build.DefaultTimeout,
 			Remote:    remoteName,
 		})
 	}
@@ -582,7 +582,7 @@ func init() {
 
 	// iOS build command flags
 	iosBuildCmd.Flags().StringP("output", "o", "dist", "Output directory for IPA")
-	iosBuildCmd.Flags().Duration("timeout", 30*time.Minute, "Build timeout")
+	iosBuildCmd.Flags().Duration("timeout", build.DefaultTimeout, "Build timeout")
 	iosBuildCmd.Flags().Bool("unsigned", false, "Build unsigned IPA (skip code signing even if configured)")
 	iosBuildCmd.Flags().StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
 	iosBuildCmd.Flags().String("provider", "", "Override CI provider (default github or builder.json provider)")

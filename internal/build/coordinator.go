@@ -21,7 +21,7 @@ import (
 
 const (
 	// DefaultTimeout is the default build timeout
-	DefaultTimeout = 30 * time.Minute
+	DefaultTimeout = 90 * time.Minute
 
 	// WorkflowFile is the name of the workflow file
 	WorkflowFile = "ios-build.yml"

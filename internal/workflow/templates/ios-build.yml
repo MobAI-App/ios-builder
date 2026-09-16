@@ -56,7 +56,7 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: write # deletes the trigger tag
-    timeout-minutes: 30
+    timeout-minutes: 90 # a cold React Native/Expo build on the free runner takes 30-60 minutes
 
     steps:
       - name: Checkout repository
