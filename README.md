@@ -197,10 +197,12 @@ builder mobai install <ipa>   # Install an IPA on the device
 builder mobai run-debug <bundle-id>  # Launch an app with the debugger attached
 builder mobai forward <device-port> <host-port>  # Forward a device port
 
-# Code signing
-builder signing csr           # Create a private key + certificate signing request
-builder signing p12           # Assemble a .p12 from the key and Apple's certificate
-builder signing setup         # Upload code signing secrets to GitHub
+# Code signing (automatic mode needs builder auth apple)
+builder signing setup --devices-from-mobai   # Certificate, devices, profile and GitHub secrets, no portal
+builder signing setup --type app-store       # Apple Distribution certificate + App Store profile
+builder signing setup --certificate ios-signing.p12 --profile MyApp.mobileprovision  # Upload your own files
+builder signing csr           # Manual path: create a private key + certificate signing request
+builder signing p12           # Manual path: assemble a .p12 from the key and Apple's certificate
 
 # TestFlight and App Store (needs builder auth apple)
 builder ios upload --wait     # Upload ./dist/*.ipa to App Store Connect and wait for processing
@@ -250,6 +252,7 @@ never prompts, so agents and CI jobs can drive them.
 |-------|-------------|---------|
 | `ios.path` | Path to the Xcode project relative to the repo root | detected by `init` |
 | `ios.scheme` | Xcode scheme to build | auto-detected |
+| `ios.bundleId` | App bundle identifier, used by `signing setup` | detected by `init` when the project has one app target; else saved by `signing setup` |
 | `ios.signing` | Sign the IPA with the uploaded certificate and profile | `false` |
 | `ios.configuration` | Xcode build configuration. **Builds are `Debug` unless you set `Release`**; Debug is faster and is what the dev commands expect | `Debug` |
 
@@ -278,23 +281,75 @@ mirrored networking.
 
 ## Code Signing
 
-For Codemagic and Bitrise, follow the [signing and MobAI secrets guide](docs/provider-secrets.md)
-for dashboard instructions, file encoding, and verification. The `signing setup`
-command below uploads to GitHub Actions only.
-
 By default, builds are unsigned. Signed builds need a signing certificate and a
 provisioning profile — and despite what many guides claim, **you do not need a
-Mac to create either one**. The `.p12` certificate is normally created through
-Keychain Access, but Builder does the same thing itself: it generates the
-private key and certificate signing request, and assembles the `.p12` from the
-certificate Apple issues.
+Mac to create either one**, nor a tour of the Apple Developer portal. With an
+App Store Connect API key, `builder signing setup` does the whole thing through
+the API; the [manual path](#manual-path-through-the-apple-developer-portal)
+below is the fallback when you would rather click, or already have the files.
 
 You need a paid [Apple Developer Program](https://developer.apple.com/programs/)
-membership — the portal only issues certificates to paid accounts. (Without one,
+membership — Apple only issues certificates to paid accounts. (Without one,
 build unsigned and let [MobAI](https://mobai.run) re-sign on install with a free
 Apple ID.)
 
-### 1. Create a certificate signing request
+### Automatic setup
+
+```bash
+builder auth apple                              # once: save the App Store Connect API key
+builder signing setup --devices-from-mobai      # development signing for the devices MobAI sees
+```
+
+The key needs the **Admin** role (or App Manager plus *Access to Certificates,
+Identifiers & Profiles*): Developer-role keys cannot create certificates.
+`setup` then:
+
+1. Registers the **App ID** if the bundle identifier is not on the account yet.
+   The bundle ID comes from `--bundle-id`, `ios.bundleId` in `builder.json`
+   (which `init` fills when the Xcode project has a single app target), or the
+   newest IPA in `./dist/`; in a terminal it asks as a last resort.
+2. Issues a **certificate** — Apple Development for `--type development`, Apple
+   Distribution for `ad-hoc` and `app-store` — for a private key generated on
+   your machine (`ios-signing.key`, or `--key` to reuse one from `signing csr`).
+   A valid certificate on the account is reused only when its private key is
+   here, because that is the only way to build the `.p12`; otherwise a new one
+   is issued. Nothing is ever revoked: when Apple's limit (2 Development, 3
+   Distribution) is hit, the error names it and points at the portal.
+3. Registers **devices** from `--device <udid>` (repeatable) and
+   `--devices-from-mobai` (name and UDID of every physical iOS device MobAI has
+   connected). Development and ad-hoc profiles cover every enabled iOS device on
+   the account, so with none given and none registered the command stops and
+   says so. App Store profiles take no devices. Apple allows 100 devices per
+   membership year and never frees a slot; that error is passed through too.
+4. Creates the **profile** `Builder <type> <bundle id>` (iOS App Development,
+   Ad Hoc or App Store). An existing one is reused while it is `ACTIVE`,
+   unexpired and still lists exactly this certificate and these devices;
+   otherwise it is deleted and recreated, and the summary says why (`invalid`,
+   `expired`, `certificate changed`, `devices changed`, `forced`).
+5. Writes `ios-signing.key` (when generated), `ios-signing.p12` and
+   `Builder-<type>-<bundle id>.mobileprovision` to `--out-dir` (default `.`),
+   uploads `IOS_CERTIFICATE`, `IOS_CERTIFICATE_PASSWORD` and
+   `IOS_PROVISIONING_PROFILE` to GitHub Secrets and sets `ios.signing` to
+   `true`. For Codemagic and Bitrise it prints the three values to paste
+   instead, following the [signing and MobAI secrets guide](docs/provider-secrets.md).
+
+The command shows its plan and asks once before creating anything; `--yes`
+skips that (required without a terminal), and then the `.p12` password is
+generated and printed once unless `--password` is given. `--json` prints the
+result as JSON with progress on stderr. Keep the written files out of git.
+
+Run it again whenever you like: it reports what it found and recreates only what
+is missing, expired, invalid or changed — add a device, re-run, rebuild.
+`--force` issues a fresh certificate and profile regardless. For TestFlight use
+`--type app-store` and set `ios.configuration` to `Release`.
+
+### Manual path through the Apple Developer portal
+
+The `.p12` certificate is normally created through Keychain Access, but Builder
+does the same thing itself: it generates the private key and certificate
+signing request, and assembles the `.p12` from the certificate Apple issues.
+
+#### 1. Create a certificate signing request
 
 ```bash
 builder signing csr
@@ -305,13 +360,13 @@ directory: `ios-signing.key` (your private key) and `ios-signing.csr`. Keep
 the key wherever suits you — just don't commit it (add it to `.gitignore`;
 gitignored files are also excluded from build snapshots).
 
-### 2. Create the certificate
+#### 2. Create the certificate
 
 1. Go to [Certificates](https://developer.apple.com/account/resources/certificates/add) on the Apple Developer portal
 2. Choose **Apple Development** (installs on registered devices) or **Apple Distribution** (App Store/Ad Hoc)
 3. Upload `ios-signing.csr` and download the resulting `.cer` file
 
-### 3. Assemble the .p12
+#### 3. Assemble the .p12
 
 ```bash
 builder signing p12 --certificate development.cer --key ios-signing.key
@@ -322,7 +377,7 @@ password you choose — byte-for-byte the same kind of file Keychain Access
 exports, and usable anywhere one is: `builder signing setup`, Sideloadly,
 AltStore, or importing it on a Mac. Keep it, and don't commit it.
 
-### 4. Create a provisioning profile
+#### 4. Create a provisioning profile
 
 On the portal:
 
@@ -330,13 +385,15 @@ On the portal:
 2. **Devices** → register your device's UDID (shown in [MobAI](https://mobai.run) when the device is connected; on Windows, iTunes shows it when you click the serial number on the device page)
 3. **Profiles** → create an **iOS App Development** (or Ad Hoc) profile, select your App ID, certificate, and devices, then download the `.mobileprovision` file
 
-### 5. Upload the signing secrets
+#### 5. Upload the signing secrets
 
 ```bash
 builder signing setup --certificate ios-signing.p12 --profile MyApp.mobileprovision
 ```
 
-This uploads the signing material to GitHub Secrets:
+With `--certificate` and `--profile` given, `setup` takes the files as they are
+(no App Store Connect key involved) and uploads the signing material to GitHub
+Secrets:
 - `IOS_CERTIFICATE` - Base64-encoded .p12 file
 - `IOS_CERTIFICATE_PASSWORD` - Certificate password
 - `IOS_PROVISIONING_PROFILE` - Base64-encoded .mobileprovision file
@@ -366,9 +423,9 @@ You need:
   membership and an app record in App Store Connect (My Apps → +) with your
   bundle ID
 - An IPA signed with an **Apple Distribution** certificate and an **App Store**
-  provisioning profile. `builder signing setup` accepts both, exactly as in the
-  steps above; pick those types on the portal instead of the development ones.
-  An IPA signed for development is rejected at upload.
+  provisioning profile: `builder signing setup --type app-store` creates both,
+  or pick those types on the portal in the manual path. An IPA signed for
+  development is rejected at upload.
 - `"configuration": "Release"` under `ios` in `builder.json`: `ios build`
   defaults to `Debug`, which is what the dev commands expect, not what you want
   to ship.

@@ -31,6 +31,8 @@ go install ./cmd/builder
 ./builder dev flutter --skip-install --bundle-id <id>  # Use already installed app
 ./builder dev rn --skip-install --bundle-id <id>       # Use already installed app
 ./builder auth apple        # Save an App Store Connect API key
+./builder signing setup --devices-from-mobai   # Certificate + devices + profile via the ASC API, secrets to GitHub
+./builder signing setup --type app-store --yes --json  # Distribution certificate + App Store profile, no prompts
 ./builder ios upload --wait # Upload dist/*.ipa to App Store Connect, wait for processing
 ./builder ios submit --testflight --group <name> --notes <text>  # TestFlight
 ./builder ios submit --app-store --release after-approval        # App Review
@@ -106,6 +108,20 @@ builder dev kmp ─────────► Connects to MobAI
                                 ▼
                           Launches app and streams output (no hot reload)
 
+builder signing setup ───► Bundle ID: --bundle-id → ios.bundleId → dist/*.ipa → prompt
+                                │
+                                ▼
+                          App Store Connect API (signing.Auto)
+                            ├─ bundleIds?filter[identifier] → POST bundleIds
+                            ├─ certificates?filter[certificateType] → reuse if the
+                            │     key matches, else CSR → POST certificates → .p12
+                            ├─ devices?filter[platform]=IOS → POST devices (dev/ad-hoc)
+                            └─ profiles?filter[name] → reuse / DELETE + POST profiles
+                                │
+                                ▼
+                          Writes key/.p12/.mobileprovision, uploads the three IOS_*
+                          secrets (GitHub) or prints them (Codemagic/Bitrise)
+
 builder ios upload ──────► Reads bundle ID / version / build number from dist/*.ipa
                                 │
                                 ▼
@@ -135,11 +151,12 @@ cmd/builder/         # CLI entrypoint (Cobra)
 internal/
   auth/              # GitHub OAuth device flow + keyring storage (also CI tokens, ASC API key)
   github/            # GitHub REST API (workflow dispatch, artifacts)
-  asc/               # App Store Connect API client (JWT, JSON:API, builds, uploads, TestFlight, review)
+  asc/               # App Store Connect API client (JWT, JSON:API, builds, uploads, TestFlight, review,
+                     #   bundle IDs, certificates, devices, profiles)
   distribute/        # Upload / TestFlight / App Store flows on top of asc
   ipa/               # Info.plist reading from .ipa archives
   build/             # Build coordination (snapshot + trigger + poll + download)
-  signing/           # CSR generation and .p12 assembly (signing without a Mac)
+  signing/           # CSR generation, .p12 assembly, and Auto (portal-free provisioning on top of asc)
   snapshot/          # Working-tree snapshot as a throwaway commit on a remote ref
   workflow/          # Workflow template (embedded)
   config/            # builder.json management
@@ -224,6 +241,23 @@ internal/
   chosen group is external and none exists) → add groups. App Store reuses an open
   `reviewSubmission` (READY_FOR_REVIEW/UNRESOLVED_ISSUES), skips the item when the version is
   already in it, and rewrites ASC 409/422 with a "complete the metadata" hint.
+- **Automatic Signing** (`signing.Auto`, behind `signing setup` without `--certificate`/
+  `--profile`): idempotent and never revokes. A certificate is reused only when its private key
+  is local (`--key`, or the `ios-signing.key` a previous run left in `--out-dir`), since a .p12
+  needs the key; otherwise a new one is issued and Apple's quota error (2 Development /
+  3 Distribution) gets a hint. Dev/ad-hoc profiles cover every ENABLED iOS device on the
+  account, not just the ones passed; App Store profiles send no `devices` relationship at
+  all (an empty one is rejected). Profile membership is read from
+  `/v1/profiles/{id}/relationships/{certificates,devices}` (paginated), not `include=`, which
+  caps linkage arrays. The profile `Builder <type> <bundle id>` is recreated when INVALID,
+  expired, `--force`, or when the certificate/device set differs; same-named duplicates are
+  deleted with it. `filter[identifier]` on bundleIds is a prefix match, so the exact identifier
+  is checked client-side. The manual `--certificate`/`--profile` path in `runSigningSetup` is
+  untouched; the automatic one lives in `cmd/builder/signing_auto.go`.
+- **Export Method Is Still `development`**: `ios-build.yml` and `runner.sh` hardcode
+  `method = development` in ExportOptions.plist, so an ad-hoc or App Store profile from
+  `signing setup --type ad-hoc|app-store` signs the archive but the export step needs the
+  matching method before those IPAs work (roadmap prerequisite under item 1).
 - **Extension Points**: a future `ios release` (upload + TestFlight, automatic build numbers)
   composes `distribute.Upload` and `distribute.SubmitTestFlight` and reads `asc.Client.ListBuilds`
   for the latest build number; the `pkg/` wrappers do not expose `asc` yet.
@@ -236,9 +270,13 @@ internal/
   "project": "MyApp",
   "platform": "ios",
   "github": { "owner": "username", "repo": "my-ios-app" },
-  "ios": { "path": "ios", "scheme": "" }
+  "ios": { "path": "ios", "scheme": "", "bundleId": "com.example.app" }
 }
 ```
+
+`ios.bundleId` is optional: `init` fills it from `PRODUCT_BUNDLE_IDENTIFIER` when the Xcode
+project has exactly one app target (test targets and `$(…)` values are skipped), and
+`signing setup` saves whatever it resolved.
 
 ## Workflow Features
 

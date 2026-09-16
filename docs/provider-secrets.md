@@ -31,8 +31,19 @@ explains selecting the App ID, certificate, and devices. App Store/Ad Hoc export
 requires a corresponding change to the generated runner's export settings.
 
 If you already have the P12 and profile, reuse them. If you have no certificate,
-follow Builder's [certificate creation instructions](../README.md#1-create-a-certificate-signing-request).
-Run the CSR/P12 commands in a private directory outside your source checkout:
+the quickest way is the [automatic setup](../README.md#automatic-setup) with an
+App Store Connect API key (`builder auth apple`), pointed at a private directory
+outside your source checkout:
+
+```sh
+builder signing setup --devices-from-mobai --out-dir ~/signing
+```
+
+With `provider` set to Codemagic or Bitrise in `builder.json`, this creates the
+certificate, devices and profile through the API, writes `ios-signing.p12` and
+the `.mobileprovision` to `~/signing`, and prints the three values to paste
+below instead of uploading them. Alternatively follow the
+[manual certificate steps](../README.md#1-create-a-certificate-signing-request):
 
 ```sh
 builder signing csr
@@ -40,7 +51,8 @@ builder signing csr
 builder signing p12 --certificate development.cer --key ios-signing.key
 ```
 
-The second command prompts for the P12 password. Use that exact password below.
+The `p12` command prompts for the P12 password (automatic setup prompts too, or
+generates one with `--yes` and prints it once). Use that exact password below.
 A `.cer` alone is not the value for `IOS_CERTIFICATE`; assemble the P12 first.
 Keep private keys, P12 files, and encoded copies out of Git and build snapshots.
 
