@@ -53,6 +53,13 @@ on:
         required: false
         type: string
         default: '17'
+      # Same encoding as ios-build.yml. Only the env applies here: simulator
+      # builds are always Debug and unsigned, so distribution is ignored.
+      profile:
+        description: 'Selected builder.json profile as JSON: {"name": "...", "env": {...}, "distribution": "..."}'
+        required: false
+        type: string
+        default: '{}'
 
 jobs:
   simulator:
@@ -81,7 +88,8 @@ jobs:
 
       # Dispatch inputs arrive with their declared defaults. A tag push has no
       # inputs, so the values come from builder.json in the tagged commit and
-      # the build id is the tag name after the prefix.
+      # the build id is the tag name after the prefix. A tag build cannot pick
+      # a profile per run; it applies builder.json's defaultProfile, if any.
       - name: Resolve parameters
         id: params
         env:
@@ -91,14 +99,23 @@ jobs:
           IN_DURATION: ${{ inputs.duration }}
           IN_FLUTTER_VERSION: ${{ inputs.flutter_version }}
           IN_JDK_VERSION: ${{ inputs.jdk_version }}
+          IN_PROFILE: ${{ inputs.profile }}
         run: |
           set -e
+          PROFILE=""
+          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ] && [ -f builder.json ]; then
+            PROFILE=$(jq -r '.defaultProfile // empty' builder.json)
+            if [ -n "$PROFILE" ] && [ "$(jq -r --arg p "$PROFILE" '.profiles[$p] != null' builder.json)" != "true" ]; then
+              echo "::error::defaultProfile \"$PROFILE\" is not defined under profiles in builder.json"
+              exit 1
+            fi
+          fi
           param() { # name dispatch-value jq-path default
             local v=""
             if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
               v="$2"
             elif [ -f builder.json ]; then
-              v=$(jq -r "$3 // empty" builder.json)
+              v=$(jq -r --arg p "$PROFILE" "$3 // empty" builder.json)
             fi
             v="${v:-$4}"
             echo "$1=$v" >> "$GITHUB_OUTPUT"
@@ -106,10 +123,38 @@ jobs:
           }
           param build_id         "$IN_BUILD_ID" '""' "${GITHUB_REF_NAME##*/}"
           param ios_path         "$IN_IOS_PATH" '.ios.path' '.'
-          param scheme           "$IN_SCHEME" '.ios.scheme' ''
+          param scheme           "$IN_SCHEME" '(.profiles[$p].scheme // .ios.scheme)' ''
           param duration         "$IN_DURATION" '""' '30m'
           param flutter_version  "$IN_FLUTTER_VERSION" '.flutter.version' ''
           param jdk_version      "$IN_JDK_VERSION" '.kmp.jdkVersion' '17'
+
+          # The profile's env is exported to every step from here on so the
+          # dependency installs and the build see it.
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            PROFILE_JSON="$IN_PROFILE"
+          elif [ -f builder.json ]; then
+            PROFILE_JSON=$(jq -c --arg p "$PROFILE" '{name: $p, env: (.profiles[$p].env // {})}' builder.json)
+          fi
+          [ -n "${PROFILE_JSON:-}" ] || PROFILE_JSON='{}'
+          PROFILE=$(jq -r '.name // ""' <<< "$PROFILE_JSON")
+          echo "profile=$PROFILE" >> "$GITHUB_OUTPUT"
+          echo "profile=${PROFILE:-(none)}"
+          # Values are base64 per entry so newlines and quotes survive; the
+          # heredoc form of GITHUB_ENV then takes them verbatim. Names are
+          # checked so a value cannot smuggle in a second variable.
+          while IFS=' ' read -r key encoded; do
+            name=$(printf '%s' "$key" | base64 --decode)
+            if ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+              echo "::error::env name \"$name\" is not a valid environment variable name"; exit 1
+            fi
+            {
+              echo "$name<<__BUILDER_ENV__"
+              printf '%s' "$encoded" | base64 --decode
+              echo
+              echo "__BUILDER_ENV__"
+            } >> "$GITHUB_ENV"
+            echo "env: $name"
+          done < <(jq -r '.env // {} | to_entries[] | "\(.key | @base64) \(.value | tostring | @base64)"' <<< "$PROFILE_JSON")
 
       # Starts the simulator booting in the background (cached, so later runs
       # boot fast) while the app builds.

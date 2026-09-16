@@ -7,6 +7,22 @@ mkdir -p "$ci_dir"
 mode="${1:-build}"
 export IOS_PATH="${IOS_PATH:-.}" SCHEME="${SCHEME:-}" CONFIGURATION="${CONFIGURATION:-Debug}"
 export USE_SIGNING="${USE_SIGNING:-false}" JDK_VERSION="${JDK_VERSION:-17}"
+# From the selected builder.json profile: DISTRIBUTION is reserved for the
+# export step; BUILD_ENV is a JSON object exported by prepare().
+export DISTRIBUTION="${DISTRIBUTION:-}" BUILD_ENV="${BUILD_ENV:-}"
+
+# Exports the profile's env before any dependency install or build, as the
+# GitHub workflows do. Values are base64 per entry so newlines and quotes
+# survive; names are checked so a value cannot become a second variable.
+export_build_env() {
+  [ -n "$BUILD_ENV" ] || return 0
+  while IFS=' ' read -r key encoded; do
+    name=$(printf '%s' "$key" | base64 --decode)
+    if ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then echo "Invalid env name in BUILD_ENV: $name" >&2; exit 1; fi
+    export "$name=$(printf '%s' "$encoded" | base64 --decode)"
+    echo "env: $name"
+  done < <(jq -r 'to_entries[] | "\(.key | @base64) \(.value | tostring | @base64)"' <<< "$BUILD_ENV")
+}
 
 snapshot_checkout() {
   case "${SNAPSHOT_REF:-}" in
@@ -39,6 +55,7 @@ prepare() {
   fi
   echo "Project type: $project_type"
   if ! command -v jq >/dev/null; then brew install jq; fi
+  export_build_env
 
   # Match the GitHub workflows' committed xcconfig-template convention.
   find . -path ./DerivedData -prune -o -type f \
