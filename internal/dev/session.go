@@ -2,19 +2,17 @@
 package dev
 
 import (
-	"archive/zip"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/MobAI-App/ios-builder/internal/ipa"
 	"github.com/MobAI-App/ios-builder/internal/mobai"
 	"github.com/gorilla/websocket"
 	"github.com/manifoldco/promptui"
-	"howett.net/plist"
 )
 
 // FrameworkHandler handles framework-specific dev workflow.
@@ -203,7 +201,7 @@ func (s *Session) installApp(ctx context.Context) error {
 
 	// Read the IPA from the local path; on WSL absPath becomes a Windows path
 	// that only MobAI can open.
-	ipaBundleID := extractBundleIDFromIPA(absPath)
+	ipaBundleID := ipa.BundleID(absPath)
 	absPath = toWindowsPathIfWSL(absPath)
 
 	req := mobai.InstallAppRequest{Path: absPath}
@@ -260,37 +258,6 @@ func guessBundleID(resp *mobai.InstallAppResponse, ipaBundleID string, resigned 
 		return ipaBundleID + "." + resp.Data.TeamID
 	}
 	return ipaBundleID
-}
-
-func extractBundleIDFromIPA(ipaPath string) string {
-	r, err := zip.OpenReader(ipaPath)
-	if err != nil {
-		return ""
-	}
-	defer func() { _ = r.Close() }()
-
-	for _, f := range r.File {
-		if strings.HasPrefix(f.Name, "Payload/") && strings.HasSuffix(f.Name, ".app/Info.plist") {
-			rc, err := f.Open()
-			if err != nil {
-				return ""
-			}
-			data, err := io.ReadAll(rc)
-			rc.Close()
-			if err != nil {
-				return ""
-			}
-
-			var info struct {
-				BundleID string `plist:"CFBundleIdentifier"`
-			}
-			if _, err := plist.Unmarshal(data, &info); err != nil {
-				return ""
-			}
-			return info.BundleID
-		}
-	}
-	return ""
 }
 
 func (s *Session) launchApp(ctx context.Context) (<-chan mobai.DebugOutput, error) {
