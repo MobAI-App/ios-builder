@@ -232,9 +232,23 @@ func TestWriteSigningProfile(t *testing.T) {
 	}
 	// From nothing: the profiles map is created.
 	empty := &config.Config{}
-	writeSigningProfile(empty, "development", signing.TypeDevelopment)
-	if empty.Profiles["development"].Distribution != "development" {
-		t.Fatalf("profile not created: %+v", empty.Profiles)
+	if replaced := writeSigningProfile(empty, "development", signing.TypeDevelopment); replaced != "" || empty.Profiles["development"].Distribution != "development" {
+		t.Fatalf("profile not created: %q %+v", replaced, empty.Profiles)
+	}
+	// The same distribution keeps the user's spelling; a different one is
+	// replaced, the other fields stay, and the old value is reported.
+	cfg.Profiles["beta"] = config.Profile{Distribution: "internal", Scheme: "AppBeta"}
+	if replaced := writeSigningProfile(cfg, "beta", signing.TypeAdHoc); replaced != "" || cfg.Profiles["beta"].Distribution != "internal" {
+		t.Fatalf("same distribution rewritten: %q %+v", replaced, cfg.Profiles["beta"])
+	}
+	if replaced := writeSigningProfile(cfg, "beta", signing.TypeStore); replaced != "internal" || cfg.Profiles["beta"].Distribution != "store" || cfg.Profiles["beta"].Scheme != "AppBeta" {
+		t.Fatalf("different distribution: %q %+v", replaced, cfg.Profiles["beta"])
+	}
+	if line := profileWritten("beta", signing.TypeStore, "internal"); line != `  Updated: builder.json (profile "beta", distribution store, was internal)` {
+		t.Fatalf("line: %s", line)
+	}
+	if line := profileWritten("beta", signing.TypeStore, ""); strings.Contains(line, "was") {
+		t.Fatalf("line: %s", line)
 	}
 }
 

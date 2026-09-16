@@ -91,7 +91,7 @@ func init() {
 	signingSetupCmd.Flags().StringP("key", "k", "", "Path to the private key from 'builder signing csr' (required with a .cer; automatic mode reuses it and its certificate)")
 	signingSetupCmd.Flags().String("bundle-id", "", "App bundle ID (default: ios.bundleId in builder.json, else the newest IPA in ./dist)")
 	signingSetupCmd.Flags().String("distribution", "", "Distribution to sign for: development, ad-hoc (internal), store or enterprise (default: the --name profile's, else development; with --profile: read from the file)")
-	signingSetupCmd.Flags().String("name", "", "builder.json profile to write the distribution to (default: the distribution name)")
+	signingSetupCmd.Flags().String("name", "", "builder.json profile to write the distribution to (default: the distribution name; an existing profile keeps its other fields, a different distribution in it is replaced)")
 	signingSetupCmd.Flags().StringArray("device", nil, "Device UDID to register (repeatable)")
 	signingSetupCmd.Flags().Bool("devices-from-mobai", false, "Register the physical iOS devices connected to MobAI")
 	signingSetupCmd.Flags().String("out-dir", ".", "Directory for the private key, .p12 and .mobileprovision")
@@ -382,11 +382,11 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 		printProviderSecrets(provider, config.SigningSecretNames(set), p12Path, profilePath)
 	}
 
-	writeSigningProfile(cfg, profileName, typ)
+	replaced := writeSigningProfile(cfg, profileName, typ)
 	if err := config.NewManager().Save(cfg); err != nil {
 		return fmt.Errorf("failed to update config: %w", err)
 	}
-	fmt.Printf("  Updated: builder.json (profile %q, distribution %s)\n", profileName, typ)
+	fmt.Println(profileWritten(profileName, typ, replaced))
 
 	fmt.Println()
 	fmt.Println("Code signing configured successfully!")

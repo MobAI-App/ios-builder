@@ -157,14 +157,14 @@ func runSigningAuto(cmd *cobra.Command) error {
 		return finish(out, cmd, res, err, nil)
 	}
 	res.SecretsUploaded = store != nil
-	writeSigningProfile(cfg, profileName, typ)
+	replaced := writeSigningProfile(cfg, profileName, typ)
 	if cfg.IOS.BundleID == "" {
 		cfg.IOS.BundleID = bundleID
 	}
 	if err := config.NewManager().Save(cfg); err != nil {
 		return finish(out, cmd, res, fmt.Errorf("failed to update config: %w", err), nil)
 	}
-	fmt.Fprintf(out.log, "  Updated: builder.json (profile %q, distribution %s)\n", profileName, typ)
+	fmt.Fprintln(out.log, profileWritten(profileName, typ, replaced))
 
 	return finish(out, cmd, res, nil, func() { printSigningSummary(cfg, res) })
 }
@@ -205,14 +205,30 @@ func provisionSigning(ctx context.Context, client *asc.Client, store secretStore
 }
 
 // writeSigningProfile creates or updates the builder.json profile that builds
-// with this distribution; other fields of an existing profile are kept.
-func writeSigningProfile(cfg *config.Config, name string, typ signing.Type) {
+// with this distribution. Other fields of an existing profile are kept, and so
+// is its own spelling of the same distribution (internal stays internal); a
+// different distribution is replaced and returned so the caller can say so.
+func writeSigningProfile(cfg *config.Config, name string, typ signing.Type) (replaced string) {
 	if cfg.Profiles == nil {
 		cfg.Profiles = map[string]config.Profile{}
 	}
 	p := cfg.Profiles[name]
+	if d, err := config.ParseDistribution(p.Distribution); err == nil && d == string(typ) {
+		return ""
+	}
+	replaced = p.Distribution
 	p.Distribution = string(typ)
 	cfg.Profiles[name] = p
+	return replaced
+}
+
+// profileWritten is the "Updated: builder.json" line of both setup modes.
+func profileWritten(name string, typ signing.Type, replaced string) string {
+	line := fmt.Sprintf("  Updated: builder.json (profile %q, distribution %s", name, typ)
+	if replaced != "" {
+		line += ", was " + replaced
+	}
+	return line + ")"
 }
 
 // resolveSigningBundleID takes the flag, then builder.json, then the newest
