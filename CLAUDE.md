@@ -145,10 +145,19 @@ internal/
   `false` as missing. The runner receives env as one JSON object: the `profile` dispatch input
   (`{"name","env","distribution"}`, one input to stay under the ten-input limit) on GitHub, and
   `BUILD_ENV` plus `DISTRIBUTION` variables for `runner.sh`. Each entry is base64-encoded per
-  key and value on the runner (jq drops NUL bytes, and a key with a space must not split), names
-  are checked against `^[A-Za-z_][A-Za-z0-9_]*$`, and the runners' own parameter names are
-  rejected by `ResolveProfile`. `profile` is only sent when a profile is selected, because a
-  workflow file from before profiles rejects a dispatch with an input it does not declare.
+  key and value on the runner (jq drops NUL bytes, and a key with a space must not split), the
+  `$GITHUB_ENV` heredoc uses a random delimiter so no value line can end it early, names are
+  checked against `^[A-Za-z_][A-Za-z0-9_]*$`, and `ResolveProfile` rejects the names the runners
+  own (`reservedEnv` and `reservedEnvPrefixes` in `internal/config/profile.go`: the runner
+  parameters, the signing secrets, `PATH`/`HOME`/`DEVELOPER_DIR`, and the `GITHUB_`, `RUNNER_`,
+  `CM_`, `BITRISE_`, `BUILDER_` namespaces; keep that list in step with what `runner.sh` and the
+  workflows read). `profile` is only sent when a profile is selected (`--profile` or
+  `defaultProfile`), because a workflow file from before profiles rejects a dispatch with an input
+  it does not declare; `triggerError` turns that 422 into a "run `builder init`" message. On
+  GitHub the profile's env lands in `$GITHUB_ENV`, and step-level `env:` (the signing secrets, the
+  build parameters) takes precedence over it. `distribution` reaches the runner as the
+  `steps.params.outputs.distribution` output on GitHub and the `DISTRIBUTION` variable for
+  `runner.sh`; the export step is meant to consume it under those names.
   `env` is build-time configuration, not secrets: it sits in `builder.json` and in the run's inputs
 - **Flutter Detection**: Auto-detects Flutter projects, runs `flutter pub get`, uses `Runner` scheme
 - **DerivedData Caching**: `restore` keys on `github.run_id` and only the prefix in `restore-keys`

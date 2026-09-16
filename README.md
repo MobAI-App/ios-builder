@@ -293,16 +293,21 @@ How a build's settings are resolved:
   builds are always Debug and unsigned.
 
 **`env` values are build-time configuration, not secrets.** They are stored in
-`builder.json`, sent to the CI provider as plain workflow inputs, and shown in
-its run details. Keep tokens and passwords in the provider's secrets instead
-(`gh secret set` on GitHub, or the [Codemagic / Bitrise secrets
+`builder.json`, sent to the CI provider as plain workflow inputs, and visible in
+the run's inputs and logs. Keep tokens and passwords in the provider's secrets
+instead (`gh secret set` on GitHub, or the [Codemagic / Bitrise secrets
 guide](docs/provider-secrets.md)); the build reads those as environment
-variables too.
+variables too. Names the runner owns are rejected: its own parameters
+(`SCHEME`, `CONFIGURATION`, `USE_SIGNING`, `BUILD_ENV`, ...), the signing
+secrets, `PATH`, `HOME`, `DEVELOPER_DIR`, and anything starting with `GITHUB_`,
+`RUNNER_`, `CM_`, `BITRISE_` or `BUILDER_`.
 
-`--profile` needs the workflow files from this version of Builder, which
-declare a `profile` input; run `builder init` again to refresh
+Selecting a profile, with `--profile` or `defaultProfile`, needs the workflow
+files from this version of Builder, which declare a `profile` input; an older
+committed workflow rejects the dispatch. Run `builder init` again to refresh
 `.github/workflows/ios-build.yml` and `ios-share.yml` (or `builder init
---provider ...` for `runner.sh`) in a project set up earlier.
+--provider ...` for `runner.sh`) in a project set up earlier, then commit and
+push them to the default branch.
 
 ### MobAI Configuration
 
