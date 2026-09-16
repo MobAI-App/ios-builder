@@ -17,8 +17,12 @@ Existing GitHub secret values cannot be downloaded for copying to another servic
 
 ## 1. Prepare your signing files
 
-The generated runner exports the IPA with the method the profile calls for, so
-the profile you upload decides what the build is. For on-device testing prepare:
+A repository holds one signing set per distribution type (development, ad-hoc,
+app-store, enterprise), and the build profile's `distribution` in `builder.json`
+chooses which set a build uses; without one, builds use the development set.
+Each set is a certificate, its password and a matching profile, and the runner
+refuses a set whose profile is of another type. Start with the development set,
+which is what on-device testing needs:
 
 - An **Apple Development** certificate in a `.p12` file, including its matching
   private key, and the P12 password.
@@ -29,10 +33,11 @@ the profile you upload decides what the build is. For on-device testing prepare:
 Use [Apple Certificates](https://developer.apple.com/account/resources/certificates/list)
 and [Apple Profiles](https://developer.apple.com/account/resources/profiles/list).
 Apple's [development profile guide](https://developer.apple.com/help/account/provisioning-profiles/create-a-development-provisioning-profile)
-explains selecting the App ID, certificate, and devices. An Ad Hoc, In House or
-App Store profile works too — pair it with an **Apple Distribution** certificate
-and set `"configuration": "Release"` under `ios` in `builder.json`, since those
-profiles reject the `get-task-allow` a Debug build is signed with.
+explains selecting the App ID, certificate, and devices. For an ad-hoc,
+app-store or enterprise set, pair that profile with an **Apple Distribution**
+certificate and select it from a build profile that has the matching
+`distribution` and `"configuration": "Release"`, since those profiles reject the
+`get-task-allow` entitlement a Debug build is signed with.
 
 If you already have the P12 and profile, reuse them. If you have no certificate,
 the quickest way is the [automatic setup](../README.md#automatic-setup) with an
