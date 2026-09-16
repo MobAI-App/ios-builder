@@ -551,13 +551,29 @@ func init() {
 	iosBuildCmd.Flags().Bool("unsigned", false, "Build unsigned IPA (skip code signing even if configured)")
 	iosBuildCmd.Flags().StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
 	iosBuildCmd.Flags().String("provider", "", "Override CI provider (default github or builder.json provider)")
+	iosBuildCmd.Flags().String("profile", "", "Build profile from builder.json (default: defaultProfile, else the top-level ios settings)")
 	iosCmd.AddCommand(iosBuildCmd)
 
 	// iOS share command flags
 	iosShareCmd.Flags().Duration("duration", 30*time.Minute, "How long the simulator stays available while unused")
 	iosShareCmd.Flags().StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
 	iosShareCmd.Flags().String("provider", "", "Override CI provider (default github or builder.json provider)")
+	iosShareCmd.Flags().String("profile", "", "Build profile from builder.json; its scheme, provider and env apply to the simulator build")
 	iosCmd.AddCommand(iosShareCmd)
+}
+
+// effectiveProvider is the --provider flag, else the selected profile's
+// provider, else builder.json's. The coordinator resolves the same chain; this
+// exists so the GitHub client and signal handling agree with it.
+func effectiveProvider(cfg *config.Config, profile, flag string) (string, error) {
+	if flag != "" {
+		return flag, nil
+	}
+	s, err := cfg.ResolveProfile(profile)
+	if err != nil {
+		return "", err
+	}
+	return s.Provider, nil
 }
 
 func runIOSBuild(cmd *cobra.Command, args []string) error {
@@ -574,13 +590,18 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	unsigned, _ := cmd.Flags().GetBool("unsigned")
 	remote, _ := cmd.Flags().GetString("remote")
-	provider, _ := cmd.Flags().GetString("provider")
+	providerFlag, _ := cmd.Flags().GetString("provider")
+	profile, _ := cmd.Flags().GetString("profile")
 
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
+	provider, err := effectiveProvider(cfg, profile, providerFlag)
+	if err != nil {
+		return err
+	}
 	name, err := cfg.ProviderName(provider)
 	if err != nil {
 		return err
@@ -592,6 +613,7 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 	}
 	return runBuild(ctx, cfg, build.BuildOptions{
 		Provider:  provider,
+		Profile:   profile,
 		OutputDir: outputDir,
 		Timeout:   timeout,
 		Unsigned:  unsigned,
@@ -610,7 +632,8 @@ func runIOSShare(cmd *cobra.Command, args []string) error {
 
 	duration, _ := cmd.Flags().GetDuration("duration")
 	remote, _ := cmd.Flags().GetString("remote")
-	provider, _ := cmd.Flags().GetString("provider")
+	providerFlag, _ := cmd.Flags().GetString("provider")
+	profile, _ := cmd.Flags().GetString("profile")
 
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -622,12 +645,17 @@ func runIOSShare(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	provider, err := effectiveProvider(cfg, profile, providerFlag)
+	if err != nil {
+		return err
+	}
 	ghClient, err := clientForProvider(cfg, provider)
 	if err != nil {
 		return err
 	}
 	result, err := build.NewCoordinator(cfg, ghClient).Share(ctx, build.ShareOptions{
 		Provider: provider,
+		Profile:  profile,
 		Duration: duration,
 		Remote:   remote,
 	})

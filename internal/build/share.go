@@ -16,7 +16,8 @@ const ShareWorkflowFile = "ios-share.yml"
 
 // ShareOptions configures a simulator session.
 type ShareOptions struct {
-	Provider string // Override the configured CI provider
+	Provider string // Override the configured CI provider (and the profile's)
+	Profile  string // builder.json profile; only its scheme, provider and env apply to a simulator build
 	// Duration is how long the simulator stays available while unused. Using
 	// it keeps it open past this.
 	Duration time.Duration
@@ -44,12 +45,14 @@ const sharePublishGrace = 30 * time.Second
 // Share builds the working tree for the simulator and publishes it to the
 // account's MobAI app, then returns while the job outlives the command.
 func (c *Coordinator) Share(ctx context.Context, opts ShareOptions) (*ShareResult, error) {
-	name, err := c.config.ProviderName(opts.Provider)
+	settings, name, err := c.settings(opts.Profile, opts.Provider, true)
 	if err != nil {
 		return nil, err
 	}
+	// Simulator builds are always Debug and never signed, whatever the profile says.
+	settings.Configuration = "Debug"
 	if name != "github" || c.provider != nil {
-		return c.shareRemote(ctx, opts)
+		return c.shareRemote(ctx, opts, settings)
 	}
 	if c.github == nil {
 		return nil, fmt.Errorf("GitHub client is required")
@@ -65,6 +68,7 @@ func (c *Coordinator) Share(ctx context.Context, opts ShareOptions) (*ShareResul
 
 	buildID := uuid.New().String()[:8]
 	c.progress.Start(buildID)
+	c.progress.Settings(settings, name)
 
 	c.progress.Update(PhaseSnapshot, "Snapshotting working tree...")
 	sha, err := snapshot.Create(ctx, fmt.Sprintf("ios-builder snapshot %s", buildID))
@@ -82,23 +86,8 @@ func (c *Coordinator) Share(ctx context.Context, opts ShareOptions) (*ShareResul
 	c.progress.Complete(PhaseSnapshot, fmt.Sprintf("Pushed %s", sha[:7]))
 
 	c.progress.Update(PhaseTriggering, "Starting the simulator session...")
-	inputs := map[string]string{
-		"build_id":     buildID,
-		"snapshot_ref": ref,
-		"duration":     opts.Duration.String(),
-	}
-	if c.config.IOS.Path != "" {
-		inputs["ios_path"] = c.config.IOS.Path
-	}
-	if c.config.IOS.Scheme != "" {
-		inputs["scheme"] = c.config.IOS.Scheme
-	}
-	if c.config.Flutter.Version != "" {
-		inputs["flutter_version"] = c.config.Flutter.Version
-	}
-	if c.config.KMP.JDKVersion != "" {
-		inputs["jdk_version"] = c.config.KMP.JDKVersion
-	}
+	inputs := c.workflowInputs(buildID, ref, settings)
+	inputs["duration"] = opts.Duration.String()
 	if err := c.github.TriggerWorkflow(ctx, c.config.GitHub.Owner, c.config.GitHub.Repo, ShareWorkflowFile, inputs); err != nil {
 		c.progress.Error(PhaseTriggering, err)
 		return nil, fmt.Errorf("failed to trigger workflow: %w", err)
