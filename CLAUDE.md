@@ -135,8 +135,9 @@ internal/
 - **Run Correlation**: `run-name` carries the build ID so concurrent builds cannot adopt each
   other's runs
 - **Flutter Detection**: Auto-detects Flutter projects, runs `flutter pub get`, uses `Runner` scheme
-- **Expo Detection**: `"expo"` in `package.json` with no `.xcodeproj`/`.xcworkspace` anywhere is a
-  managed project. `detectIOSPath` still returns `ios`, because that is where `expo prebuild` puts
+- **Expo Detection**: an `expo` dependency in `package.json` (the CLI parses the dependency maps;
+  the runners grep `'"expo"'`) with no `.xcodeproj`/`.xcworkspace` anywhere and no `pubspec.yaml` is
+  a managed project. `detectIOSPath` still returns `ios`, because that is where `expo prebuild` puts
   the project on the runner; nothing is generated locally, and managed projects gitignore `ios/`
   so the snapshot carries none. All three runners (`ios-build.yml`, `ios-share.yml`, `runner.sh`)
   prebuild with `CI=1` after the node install and before the Pods step, skip it when the iOS path

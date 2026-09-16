@@ -114,12 +114,27 @@ func isFlutterProject() bool {
 	return err == nil
 }
 
+// isExpoProject reports whether package.json declares a dependency on Expo.
+// It reads the dependency maps rather than searching the raw text, so a
+// package named "expo", a script that shells out to it, or a keyword does not
+// make an unrelated Node project look like an Expo app. An unparseable
+// package.json falls back to the substring test the runners use, so the CLI
+// and the runners still agree on such a file.
 func isExpoProject() bool {
 	data, err := os.ReadFile("package.json")
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(data), `"expo"`)
+	var pkg struct {
+		Dependencies    map[string]json.RawMessage `json:"dependencies"`
+		DevDependencies map[string]json.RawMessage `json:"devDependencies"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return strings.Contains(string(data), `"expo"`)
+	}
+	_, dep := pkg.Dependencies["expo"]
+	_, devDep := pkg.DevDependencies["expo"]
+	return dep || devDep
 }
 
 // expoManagedFramework names a managed Expo project: one that depends on Expo
@@ -224,7 +239,11 @@ func detectIOSPath() (string, string) {
 
 	// No Xcode project anywhere, but the app depends on Expo: a managed
 	// project, whose ios/ directory the runner generates with `expo prebuild`.
-	if isExpoProject() {
+	// Flutter is checked first for the same reason the runners check
+	// pubspec.yaml before package.json: a Flutter repo that does not commit
+	// ios/ is not a managed Expo project, and the runners would never prebuild
+	// it.
+	if !isFlutterProject() && isExpoProject() {
 		return "ios", expoManagedFramework
 	}
 

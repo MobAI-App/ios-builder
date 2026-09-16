@@ -47,6 +47,41 @@ func TestDetectIOSPathExpo(t *testing.T) {
 			wantFramework: "Native iOS",
 			wantExpo:      false,
 		},
+		{
+			// The runners detect pubspec.yaml before package.json, so a
+			// Flutter repo whose ios/ is not committed must not be claimed
+			// here either — the runner would never prebuild it.
+			name: "flutter wins over an expo dependency",
+			files: map[string]string{
+				"pubspec.yaml": "name: app\n",
+				"package.json": `{"dependencies":{"expo":"~51.0.0"}}`,
+			},
+			wantPath:      "",
+			wantFramework: "",
+			wantExpo:      true,
+		},
+		{
+			// KMP keeps its Xcode project in iosApp/, which is matched before
+			// the Expo fallback is reached.
+			name: "kmp keeps its own path",
+			files: map[string]string{
+				"iosApp/iosApp.xcodeproj/project.pbxproj": "// project",
+				"package.json":                            `{"dependencies":{"expo":"~51.0.0"}}`,
+			},
+			wantPath:      "iosApp",
+			wantFramework: "Kotlin Multiplatform",
+			wantExpo:      true,
+		},
+		{
+			// "expo" appears in the file, but not as a dependency.
+			name: "unrelated node project naming expo",
+			files: map[string]string{
+				"package.json": `{"name":"expo","keywords":["expo"],"scripts":{"expo":"echo"},"dependencies":{"expo-server-sdk":"^3.7.0"}}`,
+			},
+			wantPath:      "",
+			wantFramework: "",
+			wantExpo:      false,
+		},
 	}
 
 	for _, tt := range tests {
