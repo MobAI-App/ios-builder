@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -31,14 +32,21 @@ func (c *Client) GetPublicKey(ctx context.Context, owner, repo string) (*PublicK
 }
 
 // ListSecretNames returns the names of the repository's Actions secrets
-// (values are never readable). It follows the pages GitHub returns.
+// (values are never readable). It follows the pages GitHub returns. GitHub
+// answers 404 (token without the repo scope) or 403 (no admin access) rather
+// than an empty list, so those name the cause instead of reading as "no
+// secrets".
 func (c *Client) ListSecretNames(ctx context.Context, owner, repo string) ([]string, error) {
 	var names []string
 	for page := 1; ; page++ {
 		path := fmt.Sprintf("/repos/%s/%s/actions/secrets?per_page=100&page=%d", owner, repo, page)
 		var list SecretsResponse
 		if err := c.do(ctx, path, &list); err != nil {
-			return nil, fmt.Errorf("failed to list secrets: %w", err)
+			var apiErr *APIError
+			if errors.As(err, &apiErr) && (apiErr.Status == "403" || apiErr.Status == "404") {
+				return nil, fmt.Errorf("cannot list the secrets of %s/%s (%s): the GitHub token needs the repo scope and admin access to the repository; run builder auth github as an admin of it", owner, repo, apiErr.Message)
+			}
+			return nil, fmt.Errorf("failed to list the secrets of %s/%s: %w", owner, repo, err)
 		}
 		for _, s := range list.Secrets {
 			names = append(names, s.Name)
