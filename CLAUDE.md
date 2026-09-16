@@ -34,6 +34,9 @@ go install ./cmd/builder
 ./builder ios upload --wait # Upload dist/*.ipa to App Store Connect, wait for processing
 ./builder ios submit --testflight --group <name> --notes <text>  # TestFlight
 ./builder ios submit --app-store --release after-approval        # App Review
+./builder ios release --group <name> --notes <text>  # Build with the next build number, upload, wait, TestFlight
+./builder ios release --app-store --release after-approval       # Same, then App Review
+./builder ios build --submit                                     # Short for: ios release (no groups)
 ```
 
 ## Architecture
@@ -126,6 +129,23 @@ builder ios submit ──────► Picks the newest VALID build (or --buil
                             └─ --app-store: appStoreVersions (find/create, attach
                                   build, releaseType), reviewSubmissions +
                                   reviewSubmissionItems, PATCH submitted=true
+
+builder ios release ─────► Preflight: API key, ios.signing, ios.configuration=Release
+                                │
+                                ▼
+                          Bundle ID (--bundle-id, ios.bundleId, newest dist/*.ipa)
+                            └─ ListBuilds (all versions) → max CFBundleVersion + 1
+                                │
+                                ▼
+                          ios build with build_number input (N or X.Y.Z+N)
+                            └─ runner: flutter --build-number / CURRENT_PROJECT_VERSION /
+                               plist rewrite when CFBundleVersion is hardcoded
+                                │
+                                ▼
+                          Reads dist IPA, refuses it unless CFBundleVersion == N
+                                │
+                                ▼
+                          distribute.Upload (wait) → SubmitTestFlight | SubmitAppStore
 ```
 
 ### Module Layout
@@ -137,6 +157,7 @@ internal/
   github/            # GitHub REST API (workflow dispatch, artifacts)
   asc/               # App Store Connect API client (JWT, JSON:API, builds, uploads, TestFlight, review)
   distribute/        # Upload / TestFlight / App Store flows on top of asc
+  release/           # ios release / build --submit: next build number, build, verify, upload, submit
   ipa/               # Info.plist reading from .ipa archives
   build/             # Build coordination (snapshot + trigger + poll + download)
   signing/           # CSR generation and .p12 assembly (signing without a Mac)
@@ -224,9 +245,28 @@ internal/
   chosen group is external and none exists) → add groups. App Store reuses an open
   `reviewSubmission` (READY_FOR_REVIEW/UNRESOLVED_ISSUES), skips the item when the version is
   already in it, and rewrites ASC 409/422 with a "complete the metadata" hint.
-- **Extension Points**: a future `ios release` (upload + TestFlight, automatic build numbers)
-  composes `distribute.Upload` and `distribute.SubmitTestFlight` and reads `asc.Client.ListBuilds`
-  for the latest build number; the `pkg/` wrappers do not expose `asc` yet.
+- **Release Flow** (`internal/release`): `ios release` and `ios build --submit` share `release.Run`,
+  which takes a `Builder` interface (`*build.Coordinator`) and an `*asc.Client`, so tests use a
+  fake builder that writes an IPA plus an httptest ASC. `Preflight` refuses to dispatch without
+  `ios.signing` and `ios.configuration: "Release"`; the API key is checked first by the command.
+  The cobra layer stays thin and reuses `finish`/`newOutput` from `upload.go`. `--timeout` bounds
+  the build and then the ASC wait separately. `Coordinator.Build` takes `*BuildOptions`.
+- **Automatic Build Numbers**: ASC rejects an upload whose `CFBundleVersion` is not above every
+  processed build, so `release` lists the app's builds across all marketing versions
+  (`ListBuilds`, no limit, pages through `links.next`) and increments the last component of the
+  largest (`1` when none; dotted numbers compare component-wise). `--build-number` skips the
+  query. The number travels as the single `build_number` dispatch input (`BUILD_NUMBER` for
+  Codemagic/Bitrise), encoded `N` or `X.Y.Z+N` when `--version` is given — one input because
+  `workflow_dispatch` caps inputs at 10. `apply_build_number` in both templates must stay
+  byte-identical; `TestApplyBuildNumber` extracts it from each and diffs them. It validates the
+  shape (the value reaches `eval` and `plutil`), passes `--build-number`/`--build-name` to
+  `flutter build`, appends `CURRENT_PROJECT_VERSION`/`MARKETING_VERSION` to every `xcodebuild`,
+  and when the app target's `INFOPLIST_FILE` (from `-showBuildSettings`) holds a literal
+  `CFBundleVersion` rather than `$(CURRENT_PROJECT_VERSION)`/`$(FLUTTER_BUILD_NUMBER)`, rewrites
+  it with `plutil -replace` and logs which path it took. Back home, `release.Run` reads the IPA
+  and fails if `CFBundleVersion` differs from the request, so a missed case never reaches ASC as
+  an opaque duplicate. Plain `ios build` sends no input and behaves as before; the runner also
+  ignores an empty `BUILD_NUMBER`.
 
 ## Configuration
 
@@ -236,22 +276,30 @@ internal/
   "project": "MyApp",
   "platform": "ios",
   "github": { "owner": "username", "repo": "my-ios-app" },
-  "ios": { "path": "ios", "scheme": "" }
+  "ios": { "path": "ios", "scheme": "", "bundleId": "com.example.myapp" }
 }
 ```
+
+`ios.bundleId` is optional; `ios release` uses it to find the App Store Connect app before the
+first IPA exists (otherwise the newest `dist/*.ipa`).
 
 ## Workflow Features
 
 The embedded workflow template (`internal/workflow/templates/ios-build.yml`):
-- Triggered via `workflow_dispatch` with `build_id`, `snapshot_ref`, `ios_path`, `scheme`
+- Triggered via `workflow_dispatch` with `build_id`, `snapshot_ref`, `ios_path`, `scheme`,
+  `use_signing`, `configuration`, `flutter_version`, `jdk_version`, `build_number` (9 of the 10
+  inputs GitHub allows)
 - Dispatch runs the workflow from the **default branch**, so edits to the workflow file itself
-  only take effect once pushed there — unlike app sources, which come from the snapshot ref
+  only take effect once pushed there — unlike app sources, which come from the snapshot ref.
+  A dispatch naming an input the file lacks fails with 422 "Unexpected inputs"; the coordinator
+  turns that into a hint to rerun `builder init` when `build_number` was sent
 - Checks out `snapshot_ref` over the default-branch checkout when set
 - Also triggered by pushing a tag `ios-build/<build-id>` (`ios-share/<build-id>` for the share
   workflow) for environments without GitHub API access. Push events run the workflow file from
   the tagged commit, `inputs` are empty, so a `Resolve parameters` step reads `ios_path`, `scheme`,
   `use_signing`, `configuration`, `flutter_version` and `jdk_version` from `builder.json` in the
-  tagged tree; every later step reads `steps.params.outputs.*`, never `inputs.*`. The job deletes
+  tagged tree (`build_number` is always empty there); every later step reads
+  `steps.params.outputs.*`, never `inputs.*`. The job deletes
   the tag when it ends (`permissions: contents: write`). Any other workflow in the repo with an
   unfiltered `on: push` also fires on these tags.
 - Runs on `macos-latest`
