@@ -94,7 +94,8 @@ func (c *Coordinator) pushSnapshot(ctx context.Context, remote, buildID string) 
 	return ref, sha, nil
 }
 
-func (c *Coordinator) buildRemote(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
+func (c *Coordinator) buildRemote(ctx context.Context, o *BuildOptions) (*BuildResult, error) {
+	opts := *o // defaults are filled in locally
 	p, cfgCI, err := c.remote(opts.Provider)
 	if err != nil {
 		return nil, err
@@ -123,8 +124,8 @@ func (c *Coordinator) buildRemote(ctx context.Context, opts BuildOptions) (*Buil
 	if c.config.IOS.Signing && !opts.Unsigned {
 		v["USE_SIGNING"] = "true"
 	}
-	if n := opts.buildNumberInput(); n != "" {
-		v["BUILD_NUMBER"] = n
+	if opts.BuildNumber != "" {
+		v["BUILD_NUMBER"] = opts.BuildNumber
 	}
 	c.progress.Update(PhaseTriggering, "Triggering "+p.Name()+" build...")
 	run, err := p.Start(ctx, ci.Request{Workflow: cfgCI.BuildWorkflow, Variables: v})

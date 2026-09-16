@@ -62,20 +62,10 @@ type BuildOptions struct {
 	Timeout   time.Duration
 	Unsigned  bool   // Skip code signing even if configured
 	Remote    string // Git remote to push the working-tree snapshot to
-	// BuildNumber is the CFBundleVersion the runner stamps on the build; empty
-	// leaves the project's own. Version does the same for the marketing
-	// version and needs BuildNumber.
+	// BuildNumber is the CFBundleVersion the runner stamps on the build, or
+	// "X.Y.Z+N" to set the marketing version too (the pubspec convention).
+	// Empty leaves the project's own.
 	BuildNumber string
-	Version     string
-}
-
-// buildNumberInput encodes BuildNumber and Version the way the runner reads
-// them: "N", or "X.Y.Z+N" (the pubspec convention) when both are set.
-func (o BuildOptions) buildNumberInput() string {
-	if o.BuildNumber == "" || o.Version == "" {
-		return o.BuildNumber
-	}
-	return o.Version + "+" + o.BuildNumber
 }
 
 // BuildResult contains the result of a build
@@ -87,8 +77,9 @@ type BuildResult struct {
 	IPASize     int64
 }
 
-// Build triggers a remote build and downloads the IPA artifact
-func (c *Coordinator) Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
+// Build triggers a remote build and downloads the IPA artifact. opts is not
+// modified.
+func (c *Coordinator) Build(ctx context.Context, opts *BuildOptions) (*BuildResult, error) {
 	name, err := c.config.ProviderName(opts.Provider)
 	if err != nil {
 		return nil, err
@@ -101,13 +92,13 @@ func (c *Coordinator) Build(ctx context.Context, opts BuildOptions) (*BuildResul
 	}
 	startTime := time.Now()
 
-	// Set default timeout
-	if opts.Timeout == 0 {
-		opts.Timeout = DefaultTimeout
+	timeout := opts.Timeout
+	if timeout == 0 {
+		timeout = DefaultTimeout
 	}
 
 	// Create context with timeout
-	ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// Generate build ID
@@ -160,8 +151,8 @@ func (c *Coordinator) Build(ctx context.Context, opts BuildOptions) (*BuildResul
 	if c.config.KMP.JDKVersion != "" {
 		inputs["jdk_version"] = c.config.KMP.JDKVersion
 	}
-	if v := opts.buildNumberInput(); v != "" {
-		inputs["build_number"] = v
+	if opts.BuildNumber != "" {
+		inputs["build_number"] = opts.BuildNumber
 	}
 	if err := c.github.TriggerWorkflow(ctx, c.config.GitHub.Owner, c.config.GitHub.Repo, WorkflowFile, inputs); err != nil {
 		c.progress.Error(PhaseTriggering, err)
@@ -188,7 +179,7 @@ func (c *Coordinator) Build(ctx context.Context, opts BuildOptions) (*BuildResul
 	// Poll for artifact availability instead of waiting for job completion
 	// This allows us to download the IPA as soon as it's uploaded, without waiting
 	// for cache save and other post-build steps
-	artifact, err := c.github.PollForArtifact(ctx, c.config.GitHub.Owner, c.config.GitHub.Repo, run.ID, IPAArtifactName, opts.Timeout, func() {
+	artifact, err := c.github.PollForArtifact(ctx, c.config.GitHub.Owner, c.config.GitHub.Repo, run.ID, IPAArtifactName, timeout, func() {
 		c.showRunningStep(ctx, run.ID)
 	})
 	if err != nil {
