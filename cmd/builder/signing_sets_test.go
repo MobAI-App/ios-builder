@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -18,6 +19,7 @@ import (
 	"github.com/MobAI-App/ios-builder/internal/github"
 	"github.com/MobAI-App/ios-builder/internal/signing"
 	"github.com/MobAI-App/ios-builder/internal/signing/signingtest"
+	"github.com/spf13/cobra"
 	"golang.org/x/crypto/nacl/box"
 )
 
@@ -29,7 +31,9 @@ type fakeSecrets struct {
 	stored    map[string]string
 	names     []string
 	listErr   error
-	listed    int
+	// writeErr is a repository the login cannot write to.
+	writeErr error
+	listed   int
 }
 
 func newFakeSecrets(t *testing.T) *fakeSecrets {
@@ -46,6 +50,9 @@ func (f *fakeSecrets) GetPublicKey(context.Context, string, string) (*github.Pub
 }
 
 func (f *fakeSecrets) CreateOrUpdateSecret(_ context.Context, _, _, name, encryptedValue, keyID string) error {
+	if f.writeErr != nil {
+		return f.writeErr
+	}
 	if keyID != "key-1" {
 		return os.ErrInvalid
 	}
@@ -326,7 +333,7 @@ func TestEnsureSigningSecretsChecksTheSet(t *testing.T) {
 	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "cm", "", &warn); err != nil || store.listed != 0 {
 		t.Fatalf("codemagic profile: %v, listed %d", err, store.listed)
 	}
-	if !strings.Contains(warn.String(), "builder signing setup --distribution store --provider codemagic") {
+	if !strings.Contains(warn.String(), "builder signing setup --distribution store") {
 		t.Fatalf("no hint for the unchecked provider: %q", warn.String())
 	}
 	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "store", "bitrise", io.Discard); err != nil || store.listed != 0 {
@@ -405,5 +412,125 @@ func TestEnsureSigningSecretsProvisionsOnDemand(t *testing.T) {
 	err = ensureSigningSecrets(ctx, cfg, store, withPortal, "development", "", io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "ios.bundleId") || len(portal.Calls()) != 0 {
 		t.Fatalf("no bundle ID: %v, calls %v", err, portal.Calls())
+	}
+}
+
+// signingSetupCommand is `signing setup` with its own flags and buffers, and
+// the fake secrets API in place of the GitHub client.
+func signingSetupCommand(t *testing.T, store secretStore, storeErr error, args ...string) (cmd *cobra.Command, stdout, stderr *bytes.Buffer) {
+	t.Helper()
+	prev := signingSecretStore
+	signingSecretStore = func() (secretStore, error) { return store, storeErr }
+	t.Cleanup(func() { signingSecretStore = prev })
+
+	cmd = &cobra.Command{Use: "setup", RunE: runSigningSetup, SilenceErrors: true, SilenceUsage: true}
+	addSigningSetupFlags(cmd)
+	stdout, stderr = &bytes.Buffer{}, &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetArgs(args)
+	return cmd, stdout, stderr
+}
+
+// TestSigningSetupManualReportsAFailedUpload: a repository Builder cannot
+// write to is a message, not a dead end. The values are printed, the build
+// profile is written, and only the exit code says it failed.
+func TestSigningSetupManualReportsAFailedUpload(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := &config.Config{Project: "App", Platform: "ios", GitHub: config.GitHubConfig{Owner: "o", Repo: "r"}}
+	if err := config.NewManager().Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("ios-signing.p12", []byte("p12 bytes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	profile := profileBytes("<key>Entitlements</key><dict><key>get-task-allow</key><false/></dict>")
+	if err := os.WriteFile("App.mobileprovision", profile, 0600); err != nil {
+		t.Fatal(err)
+	}
+	store := newFakeSecrets(t)
+	store.writeErr = errors.New("403 Resource not accessible by integration")
+
+	cmd, stdout, stderr := signingSetupCommand(t, store, nil,
+		"--certificate", "ios-signing.p12", "--profile", "App.mobileprovision", "--password", "pw")
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "o/r") {
+		t.Fatalf("a failed upload must set the exit code: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "Error: failed to upload IOS_CERTIFICATE_STORE") || !strings.Contains(stderr.String(), "403") {
+		t.Errorf("the failure is not reported on stderr:\n%s", stderr.String())
+	}
+	for _, want := range []string{"NOT uploaded to o/r", "IOS_CERTIFICATE_STORE", "IOS_CERTIFICATE_PASSWORD_STORE",
+		"IOS_PROVISIONING_PROFILE_STORE", "base64 of ios-signing.p12", "base64 of App.mobileprovision", "the .p12 password"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("%q not printed:\n%s", want, stdout.String())
+		}
+	}
+	saved, err := config.NewManager().Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Profiles["store"].Distribution != "store" {
+		t.Errorf("build profile not written: %+v", saved.Profiles)
+	}
+}
+
+// TestSigningSetupAutoReportsAFailedUpload is the same for the App Store
+// Connect mode: everything Apple issued is kept and printed.
+func TestSigningSetupAutoReportsAFailedUpload(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := &config.Config{Project: "App", Platform: "ios", GitHub: config.GitHubConfig{Owner: "o", Repo: "r"},
+		IOS: config.IOSConfig{BundleID: "com.example.app"}}
+	if err := config.NewManager().Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	portal := signingtest.New(t)
+	prev := signingASCClient
+	signingASCClient = func() (*asc.Client, error) { return portal.Client(t), nil }
+	t.Cleanup(func() { signingASCClient = prev })
+	store := newFakeSecrets(t)
+	store.writeErr = errors.New("403 Resource not accessible by integration")
+
+	cmd, stdout, stderr := signingSetupCommand(t, store, nil, "--distribution", "store", "--yes")
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "o/r") {
+		t.Fatalf("a failed upload must set the exit code: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "Error: failed to upload IOS_CERTIFICATE_STORE") {
+		t.Errorf("the failure is not reported on stderr:\n%s", stderr.String())
+	}
+	for _, want := range []string{"NOT uploaded to o/r", "IOS_PROVISIONING_PROFILE_STORE",
+		"base64 of ios-signing-store.p12", "Next: builder ios build --profile store"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("%q not printed:\n%s", want, stdout.String())
+		}
+	}
+	for _, f := range []string{"ios-signing-store.key", "ios-signing-store.p12", "Builder-store-com.example.app.mobileprovision"} {
+		if _, err := os.Stat(f); err != nil {
+			t.Errorf("%s not written: %v", f, err)
+		}
+	}
+	saved, err := config.NewManager().Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Profiles["store"].Distribution != "store" {
+		t.Errorf("build profile not written: %+v", saved.Profiles)
+	}
+
+	// --json says the same in github_upload, and still exits non-zero.
+	cmd, jsonOut, _ := signingSetupCommand(t, store, nil, "--distribution", "store", "--yes", "--json")
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("--json run: a failed upload must set the exit code")
+	}
+	var res struct {
+		SigningSet      string `json:"signing_set"`
+		SecretsUploaded bool   `json:"secrets_uploaded"`
+		GitHubUpload    string `json:"github_upload"`
+	}
+	if err := json.Unmarshal(jsonOut.Bytes(), &res); err != nil {
+		t.Fatalf("%v:\n%s", err, jsonOut.String())
+	}
+	if res.SigningSet != "STORE" || res.SecretsUploaded || !strings.Contains(res.GitHubUpload, "403") {
+		t.Errorf("result: %+v", res)
 	}
 }

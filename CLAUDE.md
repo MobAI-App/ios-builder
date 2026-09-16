@@ -122,8 +122,10 @@ builder signing setup ───► Bundle ID: --bundle-id → ios.bundleId → d
                                 │
                                 ▼
                           Writes key/.p12/.mobileprovision (named by distribution), uploads
-                          the three IOS_*_<SET> secrets of the distribution's set (GitHub)
-                          or prints them (Codemagic/Bitrise), writes profiles.<name>.distribution
+                          the three IOS_*_<SET> secrets of the distribution's set to GitHub
+                          (a failed upload is printed, not fatal; non-zero exit at the end),
+                          always prints their names and values (Codemagic/Bitrise paste them),
+                          writes profiles.<name>.distribution
 
 builder ios build --profile X ─► ResolveProfile: distribution → set, signing, configuration
                                 │
@@ -241,7 +243,12 @@ internal/
   `--distribution` is an error) and never touches other sets or the legacy names, then writes
   `profiles.<--name or distribution>.distribution` (`writeSigningProfile`: other fields kept, an
   equal distribution keeps the user's spelling, a different one is replaced and the old value
-  printed; `defaultProfile` is never set) and never `ios.signing`. Files are `ios-signing-<distribution>.key/.p12`, so two coexist in
+  printed; `defaultProfile` is never set) and never `ios.signing`. Both modes always upload to the
+  `github` repository in builder.json (no `--provider`, no `provider` field) and always print the
+  three names with where their values come from, for Codemagic, Bitrise or a repository the token
+  cannot write to; a failed upload (or a GitHub client that cannot be built) is an `Error:` line on
+  stderr, everything else is still written and printed, and only the exit code is non-zero
+  (`github_upload` in `--json`: `ok` or the error). Files are `ios-signing-<distribution>.key/.p12`, so two coexist in
   one `--out-dir`; the key lookup is `--key`, then the distribution's file, then the legacy
   `ios-signing.key`. `Progress.Settings` prints `signed (set X)` / `signed (unsuffixed IOS_*
   secrets)`. Enterprise is a valid set and profile type but `Auto` refuses it (no ASC endpoint
@@ -253,8 +260,8 @@ internal/
   (`GET /repos/{o}/{r}/actions/secrets`, paginated; 403/404 are reported as a token without the
   `repo` scope or admin access, never as "no secrets") is checked for the three names; all
   present → dispatch. Otherwise, with an ASC key (`getASCClient` passed as a
-  factory so tests inject the `signingtest` portal), `provisionSigning` (= `signing.Auto` + upload,
-  shared with `signing setup`) runs with no prompts: bundle ID from `ios.bundleId` or `dist/*.ipa`,
+  factory so tests inject the `signingtest` portal), `signing.Auto` plus `uploadSigningSet` (shared
+  with `signing setup`, but fatal here) runs with no prompts: bundle ID from `ios.bundleId` or `dist/*.ipa`,
   key from `.`, generated password (printed once), no devices given (Auto covers the enabled ones
   and fails naming `signing setup --distribution development --devices-from-mobai` when there are
   none). Without an ASC key the error names `builder auth apple` and `signing setup --certificate

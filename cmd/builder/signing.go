@@ -51,8 +51,11 @@ IOS_PROVISIONING_PROFILE_<SET>, with SET one of DEVELOPMENT, AD_HOC, STORE,
 ENTERPRISE — and writes a profile in builder.json (--name, default the
 distribution name) with that distribution. 'builder ios build --profile <name>'
 then signs with the set, and provisions it the same way when it is missing.
-For Codemagic and Bitrise the command writes the files and prints the secret
-names to add in the dashboard instead.`,
+
+The three names and the values to put in them are always printed too, for
+Codemagic, Bitrise or a repository this login cannot write to. A failed upload
+is reported and the command carries on — the files and the build profile are
+written regardless — and it exits non-zero at the end.`,
 	RunE: runSigningSetup,
 }
 
@@ -86,20 +89,7 @@ func init() {
 	signingCmd.AddCommand(signingCSRCmd)
 	signingCmd.AddCommand(signingP12Cmd)
 
-	signingSetupCmd.Flags().StringP("certificate", "c", "", "Path to certificate file (.p12, or .cer from the Apple Developer portal)")
-	signingSetupCmd.Flags().StringP("profile", "p", "", "Path to .mobileprovision file")
-	signingSetupCmd.Flags().StringP("key", "k", "", "Path to the private key from 'builder signing csr' (required with a .cer; automatic mode reuses it and its certificate)")
-	signingSetupCmd.Flags().String("bundle-id", "", "App bundle ID (default: ios.bundleId in builder.json, else the newest IPA in ./dist)")
-	signingSetupCmd.Flags().String("distribution", "", "Distribution to sign for: development, ad-hoc (internal), store or enterprise (default: the --name profile's, else development; with --profile: read from the file)")
-	signingSetupCmd.Flags().String("name", "", "builder.json profile to write the distribution to (default: the distribution name; an existing profile keeps its other fields, a different distribution in it is replaced)")
-	signingSetupCmd.Flags().StringArray("device", nil, "Device UDID to register (repeatable)")
-	signingSetupCmd.Flags().Bool("devices-from-mobai", false, "Register the physical iOS devices connected to MobAI")
-	signingSetupCmd.Flags().String("out-dir", ".", "Directory for the private key, .p12 and .mobileprovision")
-	signingSetupCmd.Flags().String("password", "", "Password to protect the .p12 (prompted; generated with --yes)")
-	signingSetupCmd.Flags().Bool("force", false, "Issue a new certificate and profile even when valid ones exist")
-	signingSetupCmd.Flags().BoolP("yes", "y", false, "Skip confirmations")
-	signingSetupCmd.Flags().Bool("json", false, "Print the result as JSON (progress goes to stderr)")
-	signingSetupCmd.Flags().String("provider", "", "CI provider the secrets are for: github, codemagic or bitrise (default: provider in builder.json, else github)")
+	addSigningSetupFlags(signingSetupCmd)
 
 	signingCSRCmd.Flags().String("name", "", "Your name (certificate common name)")
 	signingCSRCmd.Flags().String("email", "", "Email address of your Apple Developer account")
@@ -108,6 +98,24 @@ func init() {
 	signingP12Cmd.Flags().StringP("key", "k", "", "Path to the private key from 'builder signing csr'")
 	signingP12Cmd.Flags().StringP("out", "o", "ios-signing.p12", "Path to write the .p12 to")
 	signingP12Cmd.Flags().String("password", "", "Password to protect the .p12 (prompted if omitted)")
+}
+
+// addSigningSetupFlags registers the flags of `signing setup`; tests build
+// their own command with them.
+func addSigningSetupFlags(cmd *cobra.Command) {
+	cmd.Flags().StringP("certificate", "c", "", "Path to certificate file (.p12, or .cer from the Apple Developer portal)")
+	cmd.Flags().StringP("profile", "p", "", "Path to .mobileprovision file")
+	cmd.Flags().StringP("key", "k", "", "Path to the private key from 'builder signing csr' (required with a .cer; automatic mode reuses it and its certificate)")
+	cmd.Flags().String("bundle-id", "", "App bundle ID (default: ios.bundleId in builder.json, else the newest IPA in ./dist)")
+	cmd.Flags().String("distribution", "", "Distribution to sign for: development, ad-hoc (internal), store or enterprise (default: the --name profile's, else development; with --profile: read from the file)")
+	cmd.Flags().String("name", "", "builder.json profile to write the distribution to (default: the distribution name; an existing profile keeps its other fields, a different distribution in it is replaced)")
+	cmd.Flags().StringArray("device", nil, "Device UDID to register (repeatable)")
+	cmd.Flags().Bool("devices-from-mobai", false, "Register the physical iOS devices connected to MobAI")
+	cmd.Flags().String("out-dir", ".", "Directory for the private key, .p12 and .mobileprovision")
+	cmd.Flags().String("password", "", "Password to protect the .p12 (prompted; generated with --yes)")
+	cmd.Flags().Bool("force", false, "Issue a new certificate and profile even when valid ones exist")
+	cmd.Flags().BoolP("yes", "y", false, "Skip confirmations")
+	cmd.Flags().Bool("json", false, "Print the result as JSON (progress goes to stderr)")
 }
 
 func runSigningCSR(cmd *cobra.Command, args []string) error {
@@ -269,19 +277,10 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	providerFlag, _ := cmd.Flags().GetString("provider")
-	provider, err := cfg.ProviderName(providerFlag)
-	if err != nil {
-		return err
-	}
-	var store secretStore
-	if provider == "github" {
-		ghClient, err := getGitHubClient()
-		if err != nil {
-			return err
-		}
-		store = ghClient
-	}
+	// A GitHub client that cannot be built is reported with the upload, after
+	// the files are read: the values are printed either way.
+	store, storeErr := signingSecretStore()
+	out := cmd.OutOrStdout()
 
 	// Get certificate path
 	certPath, _ := cmd.Flags().GetString("certificate")
@@ -298,7 +297,7 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to read certificate %s: %w", certPath, err)
 	}
-	fmt.Printf("Certificate: %s (%.1f KB)\n", certPath, float64(len(certData))/1024)
+	fmt.Fprintf(out, "Certificate: %s (%.1f KB)\n", certPath, float64(len(certData))/1024)
 
 	// Get provisioning profile path
 	profilePath, _ := cmd.Flags().GetString("profile")
@@ -315,7 +314,7 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to read provisioning profile %s: %w", profilePath, err)
 	}
-	fmt.Printf("Profile: %s (%.1f KB)\n", profilePath, float64(len(profileData))/1024)
+	fmt.Fprintf(out, "Profile: %s (%.1f KB)\n", profilePath, float64(len(profileData))/1024)
 
 	distributionFlag, _ := cmd.Flags().GetString("distribution")
 	typ, err := manualSigningType(profileData, distributionFlag)
@@ -330,9 +329,9 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	if profileName == "" {
 		profileName = string(typ)
 	}
-	fmt.Printf("Distribution: %s (read from the profile), signing set %s, build profile %q\n", typ, set, profileName)
+	fmt.Fprintf(out, "Distribution: %s (read from the profile), signing set %s, build profile %q\n", typ, set, profileName)
 
-	var password string
+	password, _ := cmd.Flags().GetString("password")
 	p12Path := certPath
 	if isPortalCertificate(certPath) {
 		// A .cer from the Apple Developer portal: assemble the .p12 locally
@@ -348,9 +347,10 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to read private key %s: %w", keyPath, err)
 		}
-		password, err = promptPassword("Password to protect the .p12")
-		if err != nil {
-			return err
+		if password == "" {
+			if password, err = promptPassword("Password to protect the .p12"); err != nil {
+				return err
+			}
 		}
 		certData, err = signing.BuildP12(keyPEM, certData, password)
 		if err != nil {
@@ -362,10 +362,9 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 		if err := os.WriteFile(p12Path, certData, 0600); err != nil {
 			return fmt.Errorf("failed to write .p12: %w", err)
 		}
-		fmt.Printf("Assembled .p12: %s (do not commit it)\n", p12Path)
-	} else {
-		password, err = promptPassword("Certificate password")
-		if err != nil {
+		fmt.Fprintf(out, "Assembled .p12: %s (do not commit it)\n", p12Path)
+	} else if password == "" {
+		if password, err = promptPassword("Certificate password"); err != nil {
 			return err
 		}
 	}
@@ -374,29 +373,33 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	fmt.Println()
-	if store != nil {
-		fmt.Printf("Uploading secrets to %s/%s...\n", cfg.GitHub.Owner, cfg.GitHub.Repo)
-		if err := uploadSigningSecrets(ctx, store, cfg, os.Stdout, set, certData, password, profileData); err != nil {
-			return err
-		}
-	} else {
-		printProviderSecrets(provider, config.SigningSecretNames(set), p12Path, profilePath)
+	fmt.Fprintln(out)
+	uploadErr := uploadSigningSet(ctx, store, storeErr, cfg, out, set, certData, password, profileData)
+	if uploadErr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", uploadErr)
 	}
 
+	// The profile is written whatever the upload did: the files exist and the
+	// build that uses them is the same either way.
 	replaced := writeSigningProfile(cfg, profileName, typ)
 	if err := config.NewManager().Save(cfg); err != nil {
 		return fmt.Errorf("failed to update config: %w", err)
 	}
-	fmt.Println(profileWritten(profileName, typ, replaced))
+	fmt.Fprintln(out, profileWritten(profileName, typ, replaced))
 
-	fmt.Println()
-	fmt.Println("Code signing configured successfully!")
-	fmt.Println()
-	printSigningNext(profileName, typ)
-	fmt.Println("To build unsigned, use:")
-	fmt.Printf("  builder ios build --profile %s --unsigned\n", profileName)
+	names := config.SigningSecretNames(set)
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, signingUploadLine(cfg, names, uploadErr))
+	fmt.Fprintln(out)
+	printSigningSecretValues(out, names, p12Path, profilePath)
+	fmt.Fprintln(out)
+	printSigningNext(out, profileName, typ)
+	fmt.Fprintln(out, "To build unsigned, use:")
+	fmt.Fprintf(out, "  builder ios build --profile %s --unsigned\n", profileName)
 
+	if uploadErr != nil {
+		return signingUploadFailed(cfg)
+	}
 	return nil
 }
 

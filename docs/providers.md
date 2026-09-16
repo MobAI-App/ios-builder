@@ -149,8 +149,9 @@ same build may consume different minutes on each provider.
 
 See [step-by-step signing and MobAI secret setup](provider-secrets.md).
 
-`builder signing setup` uploads signing secrets to **GitHub** only. For
-Codemagic/Bitrise, configure these secrets on that provider yourself, one set
+`builder signing setup` uploads signing secrets to **GitHub** only, and prints
+the three names and the values to paste on every run. For Codemagic/Bitrise,
+take them from that output and set these secrets there yourself, one set
 per distribution (`<SET>` is `DEVELOPMENT`, `AD_HOC`, `STORE` or `ENTERPRISE`;
 a build reads the set its profile's `distribution` names; a build without a
 profile and with `ios.signing: true` reads the unsuffixed legacy names):

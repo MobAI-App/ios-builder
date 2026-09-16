@@ -11,9 +11,11 @@ API login, the provider's GitHub connection, and build secrets are separate:
 | Legacy signed build without a profile (`ios.signing: true`) | The unsuffixed `IOS_CERTIFICATE`, `IOS_CERTIFICATE_PASSWORD`, `IOS_PROVISIONING_PROFILE` |
 | Shared simulator (`ios share`) | `MOBAI_API_KEY`; no Apple signing files needed |
 
-`builder signing setup` uploads secrets to **GitHub Actions only**. For the two
-new providers, use the steps below even if GitHub signing/sharing already works.
-Existing GitHub secret values cannot be downloaded for copying to another service.
+`builder signing setup` uploads secrets to **GitHub Actions only**, but it always
+prints the three names and the values to paste, so a run of it is also the source
+for the two new providers; use the steps below even if GitHub signing/sharing
+already works. Existing GitHub secret values cannot be downloaded for copying to
+another service.
 
 ## 1. Prepare your signing files
 
@@ -48,11 +50,12 @@ directory outside your source checkout:
 builder signing setup --devices-from-mobai --out-dir ~/signing
 ```
 
-With `provider` set to Codemagic or Bitrise in `builder.json`, this creates the
-certificate, devices and profile through the API, writes
-`ios-signing-development.p12` and the `.mobileprovision` to `~/signing`, prints
-the three secret names and file paths to paste below instead of uploading them,
-and writes the `development` build profile. Run it again with `--distribution
+This creates the certificate, devices and profile through the API, writes
+`ios-signing-development.p12` and the `.mobileprovision` to `~/signing`, tries to
+upload the set to the GitHub repository in `builder.json` (a failure is printed
+and the run continues, ending with a non-zero exit code), prints the three secret
+names and file paths to paste below either way, and writes the `development`
+build profile. Run it again with `--distribution
 store` for a second, App Store set: the files are named by distribution, so
 nothing is overwritten. Alternatively follow the
 [manual certificate steps](../README.md#1-create-a-certificate-signing-request):

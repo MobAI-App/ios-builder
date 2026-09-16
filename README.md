@@ -429,12 +429,19 @@ create certificates. It then:
    "<distribution>"`. Other fields of an existing profile are kept; a
    different `distribution` in it is replaced, and the command says so.
    `defaultProfile` is not touched: point it at the profile for a plain
-   `ios build` to use it, or pass `--profile`. For Codemagic and Bitrise
-   (`provider` in `builder.json`, or `--provider codemagic|bitrise`) it prints
-   the three secret names and file paths to paste instead, following the
-   [secrets guide](docs/provider-secrets.md). Builder cannot check those
-   providers' secrets before a build, so `ios build` only reminds you of this
-   command when the profile signs there.
+   `ios build` to use it, or pass `--profile`.
+6. Prints the three secret names and where their values come from — the
+   `.p12` base64-encoded, the password, the `.mobileprovision` base64-encoded
+   — every time, so the same set can be pasted into Codemagic or Bitrise,
+   following the [secrets guide](docs/provider-secrets.md). Builder cannot
+   check those providers' secrets before a build, so `ios build` only reminds
+   you of this command when the profile signs there.
+
+The upload goes to the repository in `builder.json`, always. When it fails (no
+GitHub login, or a token that cannot write secrets) the error is printed and
+the command carries on: files, values and the build profile are written and
+shown anyway, and it exits non-zero at the end so a script notices. `--json`
+reports the same in `github_upload` (`ok` or the error).
 
 The command shows its plan and asks once before creating anything; `--yes`
 skips that (required without a terminal), and then the `.p12` password is
@@ -448,7 +455,8 @@ With `--certificate` and `--profile`, `setup` takes your own files instead — a
 `.p12` (from Keychain Access, or [assembled here](#manual-path-through-the-apple-developer-portal))
 and a `.mobileprovision` — reads the distribution out of the profile
 (development, ad-hoc, store or enterprise; this is the only way in for
-enterprise), uploads that set and writes the build profile the same way:
+enterprise), uploads that set, prints its names and values, and writes the
+build profile the same way:
 
 ```bash
 builder signing setup --certificate ios-signing.p12 --profile MyApp.mobileprovision

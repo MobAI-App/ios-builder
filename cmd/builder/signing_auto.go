@@ -30,11 +30,13 @@ const providerSecretsDoc = "https://github.com/MobAI-App/ios-builder/blob/main/d
 // signingAutoResult is the JSON output of the automatic `signing setup`.
 type signingAutoResult struct {
 	*signing.AutoResult
-	Provider string `json:"provider"`
 	// SigningSet is the suffix of the secrets written (DEVELOPMENT, AD_HOC,
 	// STORE), which builds select by their profile's distribution.
 	SigningSet      string `json:"signing_set"`
 	SecretsUploaded bool   `json:"secrets_uploaded"`
+	// GitHubUpload is "ok" or why the upload failed; the values are printed
+	// either way, so a failure is reported, not fatal.
+	GitHubUpload string `json:"github_upload"`
 	// BuildProfile is the builder.json profile written with the distribution.
 	BuildProfile string `json:"build_profile"`
 	// GeneratedPassword is set when no password was given: it is printed
@@ -69,23 +71,13 @@ func runSigningAuto(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	client, err := getASCClient()
+	client, err := signingASCClient()
 	if err != nil {
 		return err
 	}
-	providerFlag, _ := cmd.Flags().GetString("provider")
-	provider, err := cfg.ProviderName(providerFlag)
-	if err != nil {
-		return err
-	}
-	var store secretStore
-	if provider == "github" {
-		ghClient, err := getGitHubClient()
-		if err != nil {
-			return err
-		}
-		store = ghClient
-	}
+	// A GitHub client that cannot be built is reported with the upload, after
+	// the material exists: the values are printed either way.
+	store, storeErr := signingSecretStore()
 	out := newOutput(cmd)
 	yes, _ := cmd.Flags().GetBool("yes")
 	force, _ := cmd.Flags().GetBool("force")
@@ -120,7 +112,7 @@ func runSigningAuto(cmd *cobra.Command) error {
 	} else {
 		fmt.Fprintf(out.log, "Key:          new, written to %s\n", filepath.Join(outDir, signing.KeyFileName(typ)))
 	}
-	fmt.Fprintf(out.log, "Provider:     %s\n", provider)
+	fmt.Fprintf(out.log, "Secrets:      %s/%s\n", cfg.GitHub.Owner, cfg.GitHub.Repo)
 	if force {
 		fmt.Fprintln(out.log, "Force:        a new certificate and profile will be issued")
 	}
@@ -149,15 +141,25 @@ func runSigningAuto(cmd *cobra.Command) error {
 		}
 	}
 
-	res := &signingAutoResult{Provider: provider, SigningSet: set, BuildProfile: profileName, GeneratedPassword: generated}
-	res.AutoResult, err = provisionSigning(ctx, client, store, cfg, out.log, &signing.AutoOptions{
+	res := &signingAutoResult{SigningSet: set, BuildProfile: profileName, GeneratedPassword: generated}
+	res.AutoResult, err = signing.Auto(ctx, client, &signing.AutoOptions{
 		BundleID: bundleID, Type: typ, Devices: devices, KeyPEM: keyPEM, CommonName: cfg.Project,
 		Password: password, Force: force, OutDir: outDir, Log: out.log,
 	})
 	if err != nil {
 		return finish(out, cmd, res, err, nil)
 	}
-	res.SecretsUploaded = store != nil
+	fmt.Fprintln(out.log)
+	uploadErr := uploadSigningSet(ctx, store, storeErr, cfg, out.log, set, res.P12, password, res.ProfileContent)
+	res.SecretsUploaded = uploadErr == nil
+	res.GitHubUpload = "ok"
+	if uploadErr != nil {
+		res.GitHubUpload = uploadErr.Error()
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", uploadErr)
+	}
+
+	// The profile is written whatever the upload did: the material exists and
+	// the build that uses it is the same either way.
 	replaced := writeSigningProfile(cfg, profileName, typ)
 	if cfg.IOS.BundleID == "" {
 		cfg.IOS.BundleID = bundleID
@@ -167,7 +169,15 @@ func runSigningAuto(cmd *cobra.Command) error {
 	}
 	fmt.Fprintln(out.log, profileWritten(profileName, typ, replaced))
 
-	return finish(out, cmd, res, nil, func() { printSigningSummary(cfg, res) })
+	// Everything is printed before the exit code, so finish's success-only
+	// hook is not used.
+	if !out.json {
+		printSigningSummary(out.log, cfg, res, uploadErr)
+	}
+	if uploadErr != nil {
+		return finish(out, cmd, res, signingUploadFailed(cfg), nil)
+	}
+	return finish(out, cmd, res, nil, nil)
 }
 
 // setupDistribution is --distribution, else the distribution of the
@@ -182,27 +192,23 @@ func setupDistribution(cfg *config.Config, profileName, flag string) (signing.Ty
 	return signing.TypeDevelopment, nil
 }
 
-// provisionSigning issues (or reuses) the certificate and profile of a
-// distribution through App Store Connect and, when store is a GitHub
-// repository, uploads them as the distribution's signing set. `signing setup`
-// runs it, and so does `ios build` when a profile's set is missing.
-func provisionSigning(ctx context.Context, client *asc.Client, store secretStore, cfg *config.Config, log io.Writer, opts *signing.AutoOptions) (*signing.AutoResult, error) {
-	res, err := signing.Auto(ctx, client, opts)
-	if err != nil {
-		return res, err
+// uploadSigningSet writes the three secrets of a set to the GitHub repository
+// in builder.json. storeErr is a client that could not be built at all (no
+// login), reported the same way as a failed upload: `signing setup` prints the
+// values afterwards, so neither is the end of the road.
+func uploadSigningSet(ctx context.Context, store secretStore, storeErr error, cfg *config.Config, log io.Writer, set string, p12 []byte, password string, profile []byte) error {
+	if storeErr != nil {
+		return storeErr
 	}
-	if store == nil {
-		return res, nil
-	}
-	set, err := config.SigningSet(string(opts.Type))
-	if err != nil {
-		return res, err
-	}
-	fmt.Fprintf(log, "\nUploading secrets to %s/%s...\n", cfg.GitHub.Owner, cfg.GitHub.Repo)
-	if err := uploadSigningSecrets(ctx, store, cfg, log, set, res.P12, opts.Password, res.ProfileContent); err != nil {
-		return res, err
-	}
-	return res, nil
+	fmt.Fprintf(log, "Uploading secrets to %s/%s...\n", cfg.GitHub.Owner, cfg.GitHub.Repo)
+	return uploadSigningSecrets(ctx, store, cfg, log, set, p12, password, profile)
+}
+
+// signingUploadFailed is what `signing setup` ends with when the set did not
+// reach the repository: everything is printed by then, so this only carries
+// the exit code and says what is left to do.
+func signingUploadFailed(cfg *config.Config) error {
+	return fmt.Errorf("the signing set was not uploaded to %s/%s; add the three secrets above by hand, or fix the access and run builder signing setup again", cfg.GitHub.Owner, cfg.GitHub.Repo)
 }
 
 // writeSigningProfile creates or updates the builder.json profile that builds
@@ -374,6 +380,20 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+// signingSecretStore is the GitHub secrets API `signing setup` uploads
+// through, and signingASCClient the App Store Connect client it provisions
+// with. Both are vars so tests can replace them.
+var (
+	signingSecretStore = func() (secretStore, error) {
+		gh, err := getGitHubClient()
+		if err != nil {
+			return nil, err
+		}
+		return gh, nil
+	}
+	signingASCClient = getASCClient
+)
+
 // secretStore is the part of the GitHub client that signing writes through
 // and reads the secret names back from.
 type secretStore interface {
@@ -452,7 +472,7 @@ func ensureSigningSecrets(ctx context.Context, cfg *config.Config, store secretS
 		// Codemagic and Bitrise have no secrets API, so the set cannot be
 		// checked or provisioned from here; the runner fails by name if it
 		// is missing.
-		fmt.Fprintf(log, "Profile %q signs with set %s. Builder cannot check %s secrets; if the build fails on signing, run: builder signing setup --distribution %s --provider %s\n", s.Profile, s.SigningSet(), name, s.Distribution, name)
+		fmt.Fprintf(log, "Profile %q signs with set %s. Builder cannot check %s secrets; if the build fails on signing, run: builder signing setup --distribution %s\n", s.Profile, s.SigningSet(), name, s.Distribution)
 		return nil
 	}
 	typ, set := signing.Type(s.Distribution), s.SigningSet()
@@ -485,10 +505,16 @@ func ensureSigningSecrets(ctx context.Context, cfg *config.Config, store secretS
 		return err
 	}
 	fmt.Fprintf(log, "Provisioning %s signing for %s through App Store Connect...\n", typ, bundleID)
-	res, err := provisionSigning(ctx, client, store, cfg, log, &signing.AutoOptions{
+	res, err := signing.Auto(ctx, client, &signing.AutoOptions{
 		BundleID: bundleID, Type: typ, KeyPEM: keyPEM, CommonName: cfg.Project, Password: password, OutDir: ".", Log: log,
 	})
 	if err != nil {
+		return err
+	}
+	// A build cannot go on without the set in the repository, so here the
+	// upload is fatal.
+	fmt.Fprintln(log)
+	if err := uploadSigningSet(ctx, store, nil, cfg, log, set, res.P12, password, res.ProfileContent); err != nil {
 		return err
 	}
 	fmt.Fprintln(log)
@@ -517,7 +543,7 @@ func printSigningFiles(w io.Writer, res *signing.AutoResult, generatedPassword s
 	fmt.Fprintln(w, "Keep these out of git (add them to .gitignore); gitignored files are also left out of build snapshots.")
 }
 
-func printSigningSummary(cfg *config.Config, res *signingAutoResult) {
+func printSigningSummary(w io.Writer, cfg *config.Config, res *signingAutoResult, uploadErr error) {
 	state := func(created bool, reason string) string {
 		if !created {
 			return "reused"
@@ -527,40 +553,49 @@ func printSigningSummary(cfg *config.Config, res *signingAutoResult) {
 		}
 		return "new"
 	}
-	fmt.Println()
-	fmt.Printf("Bundle ID:   %s (%s)\n", res.BundleID.Identifier, state(res.BundleID.Created, ""))
-	fmt.Printf("Certificate: %s (%s, expires %s)\n", res.Certificate.Name, state(res.Certificate.Created, ""), res.Certificate.ExpirationDate.Format("2006-01-02"))
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Bundle ID:   %s (%s)\n", res.BundleID.Identifier, state(res.BundleID.Created, ""))
+	fmt.Fprintf(w, "Certificate: %s (%s, expires %s)\n", res.Certificate.Name, state(res.Certificate.Created, ""), res.Certificate.ExpirationDate.Format("2006-01-02"))
 	if res.Type.NeedsDevices() {
-		fmt.Printf("Devices:     %d in the profile, %d registered now\n", res.Devices.InProfile, len(res.Devices.Registered))
+		fmt.Fprintf(w, "Devices:     %d in the profile, %d registered now\n", res.Devices.InProfile, len(res.Devices.Registered))
 	}
-	fmt.Printf("Profile:     %s (%s, %s, expires %s)\n", res.Profile.Name, state(res.Profile.Created, res.Profile.Reason), strings.ToLower(res.Profile.State), res.Profile.ExpirationDate.Format("2006-01-02"))
-	fmt.Println()
-	printSigningFiles(os.Stdout, res.AutoResult, res.GeneratedPassword)
-	fmt.Println()
+	fmt.Fprintf(w, "Profile:     %s (%s, %s, expires %s)\n", res.Profile.Name, state(res.Profile.Created, res.Profile.Reason), strings.ToLower(res.Profile.State), res.Profile.ExpirationDate.Format("2006-01-02"))
+	fmt.Fprintln(w)
+	printSigningFiles(w, res.AutoResult, res.GeneratedPassword)
+	fmt.Fprintln(w)
 	names := config.SigningSecretNames(res.SigningSet)
-	if res.SecretsUploaded {
-		fmt.Printf("Secrets %s, %s and %s uploaded to %s/%s.\n", names.Certificate, names.Password, names.Profile, cfg.GitHub.Owner, cfg.GitHub.Repo)
-	} else {
-		printProviderSecrets(res.Provider, names, res.Files.P12, res.Files.Profile)
-	}
-	printSigningNext(res.BuildProfile, res.Type)
-	fmt.Println("Run builder signing setup again any time: it reuses what is valid and renews only what expired or changed.")
+	fmt.Fprintln(w, signingUploadLine(cfg, names, uploadErr))
+	fmt.Fprintln(w)
+	printSigningSecretValues(w, names, res.Files.P12, res.Files.Profile)
+	fmt.Fprintln(w)
+	printSigningNext(w, res.BuildProfile, res.Type)
+	fmt.Fprintln(w, "Run builder signing setup again any time: it reuses what is valid and renews only what expired or changed.")
 }
 
-// printProviderSecrets tells Codemagic and Bitrise users what to paste into
-// the dashboard, since Builder cannot write secrets there.
-func printProviderSecrets(provider string, names config.SigningSecrets, p12Path, profilePath string) {
-	fmt.Printf("%s secrets are set in its dashboard, not by Builder. Add:\n", provider)
-	fmt.Printf("  %-*s  base64 of %s\n", len(names.Password), names.Certificate, p12Path)
-	fmt.Printf("  %s  the .p12 password\n", names.Password)
-	fmt.Printf("  %-*s  base64 of %s\n", len(names.Password), names.Profile, profilePath)
-	fmt.Printf("Steps: %s\n", providerSecretsDoc)
+// signingUploadLine says whether the set reached the GitHub repository.
+func signingUploadLine(cfg *config.Config, names config.SigningSecrets, uploadErr error) string {
+	if uploadErr != nil {
+		return fmt.Sprintf("Secrets were NOT uploaded to %s/%s: %v", cfg.GitHub.Owner, cfg.GitHub.Repo, uploadErr)
+	}
+	return fmt.Sprintf("Secrets %s, %s and %s uploaded to %s/%s.", names.Certificate, names.Password, names.Profile, cfg.GitHub.Owner, cfg.GitHub.Repo)
+}
+
+// printSigningSecretValues names the three secrets of the set and where their
+// values come from. It is printed whether or not the upload worked: Codemagic
+// and Bitrise are set in their own dashboards, and so is a GitHub repository
+// this token cannot write to.
+func printSigningSecretValues(w io.Writer, names config.SigningSecrets, p12Path, profilePath string) {
+	fmt.Fprintln(w, "Set them by hand wherever Builder cannot (Codemagic, Bitrise, a repository this login cannot write to):")
+	fmt.Fprintf(w, "  %-*s  base64 of %s\n", len(names.Password), names.Certificate, p12Path)
+	fmt.Fprintf(w, "  %s  the .p12 password\n", names.Password)
+	fmt.Fprintf(w, "  %-*s  base64 of %s\n", len(names.Password), names.Profile, profilePath)
+	fmt.Fprintf(w, "Steps: %s\n", providerSecretsDoc)
 }
 
 // printSigningNext names the build that reads the set just written.
-func printSigningNext(buildProfile string, typ signing.Type) {
-	fmt.Printf("Next: builder ios build --profile %s\n", buildProfile)
+func printSigningNext(w io.Writer, buildProfile string, typ signing.Type) {
+	fmt.Fprintf(w, "Next: builder ios build --profile %s\n", buildProfile)
 	if typ == signing.TypeStore {
-		fmt.Println("then builder ios upload --wait.")
+		fmt.Fprintln(w, "then builder ios upload --wait.")
 	}
 }
