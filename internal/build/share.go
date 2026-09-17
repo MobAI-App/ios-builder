@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/MobAI-App/ios-builder/internal/config"
 	"github.com/MobAI-App/ios-builder/internal/snapshot"
 )
 
@@ -16,8 +17,7 @@ const ShareWorkflowFile = "ios-share.yml"
 
 // ShareOptions configures a simulator session.
 type ShareOptions struct {
-	Provider string // Override the configured CI provider (and the profile's)
-	Profile  string // builder.json profile; only its scheme, provider and env apply to a simulator build
+	Provider string // Override the configured CI provider
 	// Duration is how long the simulator stays available while unused. Using
 	// it keeps it open past this.
 	Duration time.Duration
@@ -45,14 +45,20 @@ const sharePublishGrace = 30 * time.Second
 // Share builds the working tree for the simulator and publishes it to the
 // account's MobAI app, then returns while the job outlives the command.
 func (c *Coordinator) Share(ctx context.Context, opts ShareOptions) (*ShareResult, error) {
-	settings, name, err := c.settings(opts.Profile, opts.Provider, true)
+	// A simulator build takes no build profile: it is always Debug, never
+	// signed and never exported, so only the top-level settings apply.
+	settings := &config.BuildSettings{
+		Configuration: c.config.IOS.Configuration,
+		Scheme:        c.config.IOS.Scheme,
+		Provider:      c.config.Provider,
+	}
+	if opts.Provider != "" {
+		settings.Provider = opts.Provider
+	}
+	name, err := c.config.ProviderName(settings.Provider)
 	if err != nil {
 		return nil, err
 	}
-	// Simulator builds are always Debug, never signed and never exported,
-	// whatever the profile says.
-	settings.Configuration = "Debug"
-	settings.Distribution = ""
 	if name != "github" || c.provider != nil {
 		return c.shareRemote(ctx, opts, settings)
 	}
@@ -70,7 +76,6 @@ func (c *Coordinator) Share(ctx context.Context, opts ShareOptions) (*ShareResul
 
 	buildID := uuid.New().String()[:8]
 	c.progress.Start(buildID)
-	c.progress.Settings(settings, name)
 
 	c.progress.Update(PhaseSnapshot, "Snapshotting working tree...")
 	sha, err := snapshot.Create(ctx, fmt.Sprintf("ios-builder snapshot %s", buildID))

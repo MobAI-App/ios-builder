@@ -92,9 +92,10 @@ func (c *Coordinator) inputs(buildID, ref, sha string, s *config.BuildSettings) 
 	return v
 }
 
-func (c *Coordinator) pushSnapshot(ctx context.Context, remote, buildID string, s *config.BuildSettings, provider string) (string, string, error) {
-	c.progress.Start(buildID)
-	c.progress.Settings(s, provider)
+// pushSnapshot pushes the working tree the run will build. The caller has
+// already started the progress report, since only a build has settings to
+// print under it.
+func (c *Coordinator) pushSnapshot(ctx context.Context, remote, buildID string) (string, string, error) {
 	c.progress.Update(PhaseSnapshot, "Snapshotting working tree...")
 	sha, err := snapshot.Create(ctx, fmt.Sprintf("ios-builder snapshot %s", buildID))
 	if err != nil {
@@ -132,7 +133,9 @@ func (c *Coordinator) buildRemote(ctx context.Context, opts *BuildOptions, s *co
 	defer cancel()
 	started := time.Now()
 	buildID := uuid.New().String()[:8]
-	ref, sha, err := c.pushSnapshot(ctx, opts.Remote, buildID, s, p.Name())
+	c.progress.Start(buildID)
+	c.progress.Settings(s, p.Name())
+	ref, sha, err := c.pushSnapshot(ctx, opts.Remote, buildID)
 	if err != nil {
 		return nil, err
 	}
@@ -300,7 +303,8 @@ func (c *Coordinator) shareRemote(ctx context.Context, opts ShareOptions, s *con
 	ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 	buildID := uuid.New().String()[:8]
-	ref, sha, err := c.pushSnapshot(ctx, opts.Remote, buildID, s, p.Name())
+	c.progress.Start(buildID)
+	ref, sha, err := c.pushSnapshot(ctx, opts.Remote, buildID)
 	if err != nil {
 		return nil, err
 	}

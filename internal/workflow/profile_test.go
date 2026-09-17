@@ -119,7 +119,6 @@ func TestResolveParametersApplyProfiles(t *testing.T) {
 		}
 	}
 	build := resolveStep(t, "ios-build.yml")
-	share := resolveStep(t, "ios-share.yml")
 
 	t.Run("tag build applies defaultProfile", func(t *testing.T) {
 		// A distribution signs the build and derives Release; internal is
@@ -192,17 +191,6 @@ func TestResolveParametersApplyProfiles(t *testing.T) {
 		}
 	})
 
-	t.Run("share exports env and profile scheme", func(t *testing.T) {
-		withScheme := strings.Replace(profiledBuilderJSON, `"preview": {"distribution": "internal",`, `"preview": {"distribution": "internal", "scheme": "Preview",`, 1)
-		r := runResolve(t, share, withScheme, map[string]string{"GITHUB_EVENT_NAME": "push"})
-		if r.err != nil {
-			t.Fatalf("%v\n%s", r.err, r.log)
-		}
-		if r.outputs["scheme"] != "Preview" || r.outputs["profile"] != "preview" || r.outputs["duration"] != "30m" || r.env["API_URL"] == "" {
-			t.Fatalf("outputs %v env %v\n%s", r.outputs, r.env, r.log)
-		}
-	})
-
 	t.Run("bad profiles fail the job", func(t *testing.T) {
 		for name, tt := range map[string]struct {
 			json string
@@ -220,4 +208,32 @@ func TestResolveParametersApplyProfiles(t *testing.T) {
 			}
 		}
 	})
+}
+
+// The simulator workflow builds Debug and never signs, so it takes no profile
+// at all: no `profile` input, and a tag push ignores builder.json's profiles.
+func TestShareWorkflowTakesNoProfile(t *testing.T) {
+	data, err := GetTemplate("ios-share.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(string(data)), "profile") {
+		t.Error("ios-share.yml mentions a profile; `ios share` takes none")
+	}
+
+	if runtime.GOOS == "windows" {
+		t.Skip("shell test")
+	}
+	for _, tool := range []string{"bash", "jq"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s unavailable", tool)
+		}
+	}
+	r := runResolve(t, resolveStep(t, "ios-share.yml"), profiledBuilderJSON, map[string]string{"GITHUB_EVENT_NAME": "push"})
+	if r.err != nil {
+		t.Fatalf("%v\n%s", r.err, r.log)
+	}
+	if r.outputs["scheme"] != "Top" || r.outputs["duration"] != "30m" || len(r.env) != 0 {
+		t.Fatalf("a profile reached the simulator build: outputs %v env %v\n%s", r.outputs, r.env, r.log)
+	}
 }

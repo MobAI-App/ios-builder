@@ -87,8 +87,7 @@ func (c *Coordinator) settings(profile, provider string, unsigned bool) (*config
 
 // workflowInputs maps the settings onto the workflow_dispatch inputs both
 // GitHub workflows share. Empty values are left out so the declared defaults
-// apply, and `profile` is only sent when one is selected: a workflow file from
-// before profiles rejects a dispatch carrying an input it does not declare.
+// apply.
 func (c *Coordinator) workflowInputs(buildID, ref string, s *config.BuildSettings) map[string]string {
 	inputs := map[string]string{
 		"build_id":     buildID,
@@ -108,14 +107,13 @@ func (c *Coordinator) workflowInputs(buildID, ref string, s *config.BuildSetting
 	if c.config.KMP.JDKVersion != "" {
 		inputs["jdk_version"] = c.config.KMP.JDKVersion
 	}
-	if p := s.ProfileInput(); p != "" {
-		inputs["profile"] = p
-	}
 	return inputs
 }
 
-// buildInputs are the ios-build.yml inputs: the shared ones plus signing and
-// configuration, which the simulator workflow has no use for.
+// buildInputs are the ios-build.yml inputs: the shared ones plus signing,
+// configuration and the profile, none of which the simulator workflow has a
+// use for. `profile` is only sent when one is selected: a workflow file from
+// before profiles rejects a dispatch carrying an input it does not declare.
 func (c *Coordinator) buildInputs(buildID, ref string, s *config.BuildSettings) map[string]string {
 	inputs := c.workflowInputs(buildID, ref, s)
 	if s.Signing {
@@ -124,6 +122,9 @@ func (c *Coordinator) buildInputs(buildID, ref string, s *config.BuildSettings) 
 	// Pass build configuration (Debug is faster, Release for production)
 	if s.Configuration != "" {
 		inputs["configuration"] = s.Configuration
+	}
+	if p := s.ProfileInput(); p != "" {
+		inputs["profile"] = p
 	}
 	return inputs
 }

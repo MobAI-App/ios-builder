@@ -193,8 +193,10 @@ internal/
 - **Run Correlation**: `run-name` carries the build ID so concurrent builds cannot adopt each
   other's runs
 - **Build Profiles**: `profiles.<name>` in `builder.json` overrides `ios.configuration`, `ios.scheme`
-  and `provider`, and adds `env` and `distribution`. `ios build` and `ios share` take `--profile`;
-  without it `defaultProfile` applies, and without that the top-level settings are used unchanged.
+  and `provider`, and adds `env` and `distribution`. `ios build` takes `--profile`; without it
+  `defaultProfile` applies, and without that the top-level settings are used unchanged. `ios share`
+  takes no profile at all: it builds Debug for the simulator and never signs, so `Share` uses the
+  top-level settings and `ios-share.yml` declares no `profile` input.
   `config.ResolveProfile` does the merge, `Coordinator.settings` layers `--unsigned`/`--provider` on
   top, and `Progress.Settings` prints the result before dispatch. `distribution` is the only
   signing field of a profile (EAS-style): `development`, `ad-hoc` (alias `internal`, canonical

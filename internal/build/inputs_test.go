@@ -89,21 +89,20 @@ func TestGitHubInputsMapping(t *testing.T) {
 		t.Fatalf("workflow_dispatch allows at most 10 inputs, sending %d", len(got))
 	}
 
+	// The simulator workflow declares none of the build-only inputs, and
+	// `ios share` takes no profile at all.
 	share := c.workflowInputs("abcdef12", "ref", s)
-	for _, k := range []string{"use_signing", "configuration"} {
+	for _, k := range []string{"use_signing", "configuration", "profile"} {
 		if _, ok := share[k]; ok {
 			t.Fatalf("simulator workflow does not declare %s", k)
 		}
-	}
-	if share["profile"] == "" || share["scheme"] != "AppPreview" {
-		t.Fatalf("share inputs: %v", share)
 	}
 
 	s, _, _ = c.settings("", "", false)
 	share = c.workflowInputs("abcdef12", "ref", s)
 	want = map[string]string{"build_id": "abcdef12", "snapshot_ref": "ref", "ios_path": "ios", "scheme": "App", "flutter_version": "3.24.0"}
 	if !reflect.DeepEqual(share, want) {
-		t.Fatalf("without a profile the share inputs must be unchanged:\n got %v\nwant %v", share, want)
+		t.Fatalf("the share inputs must match the pre-profiles set:\n got %v\nwant %v", share, want)
 	}
 }
 

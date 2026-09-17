@@ -97,9 +97,10 @@ The run is named after the tag. Build settings come from `builder.json` in the
 tagged commit (`ios.path`, `ios.scheme`, `ios.signing`, `ios.configuration`,
 `flutter.version`, `kmp.jdkVersion`), the simulator stays available for the
 default 30 minutes, and the tag is deleted when the run ends. The IPA is
-attached to the run as an artifact. A tag carries no flags, so a tag build
-cannot pick a [profile](#build-profiles) per run; it applies the profile named
-by `defaultProfile`, if there is one.
+attached to the run as an artifact. A tag carries no flags, so a tagged IPA
+build cannot pick a [profile](#build-profiles) per run; it applies the profile
+named by `defaultProfile`, if there is one. The simulator build takes no
+profile at all.
 
 ## Additional macOS Providers
 
@@ -267,7 +268,7 @@ never prompts, so agents and CI jobs can drive them.
 ### Build Profiles
 
 Profiles are named sets of build settings, in the spirit of `eas.json`, selected
-with `--profile` on `ios build` and `ios share`:
+with `--profile` on `ios build`:
 
 ```json
 {
@@ -284,7 +285,6 @@ with `--profile` on `ios build` and `ios share`:
 
 ```bash
 builder ios build --profile preview
-builder ios share --profile preview
 ```
 
 | Field | Description |
@@ -305,8 +305,9 @@ How a build's settings are resolved:
 - `--unsigned` and `--provider` on the command line override the profile.
 - The resolved settings (profile, configuration, scheme, signing set, provider,
   env names) are printed before anything is dispatched.
-- `ios share` only takes the profile's scheme, provider and env: simulator
-  builds are always Debug and unsigned.
+- Profiles apply to `ios build` only. `ios share` takes no `--profile`:
+  simulator builds are always Debug and unsigned, and use `ios.scheme` and the
+  top-level `provider` (or `--provider`).
 
 **`env` values are build-time configuration, not secrets.** They are stored in
 `builder.json`, sent to the CI provider as plain workflow inputs, and visible in
@@ -319,11 +320,11 @@ secrets, `PATH`, `HOME`, `DEVELOPER_DIR`, and anything starting with `GITHUB_`,
 `RUNNER_`, `CM_`, `BITRISE_` or `BUILDER_`.
 
 Selecting a profile, with `--profile` or `defaultProfile`, needs the workflow
-files from this version of Builder, which declare a `profile` input; an older
+file from this version of Builder, which declares a `profile` input; an older
 committed workflow rejects the dispatch. Run `builder init` again to refresh
-`.github/workflows/ios-build.yml` and `ios-share.yml` (or `builder init
---provider ...` for `runner.sh`) in a project set up earlier, then commit and
-push them to the default branch.
+`.github/workflows/ios-build.yml` (or `builder init --provider ...` for
+`runner.sh`) in a project set up earlier, then commit and push it to the
+default branch.
 
 ### MobAI Configuration
 
