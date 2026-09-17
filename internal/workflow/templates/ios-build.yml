@@ -442,6 +442,20 @@ jobs:
             fi
           }
 
+          # The certificate kind the profile's type needs. Without an explicit
+          # CODE_SIGN_IDENTITY the archive keeps the project's default (usually
+          # Apple Development / iPhone Developer), and Xcode refuses to pair a
+          # development identity with a distribution profile: "No signing
+          # certificate iOS Development found". Duplicated verbatim in
+          # ios-build.yml and runner.sh.
+          signing_identity() {
+            case "$1" in
+              development) echo "Apple Development" ;;
+              ad-hoc|app-store|enterprise) echo "Apple Distribution" ;;
+              *) return 1 ;;
+            esac
+          }
+
           select_signing_set
 
           # Read the profile first: its type is checked against the build
@@ -462,6 +476,7 @@ jobs:
 
           EXPORT_METHOD=$(detect_export_method "$PROFILE_PLIST")
           check_signing_set "$EXPORT_METHOD"
+          CODE_SIGN_IDENTITY=$(signing_identity "$EXPORT_METHOD") || fail "No signing identity for export method $EXPORT_METHOD."
 
           # A Debug archive carries get-task-allow=true, which no distribution
           # profile grants: the export fails, or an IPA that App Store Connect
@@ -486,6 +501,12 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH"
 
+          # The certificate has to be the kind the profile asks for. Say so here
+          # instead of letting xcodebuild discover it after the whole archive.
+          IDENTITIES=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH")
+          echo "$IDENTITIES"
+          echo "$IDENTITIES" | grep -qF "$CODE_SIGN_IDENTITY" || fail "IOS_CERTIFICATE${SIGNING_SET:+_$SIGNING_SET} holds no \"$CODE_SIGN_IDENTITY\" certificate, which an $EXPORT_METHOD profile must be signed with. Run builder signing setup --distribution ${DISTRIBUTION:-<distribution>} to issue the right one."
+
           # Install provisioning profile
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           cp "$PROFILE_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/"$PROFILE_UUID".mobileprovision
@@ -494,6 +515,7 @@ jobs:
           echo "DEVELOPMENT_TEAM=$TEAM_ID" >> $GITHUB_ENV
           echo "PROVISIONING_PROFILE_NAME=$PROFILE_NAME" >> $GITHUB_ENV
           echo "EXPORT_METHOD=$EXPORT_METHOD" >> $GITHUB_ENV
+          echo "CODE_SIGN_IDENTITY=$CODE_SIGN_IDENTITY" >> $GITHUB_ENV
           echo "SIGNING_SET_USED=$SIGNING_SET_USED" >> $GITHUB_ENV
           echo "Certificate and provisioning profile installed"
           echo "  team:    $TEAM_ID"
@@ -501,6 +523,7 @@ jobs:
           echo "  app id:  $PROFILE_BUNDLE_ID"
           echo "  set:     $SIGNING_SET_USED"
           echo "  export:  $EXPORT_METHOD"
+          echo "  identity: $CODE_SIGN_IDENTITY"
           echo "If the build fails on a provisioning mismatch, the app's PRODUCT_BUNDLE_IDENTIFIER must match the app id above."
 
       - name: Build IPA
@@ -609,6 +632,7 @@ jobs:
               ARCHIVE_CMD="$ARCHIVE_CMD COMPILER_INDEX_STORE_ENABLE=NO"
               ARCHIVE_CMD="$ARCHIVE_CMD DEVELOPMENT_TEAM='$DEVELOPMENT_TEAM'"
               ARCHIVE_CMD="$ARCHIVE_CMD CODE_SIGN_STYLE=Manual"
+              ARCHIVE_CMD="$ARCHIVE_CMD CODE_SIGN_IDENTITY='$CODE_SIGN_IDENTITY'"
               ARCHIVE_CMD="$ARCHIVE_CMD PROVISIONING_PROFILE_SPECIFIER='$PROVISIONING_PROFILE_NAME'"
               ARCHIVE_CMD="$ARCHIVE_CMD -quiet"
               ARCHIVE_CMD="$ARCHIVE_CMD -archivePath '$GITHUB_WORKSPACE/build/App.xcarchive' archive"
@@ -657,6 +681,7 @@ jobs:
               # build/App.xcarchive whenever signing is on.
               BUILD_CMD="$BUILD_CMD DEVELOPMENT_TEAM='$DEVELOPMENT_TEAM'"
               BUILD_CMD="$BUILD_CMD CODE_SIGN_STYLE=Manual"
+              BUILD_CMD="$BUILD_CMD CODE_SIGN_IDENTITY='$CODE_SIGN_IDENTITY'"
               BUILD_CMD="$BUILD_CMD PROVISIONING_PROFILE_SPECIFIER='$PROVISIONING_PROFILE_NAME'"
               BUILD_CMD="$BUILD_CMD -archivePath '$GITHUB_WORKSPACE/build/App.xcarchive' archive"
             else
@@ -694,6 +719,7 @@ jobs:
               # profile installed above.
               BUILD_CMD="$BUILD_CMD DEVELOPMENT_TEAM='$DEVELOPMENT_TEAM'"
               BUILD_CMD="$BUILD_CMD CODE_SIGN_STYLE=Manual"
+              BUILD_CMD="$BUILD_CMD CODE_SIGN_IDENTITY='$CODE_SIGN_IDENTITY'"
               BUILD_CMD="$BUILD_CMD PROVISIONING_PROFILE_SPECIFIER='$PROVISIONING_PROFILE_NAME'"
               BUILD_CMD="$BUILD_CMD -archivePath '$GITHUB_WORKSPACE/build/App.xcarchive' archive"
             else

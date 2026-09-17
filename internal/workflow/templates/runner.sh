@@ -169,6 +169,20 @@ detect_export_method() {
   fi
 }
 
+# The certificate kind the profile's type needs. Without an explicit
+# CODE_SIGN_IDENTITY the archive keeps the project's default (usually
+# Apple Development / iPhone Developer), and Xcode refuses to pair a
+# development identity with a distribution profile: "No signing
+# certificate iOS Development found". Duplicated verbatim in
+# ios-build.yml and runner.sh.
+signing_identity() {
+  case "$1" in
+    development) echo "Apple Development" ;;
+    ad-hoc|app-store|enterprise) echo "Apple Distribution" ;;
+    *) return 1 ;;
+  esac
+}
+
 # The suffix of the IOS_* secrets a distribution is signed with: its
 # canonical name upper-cased. No distribution has no set (the legacy
 # ios.signing path reads the unsuffixed secrets). Same table in ios-build.yml.
@@ -241,7 +255,9 @@ install_signing() {
   export PROVISIONING_PROFILE_NAME="$(plutil -extract Name raw -o - "$signing_dir/profile.plist")"
   export EXPORT_METHOD="$(detect_export_method "$signing_dir/profile.plist")"
   check_signing_set "$EXPORT_METHOD"
-  echo "Signing with '$PROVISIONING_PROFILE_NAME' (team $DEVELOPMENT_TEAM, set $SIGNING_SET_USED), export method $EXPORT_METHOD"
+  CODE_SIGN_IDENTITY=$(signing_identity "$EXPORT_METHOD") || fail "No signing identity for export method $EXPORT_METHOD."
+  export CODE_SIGN_IDENTITY
+  echo "Signing with '$PROVISIONING_PROFILE_NAME' (team $DEVELOPMENT_TEAM, set $SIGNING_SET_USED), export method $EXPORT_METHOD, identity $CODE_SIGN_IDENTITY"
   # A Debug archive carries get-task-allow=true, which no distribution profile
   # grants: the export fails, or an IPA that App Store Connect rejects comes
   # out. Say so now instead of after the whole build.
@@ -258,6 +274,12 @@ install_signing() {
   security import "$signing_dir/certificate.p12" -P "$IOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
   security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain_path"
   security list-keychains -d user -s "$keychain_path" "$HOME/Library/Keychains/login.keychain-db"
+  # The certificate has to be the kind the profile asks for. Say so here instead
+  # of letting xcodebuild discover it after the whole archive.
+  identities=$(security find-identity -v -p codesigning "$keychain_path")
+  echo "$identities"
+  echo "$identities" | grep -qF "$CODE_SIGN_IDENTITY" ||
+    fail "IOS_CERTIFICATE${SIGNING_SET:+_$SIGNING_SET} holds no \"$CODE_SIGN_IDENTITY\" certificate, which an $EXPORT_METHOD profile must be signed with. Run builder signing setup --distribution ${DISTRIBUTION:-<distribution>} to issue the right one."
   mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
   profile_dest="$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision"
   cp "$signing_dir/profile.mobileprovision" "$profile_dest"
@@ -277,6 +299,7 @@ build_ipa() {
   mkdir -p "$BUILDER_WORKSPACE/build"
   if [ "$USE_SIGNING" = true ]; then
     xcodebuild "${args[@]}" DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" CODE_SIGN_STYLE=Manual \
+      CODE_SIGN_IDENTITY="$CODE_SIGN_IDENTITY" \
       PROVISIONING_PROFILE_SPECIFIER="$PROVISIONING_PROFILE_NAME" -archivePath "$BUILDER_WORKSPACE/build/App.xcarchive" archive
     export APP_BUNDLE_ID="$(plutil -extract ApplicationProperties.CFBundleIdentifier raw -o - "$BUILDER_WORKSPACE/build/App.xcarchive/Info.plist")"
     python3 - "$signing_dir/ExportOptions.plist" <<'PY'

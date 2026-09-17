@@ -327,6 +327,89 @@ func TestExportMethodFollowsProfile(t *testing.T) {
 	}
 }
 
+// TestSigningIdentityFollowsProfileType holds both templates to the identity
+// the profile's type needs. An archive without an explicit CODE_SIGN_IDENTITY
+// keeps the project's default ("Apple Development"), which Xcode refuses to
+// pair with a distribution profile: "No signing certificate iOS Development
+// found".
+func TestSigningIdentityFollowsProfileType(t *testing.T) {
+	workflowTemplate, err := GetWorkflowTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := GetTemplate("runner.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromWorkflow := shellFunc(t, string(workflowTemplate), "signing_identity")
+	fromRunner := shellFunc(t, string(runner), "signing_identity")
+	if fromWorkflow != fromRunner {
+		t.Fatalf("templates disagree on the signing identity:\n%s\n---\n%s", fromWorkflow, fromRunner)
+	}
+
+	wiring := map[string][]string{
+		"ios-build.yml": {
+			`CODE_SIGN_IDENTITY=$(signing_identity "$EXPORT_METHOD")`,
+			`echo "CODE_SIGN_IDENTITY=$CODE_SIGN_IDENTITY" >> $GITHUB_ENV`,
+		},
+		"runner.sh": {
+			`CODE_SIGN_IDENTITY=$(signing_identity "$EXPORT_METHOD")`,
+			"export CODE_SIGN_IDENTITY",
+		},
+	}
+	for name, data := range map[string]string{"ios-build.yml": string(workflowTemplate), "runner.sh": string(runner)} {
+		data = strings.ReplaceAll(data, "\r\n", "\n") // Windows checkouts
+		for _, want := range wiring[name] {
+			if !strings.Contains(data, want) {
+				t.Errorf("%s: the identity is not derived from the profile, missing %q", name, want)
+			}
+		}
+		// Every manually signed command must name the identity: one that sets
+		// CODE_SIGN_STYLE=Manual without it signs with the project's default.
+		manual := strings.Count(data, "CODE_SIGN_STYLE=Manual")
+		identity := strings.Count(data, `CODE_SIGN_IDENTITY='$CODE_SIGN_IDENTITY'`) + strings.Count(data, `CODE_SIGN_IDENTITY="$CODE_SIGN_IDENTITY"`)
+		if manual == 0 || manual != identity {
+			t.Errorf("%s: %d manual signing commands but %d pass CODE_SIGN_IDENTITY", name, manual, identity)
+		}
+		// The imported certificate is checked against that identity, after the
+		// import and before the archive, so a distribution set holding a
+		// development certificate fails in seconds instead of minutes.
+		imported, checked := strings.Index(data, "security import "), strings.Index(data, "security find-identity -v -p codesigning")
+		if imported < 0 || checked < 0 {
+			t.Errorf("%s: import %d, identity check %d", name, imported, checked)
+		} else if checked < imported {
+			t.Errorf("%s: the identity check must run after security import (offsets %d, %d)", name, imported, checked)
+		}
+	}
+
+	if runtime.GOOS == "windows" {
+		t.Skip("shell test")
+	}
+	for _, tc := range []struct{ method, want string }{
+		{"development", "Apple Development"},
+		{"ad-hoc", "Apple Distribution"},
+		{"app-store", "Apple Distribution"},
+		{"enterprise", "Apple Distribution"},
+		{"nonsense", ""}, // an unknown method must fail, never sign with a guess
+	} {
+		t.Run(tc.method, func(t *testing.T) {
+			out, err := exec.Command("bash", "-c", fromRunner+"\nsigning_identity \"$1\"", "bash", tc.method).CombinedOutput()
+			if tc.want == "" {
+				if err == nil {
+					t.Fatalf("accepted %q: %s", tc.method, out)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("%s %v", out, err)
+			}
+			if got := strings.TrimSpace(string(out)); got != tc.want {
+				t.Fatalf("identity = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestSigningSetSelection runs the set selection and profile check the way
 // the signing step does, with stub secrets, on the function bodies both
 // templates carry.
