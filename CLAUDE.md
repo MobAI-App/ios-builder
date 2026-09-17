@@ -204,32 +204,21 @@ internal/
   CLI calls KMP but the runner does not gets no JDK, and vice versa.
 - **KMP Has No Hot Reload**: shared Kotlin compiles to a native framework at build time, so
   `dev kmp` only installs, launches and streams output; code changes need `ios build`
-- **ASC Client** (`internal/asc`): runs locally, never on the runner. Auth is an ES256 JWT
-  (15 min, cached, refreshed a minute early) signed with the `.p8` key. JSON:API plumbing is
-  generic (`Document`/`Resource[A]`, `getOne`/`getAll`/`post`/`patch`); typed helpers exist only
-  for what the commands use, so the signing resources (bundle IDs, certificates, profiles,
-  devices) add files in the same package without restructuring. `getAll` follows `links.next`;
-  429 retries on every method, 5xx only on idempotent ones (a failed POST may have created the
-  resource). All waits go through `Client.sleep`, which tests replace, so retry and poll tests
-  run instantly; status polls (`poller`) grow 1.5× per round up to 4× the base interval.
-  `*asc.Error` carries the ASC `errors[]` and renders on one line.
-- **ASC Credentials**: one JSON secret (`apple-asc-key`) in the keyring/file store, via the
-  shared `readSecret`/`writeSecret`/`deleteSecret` helpers the CI tokens use. `ASC_ISSUER_ID`,
-  `ASC_KEY_ID` + `ASC_PRIVATE_KEY`|`ASC_KEY_PATH` take precedence; a partially set environment is
-  an error, not a fallback. Only `auth apple` prompts; `upload`/`submit` never do.
-- **Build Upload**: `buildUploads` → `buildUploadFiles` (returns `uploadOperations`) → PUT each
-  byte range with its `requestHeaders`, no bearer token → PATCH `uploaded=true` → poll the upload
-  `state` (COMPLETE/FAILED with `errors[]`) → poll `builds` filtered by app, marketing version and
-  build number until VALID. No checksum is sent (asc-cli found ASC rejects some encodings). The IPA
-  must be App Store signed and each upload needs a higher `CFBundleVersion`.
+- **ASC Client** (`internal/asc`): runs locally, never on the runner; ES256 JWT (15 min, cached)
+  from the `.p8`, generic JSON:API plumbing (`getOne`/`getAll`/`post`/`patch`, `getAll` follows
+  `links.next`). 429 retries on any method, 5xx only off POST; every wait goes through `Client.sleep`.
+- **ASC Credentials**: one JSON secret (`apple-asc-key`) in the keyring/file store, via the shared
+  `readSecret`/`writeSecret`/`deleteSecret` helpers. `ASC_ISSUER_ID`, `ASC_KEY_ID` +
+  `ASC_PRIVATE_KEY`|`ASC_KEY_PATH` win; a partial environment is an error. Only `auth apple` prompts.
+- **Build Upload**: `buildUploads` → `buildUploadFiles` (returns `uploadOperations`) → PUT each byte
+  range with its `requestHeaders`, no bearer token → PATCH `uploaded=true` → poll the upload `state`,
+  then `builds` until VALID. The IPA must be App Store signed with an ever-higher `CFBundleVersion`.
 - **Export Compliance**: a build sits in "Missing Compliance" until `usesNonExemptEncryption` is
-  answered. `upload --wait` PATCHes it to false when Info.plist says `ITSAppUsesNonExemptEncryption`
-  false or `--no-encryption` is given; the build must exist first, so without `--wait` it is left
-  for `submit --no-encryption`. `submit --testflight` refuses to add an unanswered build to groups.
-- **Submit Order**: TestFlight is compliance → notes → `betaAppReviewSubmissions` (only when a
-  chosen group is external and none exists) → add groups. App Store reuses an open
-  `reviewSubmission` (READY_FOR_REVIEW/UNRESOLVED_ISSUES), skips the item when the version is
-  already in it, and rewrites ASC 409/422 with a "complete the metadata" hint.
+  answered; `upload --wait` PATCHes it from the plist or `--no-encryption`. The build must exist
+  first, so without `--wait` it falls to `submit`, which refuses unanswered builds for TestFlight.
+- **Submit Order**: TestFlight is compliance → notes → `betaAppReviewSubmissions` (only for a new
+  external group) → add groups. App Store reuses an open `reviewSubmission`, skips an item the
+  version is already in, and rewrites ASC 409/422 with a "complete the metadata" hint.
 - **Group Auto-Create**: `SubmitTestFlight` creates any `--group` name the app lacks (internal, or
   external with `External`/`--external`) and marks it `GroupRef.Created`; existing groups keep
   their type. `asc groups add-build` reuses it, so it inherits the beta-review step too.
@@ -260,9 +249,9 @@ internal/
 - **asc Command Tests**: `getASCClient` is a package var so tests can point it at an httptest
   server, and their `run` helper resets every flag first, since cobra keeps flag values on the
   shared command tree.
-- **Extension Points**: a future `ios release` (upload + TestFlight, automatic build numbers)
-  composes `distribute.Upload` and `distribute.SubmitTestFlight` and reads `asc.Client.ListBuilds`
-  for the latest build number; the `pkg/` wrappers do not expose `asc` yet.
+- **Extension Points**: a future `ios release` composes `distribute.Upload` and
+  `distribute.SubmitTestFlight`, reading `asc.Client.ListBuilds` for the latest build number; the
+  `pkg/` wrappers do not expose `asc` yet.
 
 ## Configuration
 

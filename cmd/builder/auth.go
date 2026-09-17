@@ -181,7 +181,7 @@ func runAuthApple(cmd *cobra.Command, _ []string) error {
 	if err := auth.StoreAppleCredentials(creds); err != nil {
 		return err
 	}
-	fmt.Printf("App Store Connect API key %s verified and saved to the keychain.\n", creds.KeyID)
+	fmt.Printf("Verified and saved App Store Connect API key %s.\n", creds.KeyID)
 	if os.Getenv("ASC_ISSUER_ID") != "" {
 		fmt.Println("ASC_* environment variables are set and take precedence over this saved login.")
 	}
