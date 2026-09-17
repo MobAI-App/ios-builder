@@ -522,6 +522,10 @@ the command carries on: files, values and the build profile are written and
 shown anyway, and it exits non-zero at the end so a script notices. `--json`
 reports the same in `github_upload` (`ok` or the error).
 
+Signed builds cover the app target only. An app with extension targets (a
+widget, a share or notification extension) needs a profile per extension, which
+Builder does not create yet, so such projects still fail at the archive step.
+
 The command shows its plan and asks once before creating anything; `--yes`
 skips that (required without a terminal), and then the `.p12` password is
 generated and printed once unless `--password` is given. `--json` prints the

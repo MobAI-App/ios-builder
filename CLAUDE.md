@@ -371,7 +371,9 @@ internal/
   settings into app targets only via `plutil`; on the command line every Pods target would inherit them
 - **App Target Selection**: one app target is signed whatever its bundle id (the export reports a
   mismatch); with several, those whose `PRODUCT_BUNDLE_IDENTIFIER` `PROFILE_BUNDLE_ID` covers (`*`
-  wildcards), else `::error::` naming the ids found; conditional `NAME[sdk=…]` variants are dropped
+  wildcards), else `::error::` naming the ids found; conditional `NAME[sdk=…]` variants are dropped.
+  Extension targets (widgets, share/notification extensions) are not signed: they need their own
+  profiles, which Builder does not create, so such apps still fail at the archive
 - **Extension Points**: `ios release` composes `distribute.Upload` and
   `distribute.SubmitTestFlight`; the `pkg/` wrappers do not expose `asc`.
 
