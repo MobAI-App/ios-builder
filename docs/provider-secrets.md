@@ -7,12 +7,12 @@ API login, the provider's GitHub connection, and build secrets are separate:
 | What you want to run | Secrets needed |
 | --- | --- |
 | Unsigned IPA build (`ios build`, or a profile without `distribution`) | None of the secrets below |
-| Signed build (`ios build --profile <name>`) | The three `IOS_*_<SET>` secrets of the profile's `distribution` |
+| Signed build (`ios build --profile <name>`) | The `IOS_*_<SET>` secrets of the profile's `distribution` |
 | Legacy signed build without a profile (`ios.signing: true`) | The unsuffixed `IOS_CERTIFICATE`, `IOS_CERTIFICATE_PASSWORD`, `IOS_PROVISIONING_PROFILE` |
 | Shared simulator (`ios share`) | `MOBAI_API_KEY`; no Apple signing files needed |
 
 `builder signing setup` uploads secrets to **GitHub Actions only**, but it always
-prints the three names and the values to paste, so a run of it is also the source
+prints the names and the values to paste, so a run of it is also the source
 for the two new providers; use the steps below even if GitHub signing/sharing
 already works. Existing GitHub secret values cannot be downloaded for copying to
 another service.
@@ -53,7 +53,7 @@ builder signing setup --devices-from-mobai --out-dir ~/signing
 This creates the certificate, devices and profile through the API, writes
 `ios-signing-development.p12` and the `.mobileprovision` to `~/signing`, tries to
 upload the set to the GitHub repository in `builder.json` (a failure is printed
-and the run continues, ending with a non-zero exit code), prints the three secret
+and the run continues, ending with a non-zero exit code), prints the secret
 names and file paths to paste below either way, and writes the `development`
 build profile. Run it again with `--distribution
 store` for a second, App Store set: the files are named by distribution, so
@@ -85,6 +85,7 @@ here for the development set:
 | `IOS_CERTIFICATE_DEVELOPMENT` | Base64 contents of `ios-signing-development.p12` |
 | `IOS_CERTIFICATE_PASSWORD_DEVELOPMENT` | The original P12 password, as plain text |
 | `IOS_PROVISIONING_PROFILE_DEVELOPMENT` | Base64 contents of the `.mobileprovision` file |
+| `IOS_EXTENSION_PROFILES_DEVELOPMENT` | Only with extension targets (`ios.extensions`): a JSON object of extension bundle ID to base64 `.mobileprovision`, as `signing setup` prints it |
 | `MOBAI_API_KEY` | The original API key copied from MobAI, as plain text |
 
 For a store set add `IOS_CERTIFICATE_STORE`, `IOS_CERTIFICATE_PASSWORD_STORE`

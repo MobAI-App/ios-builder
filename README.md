@@ -262,6 +262,7 @@ never prompts, so agents and CI jobs can drive them.
 | `ios.path` | Path to the Xcode project relative to the repo root | detected by `init` |
 | `ios.scheme` | Xcode scheme to build | auto-detected |
 | `ios.bundleId` | App bundle identifier, used by `signing setup` | detected by `init` when the project has one app target; else saved by `signing setup` |
+| `ios.extensions` | Bundle identifiers of the app's extension targets (widgets, share/notification extensions, watch apps, app clips), each signed with its own profile | filled by `init` and `signing setup` from the Xcode project; list them by hand for a managed Expo project |
 | `ios.configuration` | Xcode build configuration. **Builds are `Debug` unless you set `Release`**; Debug is faster and is what the dev commands expect | `Debug` |
 | `ios.signing` | Legacy: sign builds that select no profile, with the unsuffixed `IOS_CERTIFICATE`, `IOS_CERTIFICATE_PASSWORD` and `IOS_PROVISIONING_PROFILE` secrets. Profiles ignore it; use `distribution` there | `false` |
 
@@ -364,7 +365,7 @@ Apple ID.)
 
 ### Profiles and signing sets
 
-Each distribution has its own set of three GitHub secrets, so a development set
+Each distribution has its own set of GitHub secrets, so a development set
 for your devices and a store set for TestFlight live side by side:
 
 | `distribution` | Certificate, profile | Secrets |
@@ -373,6 +374,10 @@ for your devices and a store set for TestFlight live side by side:
 | `ad-hoc` or `internal` | Apple Distribution, Ad Hoc (devices required) | `IOS_CERTIFICATE_AD_HOC`, `IOS_CERTIFICATE_PASSWORD_AD_HOC`, `IOS_PROVISIONING_PROFILE_AD_HOC` |
 | `store` | Apple Distribution, App Store | `IOS_CERTIFICATE_STORE`, `IOS_CERTIFICATE_PASSWORD_STORE`, `IOS_PROVISIONING_PROFILE_STORE` |
 | `enterprise` | In-house (portal only) | `IOS_CERTIFICATE_ENTERPRISE`, `IOS_CERTIFICATE_PASSWORD_ENTERPRISE`, `IOS_PROVISIONING_PROFILE_ENTERPRISE` |
+
+An app with extension targets has a fourth secret per set,
+`IOS_EXTENSION_PROFILES_<SET>`, holding their profiles (see
+[Extensions](#builder-signing-setup) below).
 
 A build with `--profile <name>` signs with the set of that profile's
 `distribution`; `configuration` follows it (`Debug` for `development`,
@@ -451,14 +456,14 @@ create certificates. It then:
    changed`, `forced`).
 5. Writes `ios-signing-<distribution>.key` (when generated),
    `ios-signing-<distribution>.p12` and `Builder-<distribution>-<bundle
-   id>.mobileprovision` to `--out-dir` (default `.`), uploads the set's three
+   id>.mobileprovision` to `--out-dir` (default `.`), uploads the set's
    secrets to GitHub, and writes `"distribution": "<distribution>"` into the
    `--name` profile (default: the distribution name) in `builder.json`, keeping
    its other fields and reporting a replaced distribution; `defaultProfile` is
    left alone. An `--out-dir` other than `.` is recorded as `signing.dir`, so a
    later `ios build` that provisions a set reuses the key there instead of
    asking Apple for a second certificate, which it refuses.
-6. Prints the three secret names and where their values come from — the
+6. Prints the secret names and where their values come from — the
    `.p12` base64-encoded, the password, the `.mobileprovision` base64-encoded
    — every time, so the same set can be pasted into Codemagic or Bitrise,
    following the [secrets guide](docs/provider-secrets.md). Builder cannot
@@ -471,9 +476,18 @@ the command carries on: files, values and the build profile are written and
 shown anyway, and it exits non-zero at the end so a script notices. `--json`
 reports the same in `github_upload` (`ok` or the error).
 
-Signed builds cover the app target only. An app with extension targets (a
-widget, a share or notification extension) needs a profile per extension, which
-Builder does not create yet, so such projects still fail at the archive step.
+**Extensions.** Every extension target (a widget, a share or notification
+extension, a watch app, an app clip) is signed with a profile of its own.
+`init` and `signing setup` read their bundle IDs from the Xcode project into
+`ios.extensions` in `builder.json`; a managed Expo project has no project to
+read, so list them there by hand. Automatic `setup` then registers each App ID
+and creates `Builder <distribution> <bundle id>` for it, with the same
+certificate and devices as the app; in manual mode pass one `--extension-profile
+<mobileprovision>` per extension. The profiles go into a fourth secret of the
+set, `IOS_EXTENSION_PROFILES_<SET>` (a JSON object of bundle ID to base64
+profile, `{}` when there are none), and the runner signs each extension target
+with the entry covering its bundle ID, failing by name — with the IDs to add to
+`ios.extensions` — when one has none.
 
 The command shows its plan and asks once before creating anything; `--yes`
 skips that (required without a terminal), and then the `.p12` password is
@@ -497,7 +511,7 @@ builder signing setup --certificate ios-signing.p12 --profile MyApp.mobileprovis
 ### Provisioning from `ios build`
 
 `builder ios build --profile <name>` checks, before dispatching to GitHub,
-that the repository holds all three secrets of the profile's set. When any is
+that the repository holds the secrets of the profile's set. When any is
 missing and an App Store Connect key is saved, it runs the same provisioning
 as `signing setup` without prompts, uploads the set and builds; a development
 or ad-hoc profile with no registered device stops and points at `builder
