@@ -14,6 +14,7 @@ Builder is a CLI tool for iOS development without a Mac. It uses GitHub Actions 
 - **Flutter & React Native dev tools**: Hot reload on real iOS devices from Windows/Linux
 - **Simple setup**: One command to add the workflow to your repo
 - **Code signing**: Optional signing with your certificate and provisioning profile
+- **TestFlight and App Store**: Upload builds and submit them for review through the App Store Connect API, from any platform
 - **Device integration**: Install and run apps via MobAI
 
 ## How It Works
@@ -198,8 +199,9 @@ go build -o builder ./cmd/builder
 # Setup
 builder auth github           # Authenticate with GitHub
 builder auth codemagic        # Authenticate with Codemagic (also: bitrise)
+builder auth apple            # Save an App Store Connect API key
 builder auth status           # Show which providers you are signed in to
-builder auth logout [name]    # Remove stored credentials
+builder auth logout [name]    # Remove stored credentials (github, codemagic, bitrise, apple)
 builder init                  # Set up workflows in current repo
 builder update                # Update builder to the latest release
 
@@ -232,7 +234,15 @@ builder mobai forward <device-port> <host-port>  # Forward a device port
 builder signing csr           # Create a private key + certificate signing request
 builder signing p12           # Assemble a .p12 from the key and Apple's certificate
 builder signing setup         # Upload code signing secrets to GitHub
+
+# TestFlight and App Store (needs builder auth apple)
+builder ios upload --wait     # Upload ./dist/*.ipa to App Store Connect and wait for processing
+builder ios submit --testflight --group "Beta Testers" --notes "What to test"
+builder ios submit --app-store --release after-approval  # Submit the version for App Review
 ```
+
+Every `upload`/`submit` command takes `--json` for machine-readable output and
+never prompts, so agents and CI jobs can drive them.
 
 ## Configuration
 
@@ -374,6 +384,97 @@ tells `builder ios build` to sign. From then on builds produce signed IPAs; use
 secrets by hand as described in the
 [signing and MobAI secrets guide](docs/provider-secrets.md), then set
 `ios.signing` to `true` yourself.
+
+## TestFlight and App Store
+
+Builder uploads builds to App Store Connect and submits them to TestFlight or
+App Review through the App Store Connect API, from Windows, Linux or macOS. No
+Transporter, `altool` or Xcode is involved, and the API key never leaves your
+machine: the CI runner only builds and signs, the upload happens locally from
+the IPA in `./dist/`.
+
+You need:
+
+- A paid [Apple Developer Program](https://developer.apple.com/programs/)
+  membership and an app record in App Store Connect (My Apps → +) with your
+  bundle ID
+- An IPA signed with an **Apple Distribution** certificate and an **App Store**
+  provisioning profile. `builder signing setup` accepts both, exactly as in the
+  steps above; pick those types on the portal instead of the development ones.
+  An IPA signed for development is rejected at upload.
+- `"configuration": "Release"` under `ios` in `builder.json`: `ios build`
+  defaults to `Debug`, which is what the dev commands expect, not what you want
+  to ship.
+- An App Store Connect API key: App Store Connect → Users and Access →
+  Integrations → App Store Connect API → Team Keys. Give it the **App Manager**
+  role, note the **Issuer ID** and **Key ID**, and download the
+  `AuthKey_<KEYID>.p8` file (Apple offers the download once).
+
+### 1. Save the API key
+
+```bash
+builder auth apple --issuer-id 12345678-abcd-... --key-id ABC123DEFG --key AuthKey_ABC123DEFG.p8
+```
+
+Flags you leave out are prompted for. Builder verifies the key against App
+Store Connect and stores it like the other logins (keychain, or a `0600` file on
+Linux/WSL); `builder auth status` shows it and `builder auth logout apple`
+removes it. In CI or for a coding agent, set `ASC_ISSUER_ID`, `ASC_KEY_ID` and
+either `ASC_PRIVATE_KEY` (the .p8 contents; literal `\n` is fine) or
+`ASC_KEY_PATH` instead — they take precedence over the saved login.
+
+### 2. Upload the build
+
+```bash
+builder ios build            # produces a signed dist/*.ipa
+builder ios upload --wait
+```
+
+`upload` reads the bundle ID, version and build number from the newest IPA in
+`./dist/` (or `--ipa <path>`), finds the app, uploads the archive in chunks
+and, with `--wait`, follows App Store Connect until the build has finished
+processing and prints its build ID and TestFlight link. Without `--wait` it
+returns as soon as Apple has the file.
+
+Two things Apple checks on every upload:
+
+- **Build numbers must increase.** A second upload with the same
+  `CFBundleVersion` for the same version is rejected (`ITMS-90189`), so bump
+  it before rebuilding.
+- **Export compliance.** A build shows as *Missing Compliance* in TestFlight
+  until you say whether it uses non-exempt encryption. If your Info.plist sets
+  `ITSAppUsesNonExemptEncryption` to `false`, `upload --wait` answers that
+  automatically; otherwise pass `--no-encryption` (here or to `submit`) when
+  your app only uses standard iOS encryption.
+
+### 3. Distribute to TestFlight
+
+```bash
+builder ios submit --testflight --group "Beta Testers" --notes "New login flow"
+```
+
+This takes the newest processed build (or `--build-number N`), sets the *What
+to Test* notes and adds it to the named groups (`--group` repeats). Internal
+groups get the build immediately; the first external group triggers Apple's
+beta review, which Builder submits for you (`--wait` follows the decision). Run
+it without `--group` to see the build and the groups the app has.
+
+### 4. Submit to the App Store
+
+```bash
+builder ios submit --app-store --release after-approval
+```
+
+Builder finds or creates the App Store version matching the IPA's marketing
+version (or `--version X.Y.Z`), attaches the build, sets the release type
+(`manual` or `after-approval`) and submits it for review. The version's
+metadata — description, screenshots, age rating, pricing, privacy — must
+already be complete: App Store Connect refuses the submission otherwise and
+Builder prints Apple's reasons verbatim. Builder does not manage metadata,
+screenshots or in-app purchases; fill them in App Store Connect, or on a Mac
+with [asc-cli](https://github.com/tddworks/asc-cli), whose production use of
+the `buildUploads` API also proved that the Mac-free upload path works and
+served as the reference for Builder's implementation.
 
 ## Installing the IPA
 

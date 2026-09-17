@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
+	"github.com/MobAI-App/ios-builder/internal/asc"
 	"github.com/MobAI-App/ios-builder/internal/auth"
 	"github.com/MobAI-App/ios-builder/internal/ci"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var authCmd = &cobra.Command{
@@ -24,8 +27,24 @@ var authGitHubCmd = &cobra.Command{
 	RunE:  runAuthGitHub,
 }
 
+var authAppleCmd = &cobra.Command{
+	Use:   "apple",
+	Short: "Authenticate with App Store Connect (API key)",
+	Long: `Saves an App Store Connect API key for builder ios upload and builder ios submit.
+
+Create the key in App Store Connect under Users and Access → Integrations →
+App Store Connect API (Team key, role App Manager or Admin). Note the Issuer ID
+and Key ID shown there and download the AuthKey_<KEYID>.p8 file; Apple lets you
+download it only once.
+
+Flags left out are prompted for. In CI, set ASC_ISSUER_ID, ASC_KEY_ID and
+ASC_PRIVATE_KEY (or ASC_KEY_PATH) instead; they take precedence over the saved login.`,
+	Args: cobra.NoArgs,
+	RunE: runAuthApple,
+}
+
 var authLogoutCmd = &cobra.Command{
-	Use:   "logout [github|codemagic|bitrise]",
+	Use:   "logout [github|codemagic|bitrise|apple]",
 	Args:  cobra.MaximumNArgs(1),
 	Short: "Remove stored credentials",
 	RunE:  runAuthLogout,
@@ -39,6 +58,10 @@ func init() {
 		cmd.Flags().Bool("token-stdin", false, "Read API token from stdin instead of a hidden-input prompt")
 		authCmd.AddCommand(cmd)
 	}
+	authAppleCmd.Flags().String("issuer-id", "", "Issuer ID from App Store Connect → Users and Access → Integrations")
+	authAppleCmd.Flags().String("key-id", "", "Key ID of the API key")
+	authAppleCmd.Flags().String("key", "", "Path to the AuthKey_<KEYID>.p8 private key")
+	authCmd.AddCommand(authAppleCmd)
 	authCmd.AddCommand(&cobra.Command{Use: "status", Short: "Show login availability for all providers", Args: cobra.NoArgs, RunE: runAuthStatus})
 }
 
@@ -69,7 +92,10 @@ func runAuthLogout(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Printf("Removed saved %s login\n", provider)
-	if provider != "github" && os.Getenv(strings.ToUpper(provider)+"_API_TOKEN") != "" {
+	switch {
+	case provider == "apple" && os.Getenv("ASC_ISSUER_ID") != "":
+		fmt.Println("ASC_* environment variables are still set; unset them in your shell to stop using them.")
+	case provider != "github" && provider != "apple" && os.Getenv(strings.ToUpper(provider)+"_API_TOKEN") != "":
 		fmt.Println("An environment token is still set; unset it in your shell to stop using it.")
 	}
 	return nil
@@ -110,6 +136,58 @@ func runAuthProvider(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+func runAuthApple(cmd *cobra.Command, _ []string) error {
+	issuerID, _ := cmd.Flags().GetString("issuer-id")
+	keyID, _ := cmd.Flags().GetString("key-id")
+	keyPath, _ := cmd.Flags().GetString("key")
+	if issuerID == "" || keyID == "" || keyPath == "" {
+		if stdin, ok := cmd.InOrStdin().(*os.File); !ok || !term.IsTerminal(int(stdin.Fd())) {
+			return fmt.Errorf("--issuer-id, --key-id and --key are required without a terminal (or set ASC_ISSUER_ID, ASC_KEY_ID and ASC_KEY_PATH)")
+		}
+		fmt.Println("App Store Connect → Users and Access → Integrations → App Store Connect API")
+		var err error
+		if issuerID == "" {
+			if issuerID, err = promptString("Issuer ID", ""); err != nil {
+				return err
+			}
+		}
+		if keyID == "" {
+			if keyID, err = promptString("Key ID", ""); err != nil {
+				return err
+			}
+		}
+		if keyPath == "" {
+			if keyPath, err = promptString("Path to AuthKey_"+keyID+".p8", ""); err != nil {
+				return err
+			}
+		}
+	}
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		return fmt.Errorf("read private key: %w", err)
+	}
+	creds := auth.AppleCredentials{IssuerID: strings.TrimSpace(issuerID), KeyID: strings.TrimSpace(keyID), PrivateKey: auth.NormalizePEM(string(keyPEM))}
+	client, err := asc.NewClient(asc.Credentials{IssuerID: creds.IssuerID, KeyID: creds.KeyID, PrivateKey: creds.PrivateKey})
+	if err != nil {
+		return err
+	}
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := client.CheckAccess(ctx); err != nil {
+		return fmt.Errorf("the key was rejected by App Store Connect: %w", err)
+	}
+	if err := auth.StoreAppleCredentials(creds); err != nil {
+		return err
+	}
+	fmt.Printf("Verified and saved App Store Connect API key %s.\n", creds.KeyID)
+	if os.Getenv("ASC_ISSUER_ID") != "" {
+		fmt.Println("ASC_* environment variables are set and take precedence over this saved login.")
+	}
+	return nil
+}
+
 func runAuthStatus(_ *cobra.Command, _ []string) error {
 	for _, name := range []string{"github", "codemagic", "bitrise"} {
 		_, err := auth.GetProviderToken(name)
@@ -118,6 +196,17 @@ func runAuthStatus(_ *cobra.Command, _ []string) error {
 			state = "not logged in"
 		}
 		fmt.Printf("%s: %s\n", name, state)
+	}
+	creds, source, err := auth.GetAppleCredentials()
+	switch {
+	case errors.Is(err, auth.ErrNotAuthenticated):
+		fmt.Println("apple: not logged in")
+	case err != nil:
+		fmt.Printf("apple: %v\n", err)
+	case source == auth.AppleSourceEnv:
+		fmt.Printf("apple: login available from ASC_* environment (key %s, not checked remotely)\n", creds.KeyID)
+	default:
+		fmt.Printf("apple: login available (key %s, not checked remotely)\n", creds.KeyID)
 	}
 	return nil
 }

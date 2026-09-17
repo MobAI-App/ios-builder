@@ -4,9 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Builder** is a Go CLI tool for iOS development without a Mac. It has two main capabilities:
+**Builder** is a Go CLI tool for iOS development without a Mac. It has three main capabilities:
 1. **Remote builds**: Build iOS apps via GitHub Actions from any platform
 2. **Dev tools**: Hot reload on real iOS devices using MobAI (Flutter and React Native)
+3. **Distribution**: Upload builds to App Store Connect and submit them to TestFlight or App Review
 
 ## Build Commands
 
@@ -29,6 +30,10 @@ go install ./cmd/builder
 ./builder dev kmp           # Kotlin Multiplatform install + launch (no hot reload)
 ./builder dev flutter --skip-install --bundle-id <id>  # Use already installed app
 ./builder dev rn --skip-install --bundle-id <id>       # Use already installed app
+./builder auth apple        # Save an App Store Connect API key
+./builder ios upload --wait # Upload dist/*.ipa to App Store Connect, wait for processing
+./builder ios submit --testflight --group <name> --notes <text>  # TestFlight
+./builder ios submit --app-store --release after-approval        # App Review
 ```
 
 ## Architecture
@@ -100,6 +105,27 @@ builder dev kmp ─────────► Connects to MobAI
                                 │
                                 ▼
                           Launches app and streams output (no hot reload)
+
+builder ios upload ──────► Reads bundle ID / version / build number from dist/*.ipa
+                                │
+                                ▼
+                          App Store Connect API (ES256 JWT from the .p8 key)
+                            ├─ apps?filter[bundleId]
+                            ├─ POST buildUploads → POST buildUploadFiles
+                            ├─ PUT chunks to presigned URLs
+                            ├─ PATCH buildUploadFiles uploaded=true
+                            └─ --wait: poll buildUploads state, then builds → VALID
+                                │
+                                ▼
+                          PATCH builds usesNonExemptEncryption (plist / --no-encryption)
+
+builder ios submit ──────► Picks the newest VALID build (or --build-number)
+                            ├─ --testflight: betaBuildLocalizations (notes),
+                            │     betaAppReviewSubmissions (external groups),
+                            │     builds/{id}/relationships/betaGroups
+                            └─ --app-store: appStoreVersions (find/create, attach
+                                  build, releaseType), reviewSubmissions +
+                                  reviewSubmissionItems, PATCH submitted=true
 ```
 
 ### Module Layout
@@ -107,8 +133,11 @@ builder dev kmp ─────────► Connects to MobAI
 ```
 cmd/builder/         # CLI entrypoint (Cobra)
 internal/
-  auth/              # GitHub OAuth device flow + keyring storage
+  auth/              # GitHub OAuth device flow + keyring storage (also CI tokens, ASC API key)
   github/            # GitHub REST API (workflow dispatch, artifacts)
+  asc/               # App Store Connect API client (JWT, JSON:API, builds, uploads, TestFlight, review)
+  distribute/        # Upload / TestFlight / App Store flows on top of asc
+  ipa/               # Info.plist reading from .ipa archives
   build/             # Build coordination (snapshot + trigger + poll + download)
   signing/           # CSR generation and .p12 assembly (signing without a Mac)
   snapshot/          # Working-tree snapshot as a throwaway commit on a remote ref
@@ -191,6 +220,24 @@ internal/
   CLI calls KMP but the runner does not gets no JDK, and vice versa.
 - **KMP Has No Hot Reload**: shared Kotlin compiles to a native framework at build time, so
   `dev kmp` only installs, launches and streams output; code changes need `ios build`
+- **ASC Client** (`internal/asc`): runs locally, never on the runner; ES256 JWT (15 min, cached)
+  from the `.p8`, generic JSON:API plumbing (`getOne`/`getAll`/`post`/`patch`, `getAll` follows
+  `links.next`). 429 retries on any method, 5xx only off POST; every wait goes through `Client.sleep`.
+- **ASC Credentials**: one JSON secret (`apple-asc-key`) in the keyring/file store, via the shared
+  `readSecret`/`writeSecret`/`deleteSecret` helpers. `ASC_ISSUER_ID`, `ASC_KEY_ID` +
+  `ASC_PRIVATE_KEY`|`ASC_KEY_PATH` win; a partial environment is an error. Only `auth apple` prompts.
+- **Build Upload**: `buildUploads` → `buildUploadFiles` (returns `uploadOperations`) → PUT each byte
+  range with its `requestHeaders`, no bearer token → PATCH `uploaded=true` → poll the upload `state`,
+  then `builds` until VALID. The IPA must be App Store signed with an ever-higher `CFBundleVersion`.
+- **Export Compliance**: a build sits in "Missing Compliance" until `usesNonExemptEncryption` is
+  answered; `upload --wait` PATCHes it from the plist or `--no-encryption`. The build must exist
+  first, so without `--wait` it falls to `submit`, which refuses unanswered builds for TestFlight.
+- **Submit Order**: TestFlight is compliance → notes → `betaAppReviewSubmissions` (only for a new
+  external group) → add groups. App Store reuses an open `reviewSubmission`, skips an item the
+  version is already in, and rewrites ASC 409/422 with a "complete the metadata" hint.
+- **Extension Points**: a future `ios release` composes `distribute.Upload` and
+  `distribute.SubmitTestFlight`, reading `asc.Client.ListBuilds` for the latest build number; the
+  `pkg/` wrappers do not expose `asc` yet.
 
 ## Configuration
 
