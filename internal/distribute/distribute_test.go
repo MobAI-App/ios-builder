@@ -70,19 +70,30 @@ type fake struct {
 	submitStatus     int
 	betaReviewExists bool
 	// noGroups empties the group list; autoGroup adds an internal group with
-	// automatic distribution; created collects groups made through the API.
+	// automatic distribution; dupGroup adds a second "beta testers" group;
+	// created collects groups made through the API.
 	noGroups  bool
 	autoGroup bool
+	dupGroup  bool
 	created   []map[string]any
-	// users are team members by email; testers maps tester emails to IDs;
-	// pendingInvite makes every invitation lookup find one.
+	// users are team members by email; testers maps tester emails to IDs and
+	// testerStates IDs to states (default ACCEPTED, INVITED once an invitation
+	// is posted); pendingInvite makes every invitation lookup find one.
 	users         map[string]bool
 	testers       map[string]string
+	testerStates  map[string]string
 	pendingInvite bool
 }
 
 func newFake(t *testing.T) *fake {
-	f := &fake{t: t, bodies: map[string]map[string]any{}, buildState: "VALID", versionState: "PREPARE_FOR_SUBMISSION", submitStatus: 200, users: map[string]bool{}, testers: map[string]string{}}
+	f := &fake{t: t, bodies: map[string]map[string]any{}, buildState: "VALID", versionState: "PREPARE_FOR_SUBMISSION", submitStatus: 200, users: map[string]bool{}, testers: map[string]string{}, testerStates: map[string]string{}}
+	tester := func(email, id string) map[string]any {
+		state := f.testerStates[id]
+		if state == "" {
+			state = "ACCEPTED"
+		}
+		return map[string]any{"type": "betaTesters", "id": id, "attributes": map[string]any{"email": email, "inviteType": "EMAIL", "state": state}}
+	}
 	mux := http.NewServeMux()
 	res := func(typ, id string, attrs map[string]any, rels map[string]any) map[string]any {
 		r := map[string]any{"type": typ, "id": id, "attributes": attrs}
@@ -181,6 +192,9 @@ func newFake(t *testing.T) *fake {
 		if f.autoGroup {
 			groups = append(groups, res("betaGroups", "g-auto", map[string]any{"name": "Everyone", "isInternalGroup": true, "hasAccessToAllBuilds": true}, nil))
 		}
+		if f.dupGroup {
+			groups = append(groups, res("betaGroups", "g-dup", map[string]any{"name": "beta testers", "isInternalGroup": false, "publicLinkEnabled": nil}, nil))
+		}
 		for _, g := range f.created {
 			groups = append(groups, g)
 		}
@@ -195,13 +209,30 @@ func newFake(t *testing.T) *fake {
 	mux.HandleFunc("POST /v1/betaGroups/{id}/relationships/betaTesters", wrap(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
 	mux.HandleFunc("GET /v1/betaTesters", wrap(func(w http.ResponseWriter, r *http.Request) {
 		email := r.URL.Query().Get("filter[email]")
+		if email != strings.ToLower(email) {
+			f.t.Errorf("filter[email] must be lowercased: %q", email)
+		}
 		var testers []any
 		for e, id := range f.testers {
 			if email == "" || strings.EqualFold(e, email) {
-				testers = append(testers, res("betaTesters", id, map[string]any{"email": e, "state": "ACCEPTED"}, nil))
+				testers = append(testers, tester(e, id))
 			}
 		}
 		many(w, testers...)
+	}))
+	mux.HandleFunc("GET /v1/betaTesters/{id}", wrap(func(w http.ResponseWriter, r *http.Request) {
+		for e, id := range f.testers {
+			if id == r.PathValue("id") {
+				one(w, 200, tester(e, id))
+				return
+			}
+		}
+		w.WriteHeader(404)
+	}))
+	mux.HandleFunc("POST /v1/betaTesterInvitations", wrap(func(w http.ResponseWriter, r *http.Request) {
+		id, _ := obj(f.t, f.bodies["POST /v1/betaTesterInvitations"], "data", "relationships", "betaTester", "data")["id"].(string)
+		f.testerStates[id] = "INVITED"
+		one(w, 201, res("betaTesterInvitations", "bti-1", nil, nil))
 	}))
 	mux.HandleFunc("POST /v1/betaTesters", wrap(func(w http.ResponseWriter, r *http.Request) {
 		email, _ := obj(f.t, f.bodies["POST /v1/betaTesters"], "data", "attributes")["email"].(string)

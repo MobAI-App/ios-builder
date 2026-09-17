@@ -39,6 +39,9 @@ type TesterResult struct {
 	Email  string `json:"email"`
 	Group  string `json:"group"`
 	Status string `json:"status"`
+	// State is the tester record's TestFlight state afterwards (INVITED,
+	// ACCEPTED, ...); empty when only a team invitation went out.
+	State string `json:"state,omitempty"`
 }
 
 // AddTester puts a person into a TestFlight group. External groups take
@@ -54,7 +57,7 @@ func AddTester(ctx context.Context, client *asc.Client, opts *TesterOptions) (*T
 		if err != nil {
 			return nil, err
 		}
-		return testerOutcome(opts.Log, res, tester, created), nil
+		return finishTester(ctx, client, opts, res, tester, created)
 	}
 
 	user, err := client.FindUser(ctx, opts.Email)
@@ -73,24 +76,53 @@ func AddTester(ctx context.Context, client *asc.Client, opts *TesterOptions) (*T
 		if err != nil {
 			return nil, fmt.Errorf("%s is on the team but has no TestFlight tester record and App Store Connect refused to create one: %w; enable TestFlight for them under Users and Access", opts.Email, err)
 		}
-		return testerOutcome(opts.Log, res, tester, true), nil
+		return finishTester(ctx, client, opts, res, tester, true)
 	}
 	if err := client.AddBetaTestersToGroup(ctx, g.ID, []string{tester.ID}); err != nil {
 		return nil, err
 	}
-	return testerOutcome(opts.Log, res, tester, false), nil
+	return finishTester(ctx, client, opts, res, tester, false)
 }
 
-func testerOutcome(log io.Writer, res *TesterResult, tester *asc.BetaTester, created bool) *TesterResult {
-	res.ID, res.Email = tester.ID, tester.Email
+// finishTester records the outcome and makes sure an email went out: a
+// created record is INVITED by App Store Connect itself, but a record added
+// to an internal group stays NOT_INVITED until an invitation is sent.
+func finishTester(ctx context.Context, client *asc.Client, opts *TesterOptions, res *TesterResult, tester *asc.BetaTester, created bool) (*TesterResult, error) {
 	if created {
 		res.Status = TesterInvited
-		logf(log, "Invited %s to %s", tester.Email, res.Group)
+		logf(opts.Log, "Invited %s to %s", tester.Email, res.Group)
 	} else {
 		res.Status = TesterAdded
-		logf(log, "Added existing tester %s to %s", tester.Email, res.Group)
+		logf(opts.Log, "Added existing tester %s to %s", tester.Email, res.Group)
+		// The group add itself may have moved the state; read it back.
+		updated, err := client.GetBetaTester(ctx, tester.ID)
+		if err != nil {
+			return nil, err
+		}
+		tester = updated
 	}
-	return res
+	if tester.State == asc.BetaTesterNotInvited {
+		var err error
+		if tester, err = InviteTester(ctx, client, opts.Log, opts.AppID, tester); err != nil {
+			return nil, err
+		}
+	}
+	res.ID, res.Email, res.State = tester.ID, tester.Email, tester.State
+	return res, nil
+}
+
+// InviteTester sends, or resends, the app's TestFlight invitation to a tester
+// and returns the record with its new state.
+func InviteTester(ctx context.Context, client *asc.Client, log io.Writer, appID string, tester *asc.BetaTester) (*asc.BetaTester, error) {
+	if err := client.InviteBetaTester(ctx, appID, tester.ID); err != nil {
+		return nil, fmt.Errorf("invite %s: %w", tester.Email, err)
+	}
+	updated, err := client.GetBetaTester(ctx, tester.ID)
+	if err != nil {
+		return nil, err
+	}
+	logf(log, "Sent TestFlight invitation to %s (%s)", updated.Email, updated.State)
+	return updated, nil
 }
 
 func inviteToTeam(ctx context.Context, client *asc.Client, opts *TesterOptions, res *TesterResult) (*TesterResult, error) {

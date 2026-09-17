@@ -31,8 +31,11 @@ func TestAddTesterExternalGroup(t *testing.T) {
 
 	// The team already has the address: 409, then the existing record joins the group.
 	res, err = AddTester(context.Background(), c, &TesterOptions{AppID: "app-1", Group: externalGroup, Email: "old@example.com", Log: &log})
-	if err != nil || res.Status != TesterAdded || res.ID != "t-old" {
+	if err != nil || res.Status != TesterAdded || res.ID != "t-old" || res.State != "ACCEPTED" {
 		t.Fatalf("result = %+v, err = %v", res, err)
+	}
+	if f.called("POST /v1/betaTesterInvitations") {
+		t.Errorf("an accepted tester needs no invitation: %v", f.calls)
 	}
 	if links := arr(t, f.body("POST /v1/betaGroups/g-ext/relationships/betaTesters"), "data"); len(links) != 1 || obj(t, links[0])["id"] != "t-old" {
 		t.Errorf("linkage = %v", links)
@@ -56,16 +59,38 @@ func TestAddTesterInternalGroupMember(t *testing.T) {
 	if links := arr(t, f.body("POST /v1/betaGroups/g-int/relationships/betaTesters"), "data"); len(links) != 1 || obj(t, links[0])["id"] != "t-dev" {
 		t.Errorf("linkage = %v", links)
 	}
-	if f.called("POST /v1/betaTesters") || f.called("POST /v1/userInvitations") || f.called("GET /v1/userInvitations") {
-		t.Errorf("a member with a tester record needs neither a new record nor an invitation: %v", f.calls)
+	if f.called("POST /v1/betaTesters") || f.called("POST /v1/userInvitations") || f.called("GET /v1/userInvitations") || f.called("POST /v1/betaTesterInvitations") {
+		t.Errorf("a member with an accepted tester record needs neither a new record nor an invitation: %v", f.calls)
+	}
+
+	// A member whose record is still NOT_INVITED (added in the UI, never
+	// emailed) gets the TestFlight invitation sent after the group add.
+	f = newFake(t)
+	f.users["dev@example.com"] = true
+	f.testers["dev@example.com"] = "t-dev"
+	f.testerStates["t-dev"] = "NOT_INVITED"
+	var log bytes.Buffer
+	res, err = AddTester(context.Background(), f.client(t), &TesterOptions{AppID: "app-1", Group: internalGroup, Email: "dev@example.com", Log: &log})
+	if err != nil || res.Status != TesterAdded || res.ID != "t-dev" || res.State != "INVITED" {
+		t.Fatalf("result = %+v, err = %v", res, err)
+	}
+	invite := obj(t, f.body("POST /v1/betaTesterInvitations"), "data")
+	if obj(t, invite, "relationships", "app", "data")["id"] != "app-1" || obj(t, invite, "relationships", "betaTester", "data")["id"] != "t-dev" {
+		t.Errorf("invitation = %v", invite)
+	}
+	if !strings.Contains(log.String(), "Sent TestFlight invitation to dev@example.com (INVITED)") {
+		t.Errorf("log = %q", log.String())
 	}
 
 	// A member without a tester record gets one created in the group.
 	f = newFake(t)
 	f.users["fresh@example.com"] = true
 	res, err = AddTester(context.Background(), f.client(t), &TesterOptions{AppID: "app-1", Group: internalGroup, Email: "fresh@example.com"})
-	if err != nil || res.Status != TesterInvited || res.ID != "t-new-1" {
+	if err != nil || res.Status != TesterInvited || res.ID != "t-new-1" || res.State != "INVITED" {
 		t.Fatalf("result = %+v, err = %v", res, err)
+	}
+	if f.called("POST /v1/betaTesterInvitations") {
+		t.Errorf("creating the record already sends the email: %v", f.calls)
 	}
 	attrs := obj(t, f.body("POST /v1/betaTesters"), "data", "attributes")
 	if attrs["firstName"] != "Team" || attrs["lastName"] != "Member" {

@@ -193,10 +193,10 @@ func groupKind(internal bool) string {
 // findOrCreateGroup matches name against the app's groups (case-insensitive)
 // and creates it when none matches. Existing groups keep their type.
 func findOrCreateGroup(ctx context.Context, client *asc.Client, log io.Writer, appID string, groups []asc.BetaGroup, name string, internal bool) (*GroupRef, error) {
-	for _, g := range groups {
-		if strings.EqualFold(g.Name, name) {
-			return &GroupRef{ID: g.ID, Name: g.Name, Internal: g.Internal, AutoBuilds: g.Internal && g.HasAccessToAllBuilds}, nil
-		}
+	if g, err := asc.MatchBetaGroup(groups, name); err != nil {
+		return nil, err
+	} else if g != nil {
+		return &GroupRef{ID: g.ID, Name: g.Name, Internal: g.Internal, AutoBuilds: g.Internal && g.HasAccessToAllBuilds}, nil
 	}
 	g, err := client.CreateBetaGroup(ctx, asc.BetaGroupSpec{AppID: appID, Name: name, Internal: internal})
 	if err != nil {

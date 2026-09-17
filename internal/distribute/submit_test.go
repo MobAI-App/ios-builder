@@ -165,6 +165,12 @@ func TestSubmitTestFlightErrors(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "export compliance") {
 		t.Errorf("missing compliance: %v", err)
 	}
+	f.dupGroup = true
+	_, err = SubmitTestFlight(context.Background(), c, &TestFlightOptions{BundleID: "com.example.app", Groups: []string{"BETA TESTERS"}, NoEncryption: true})
+	if err == nil || !strings.Contains(err.Error(), "2 TestFlight groups match BETA TESTERS") || f.called("POST /v1/betaGroups") || f.called("POST /v1/builds/build-9/relationships/betaGroups") {
+		t.Errorf("an ambiguous group name must neither create nor add: %v, calls = %v", err, f.calls)
+	}
+	f.dupGroup = false
 	f.buildState = "PROCESSING"
 	_, err = SubmitTestFlight(context.Background(), c, &TestFlightOptions{BundleID: "com.example.app", BuildNumber: "7"})
 	if err == nil || !strings.Contains(err.Error(), "PROCESSING") {
