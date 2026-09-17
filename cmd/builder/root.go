@@ -114,13 +114,34 @@ func isFlutterProject() bool {
 	return err == nil
 }
 
+// isExpoProject reports whether package.json declares a dependency on Expo.
+// It reads the dependency maps rather than searching the raw text, so a
+// package named "expo", a script that shells out to it, or a keyword does not
+// make an unrelated Node project look like an Expo app. An unparseable
+// package.json falls back to the substring test the runners use, so the CLI
+// and the runners still agree on such a file.
 func isExpoProject() bool {
 	data, err := os.ReadFile("package.json")
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(data), `"expo"`)
+	var pkg struct {
+		Dependencies    map[string]json.RawMessage `json:"dependencies"`
+		DevDependencies map[string]json.RawMessage `json:"devDependencies"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return strings.Contains(string(data), `"expo"`)
+	}
+	_, dep := pkg.Dependencies["expo"]
+	_, devDep := pkg.DevDependencies["expo"]
+	return dep || devDep
 }
+
+// expoManagedFramework names a managed Expo project: one that depends on Expo
+// but keeps no Xcode project in git, because `expo prebuild` generates it. The
+// runner runs that prebuild, so the iOS path is still "ios" — that is where
+// prebuild puts the project.
+const expoManagedFramework = "Expo (managed)"
 
 // kmpPluginRe matches a declaration of the Kotlin Multiplatform Gradle plugin,
 // in the Kotlin DSL (`kotlin("multiplatform")`) or Groovy/plugin-id form. It
@@ -214,6 +235,16 @@ func detectIOSPath() (string, string) {
 				return "", "Native iOS"
 			}
 		}
+	}
+
+	// No Xcode project anywhere, but the app depends on Expo: a managed
+	// project, whose ios/ directory the runner generates with `expo prebuild`.
+	// Flutter is checked first for the same reason the runners check
+	// pubspec.yaml before package.json: a Flutter repo that does not commit
+	// ios/ is not a managed Expo project, and the runners would never prebuild
+	// it.
+	if !isFlutterProject() && isExpoProject() {
+		return "ios", expoManagedFramework
 	}
 
 	return "", ""
@@ -334,6 +365,10 @@ func runInit(cmd *cobra.Command, args []string) error {
 		detectedPath, framework := detectIOSPath()
 		if detectedPath != "" {
 			fmt.Printf("Detected %s project (iOS at '%s')\n", framework, detectedPath)
+			if framework == expoManagedFramework {
+				fmt.Printf("There is no '%s' directory yet; the build generates it on the runner with 'expo prebuild'.\n", detectedPath)
+				fmt.Println("app.json / app.config.js must set ios.bundleIdentifier, or prebuild cannot run unattended.")
+			}
 			confirmPrompt := promptui.Prompt{
 				Label:     "Use this path",
 				IsConfirm: true,
@@ -515,7 +550,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 		return runBuild(context.Background(), cfg, &build.BuildOptions{
 			OutputDir: "dist",
-			Timeout:   30 * time.Minute,
+			Timeout:   build.DefaultTimeout,
 			Remote:    remoteName,
 		})
 	}
@@ -572,6 +607,7 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(iosCmd)
+	rootCmd.AddCommand(ascCmd)
 	rootCmd.AddCommand(authCmd)
 	rootCmd.AddCommand(signingCmd)
 	rootCmd.AddCommand(devCmd)
@@ -589,7 +625,7 @@ func init() {
 
 	// iOS build command flags
 	iosBuildCmd.Flags().StringP("output", "o", "dist", "Output directory for IPA")
-	iosBuildCmd.Flags().Duration("timeout", 30*time.Minute, "Build timeout")
+	iosBuildCmd.Flags().Duration("timeout", build.DefaultTimeout, "Build timeout")
 	iosBuildCmd.Flags().Bool("unsigned", false, "Build unsigned IPA (skip code signing even if configured)")
 	iosBuildCmd.Flags().StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
 	iosBuildCmd.Flags().String("provider", "", "Override CI provider (default github or builder.json provider)")

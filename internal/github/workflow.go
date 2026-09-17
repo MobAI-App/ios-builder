@@ -345,13 +345,22 @@ func (c *Client) FindArtifactByName(ctx context.Context, owner, repo string, run
 	return nil, fmt.Errorf("artifact %q not found", name)
 }
 
+// artifactPollInterval is fixed (no backoff) to catch the artifact quickly
+// after upload. A variable so tests can shorten it.
+var artifactPollInterval = 5 * time.Second
+
+// maxConsecutiveStatusErrors bounds how long a failing run-status check is
+// tolerated while polling: GitHub's API returns the odd 5xx during a long
+// wait, and a build that is still running must not be abandoned for one.
+// With the 5s interval this is a minute of failed polls.
+const maxConsecutiveStatusErrors = 12
+
 // PollForArtifact polls until an artifact with the given name appears in a workflow run.
 // This allows downloading the artifact as soon as it's uploaded, without waiting for the
 // entire workflow to complete. onPoll, if non-nil, runs once per attempt.
 func (c *Client) PollForArtifact(ctx context.Context, owner, repo string, runID int64, artifactName string, timeout time.Duration, onPoll func()) (*Artifact, error) {
 	deadline := time.Now().Add(timeout)
-	// Use fixed 5s interval (no backoff) to catch artifact quickly after upload
-	const artifactPollInterval = 5 * time.Second
+	statusErrors := 0
 
 	for {
 		if time.Now().After(deadline) {
