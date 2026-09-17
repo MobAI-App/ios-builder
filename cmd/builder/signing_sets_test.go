@@ -603,6 +603,7 @@ func TestEnsureSigningSecretsReusesTheKeyInTheRecordedDir(t *testing.T) {
 	t.Chdir(t.TempDir())
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	ctx := context.Background()
 	cfg := signedConfig()
 	cfg.Signing = &config.SigningConfig{Dir: "~/signing/app"}
@@ -651,6 +652,7 @@ func TestSigningSetupRecordsTheOutDir(t *testing.T) {
 	t.Chdir(t.TempDir())
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	cfg := &config.Config{Project: "App", Platform: "ios", GitHub: config.GitHubConfig{Owner: "o", Repo: "r"},
 		IOS: config.IOSConfig{BundleID: "com.example.app"}}
 	if err := config.NewManager().Save(cfg); err != nil {
