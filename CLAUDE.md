@@ -368,9 +368,28 @@ internal/
   (verbatim in both templates) pick `CODE_SIGN_IDENTITY` out of `security find-identity`, run right
   after `security import`: `Apple Development`, else the pre-2021 `iPhone Developer`, for a
   development profile; `Apple Distribution`, else `iPhone Distribution`, for the rest; a named
-  `::error::` when the set holds neither. Every manually signed archive command passes it, since
-  without it Xcode keeps the project's default identity and refuses a distribution profile ("No
-  signing certificate iOS Development found").
+  `::error::` when the set holds neither. `apply_signing_to_app_target` writes it into the app
+  target with the other manual settings, since without it Xcode keeps the project's default
+  identity and refuses a distribution profile ("No signing certificate iOS Development found").
+- **Signing Settings Live In The pbxproj**: `CODE_SIGN_STYLE=Manual`, `DEVELOPMENT_TEAM`,
+  `PROVISIONING_PROFILE_SPECIFIER` and `CODE_SIGN_IDENTITY` are never passed to `xcodebuild`: a
+  command-line setting applies to every target in the workspace, and CocoaPods framework
+  targets refuse a profile ("FirebaseCore does not support provisioning profiles, but
+  provisioning profile … has been manually specified"), so only pod-free projects passed.
+  `apply_signing_to_app_target` (verbatim in `ios-build.yml` and `runner.sh`; run in the iOS
+  directory right before each signed archive, after `pod install` / `expo prebuild` /
+  `flutter build ios` have generated the projects) converts each top-level `*.xcodeproj`'s
+  `project.pbxproj` to JSON with `plutil`, sets the four settings on every configuration of
+  the `PBXNativeTarget`s whose `productType` is an application (dropping conditional
+  `NAME[sdk=…]` variants that would override them), and writes the file back as an XML plist,
+  which Xcode reads. `Pods/Pods.xcodeproj` is a level down and never a candidate; extension and
+  framework targets are never touched. With one app target it is signed whatever its bundle id
+  (the export reports a mismatch); with several, the ones whose `PRODUCT_BUNDLE_IDENTIFIER`
+  the profile's app id covers (`PROFILE_BUNDLE_ID`: `application-identifier` minus the team
+  prefix; `*` and `com.example.*` are wildcards), else a `::error::` naming the bundle ids
+  found. `ExportOptions.plist` keeps its `provisioningProfiles` map as before.
+  `TestSigningSettingsOnAppTargetOnly` compares the two bodies, asserts no archive command
+  passes the settings, and (darwin) runs the function on generated pbxproj fixtures.
 - **Extension Points**: a future `ios release` (upload + TestFlight, automatic build numbers)
   composes `distribute.Upload` and `distribute.SubmitTestFlight` and reads `asc.Client.ListBuilds`
   for the latest build number; the `pkg/` wrappers do not expose `asc` yet.
