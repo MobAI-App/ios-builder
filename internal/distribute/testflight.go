@@ -120,7 +120,7 @@ func SubmitTestFlight(ctx context.Context, client *asc.Client, opts *TestFlightO
 		return res, nil
 	}
 
-	var ids []string
+	var ids, names []string
 	var external bool
 	for _, name := range opts.Groups {
 		g, err := findOrCreateGroup(ctx, client, opts.Log, app.ID, groups, name, !opts.External)
@@ -133,6 +133,7 @@ func SubmitTestFlight(ctx context.Context, client *asc.Client, opts *TestFlightO
 			continue
 		}
 		ids = append(ids, g.ID)
+		names = append(names, g.Name)
 		external = external || !g.Internal
 	}
 	if res.Compliance == "pending" {
@@ -163,7 +164,7 @@ func SubmitTestFlight(ctx context.Context, client *asc.Client, opts *TestFlightO
 	if err := client.AddBuildToBetaGroups(ctx, build.ID, ids); err != nil {
 		return res, fmt.Errorf("add build to groups: %w", err)
 	}
-	logf(opts.Log, "Added build %s to %s", build.BuildNumber, strings.Join(opts.Groups, ", "))
+	logf(opts.Log, "Added build %s to %s", build.BuildNumber, strings.Join(names, ", "))
 
 	if opts.Wait && res.BetaReview != nil {
 		review, err := client.WaitForBetaAppReview(ctx, res.BetaReview.ID, pollInterval(opts.PollInterval), func(r *asc.BetaAppReviewSubmission) {
