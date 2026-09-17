@@ -432,7 +432,11 @@ func writeSigningKey(t *testing.T, portal *signingtest.Portal, path, certType st
 	if err != nil {
 		t.Fatal(err)
 	}
-	portal.Issue(certType, &key.(*rsa.PrivateKey).PublicKey, signingtest.Now.AddDate(0, 6, 0))
+	rsaKey, ok := key.(*rsa.PrivateKey)
+	if !ok {
+		t.Fatalf("generated key is %T, want RSA", key)
+	}
+	portal.Issue(certType, &rsaKey.PublicKey, signingtest.Now.AddDate(0, 6, 0))
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -507,7 +511,7 @@ func TestSigningSetupRecordsTheOutDir(t *testing.T) {
 	signingASCClient = func() (*asc.Client, error) { return portal.Client(t), nil }
 	t.Cleanup(func() { signingASCClient = prev })
 
-	cmd, _, stderr := signingSetupCommand(t, newFakeSecrets(t), nil, "--distribution", "store", "--yes", "--out-dir", "~/signing/app")
+	cmd, _, stderr := signingSetupCommand(t, newFakeSecrets(t), "--distribution", "store", "--yes", "--out-dir", "~/signing/app")
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("%v\n%s", err, stderr.String())
 	}
@@ -522,7 +526,7 @@ func TestSigningSetupRecordsTheOutDir(t *testing.T) {
 		t.Errorf("signing = %+v, want the flag as given", saved.Signing)
 	}
 
-	cmd, _, stderr = signingSetupCommand(t, newFakeSecrets(t), nil, "--distribution", "store", "--yes")
+	cmd, _, stderr = signingSetupCommand(t, newFakeSecrets(t), "--distribution", "store", "--yes")
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("%v\n%s", err, stderr.String())
 	}
@@ -533,10 +537,10 @@ func TestSigningSetupRecordsTheOutDir(t *testing.T) {
 
 // signingSetupCommand is `signing setup` with its own flags and buffers, and
 // the fake secrets API in place of the GitHub client.
-func signingSetupCommand(t *testing.T, store secretStore, storeErr error, args ...string) (cmd *cobra.Command, stdout, stderr *bytes.Buffer) {
+func signingSetupCommand(t *testing.T, store secretStore, args ...string) (cmd *cobra.Command, stdout, stderr *bytes.Buffer) {
 	t.Helper()
 	prev := signingSecretStore
-	signingSecretStore = func() (secretStore, error) { return store, storeErr }
+	signingSecretStore = func() (secretStore, error) { return store, nil }
 	t.Cleanup(func() { signingSecretStore = prev })
 
 	cmd = &cobra.Command{Use: "setup", RunE: runSigningSetup, SilenceErrors: true, SilenceUsage: true}
@@ -567,7 +571,7 @@ func TestSigningSetupManualReportsAFailedUpload(t *testing.T) {
 	store := newFakeSecrets(t)
 	store.writeErr = errors.New("403 Resource not accessible by integration")
 
-	cmd, stdout, stderr := signingSetupCommand(t, store, nil,
+	cmd, stdout, stderr := signingSetupCommand(t, store,
 		"--certificate", "ios-signing.p12", "--profile", "App.mobileprovision", "--password", "pw")
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "o/r") {
@@ -607,7 +611,7 @@ func TestSigningSetupAutoReportsAFailedUpload(t *testing.T) {
 	store := newFakeSecrets(t)
 	store.writeErr = errors.New("403 Resource not accessible by integration")
 
-	cmd, stdout, stderr := signingSetupCommand(t, store, nil, "--distribution", "store", "--yes")
+	cmd, stdout, stderr := signingSetupCommand(t, store, "--distribution", "store", "--yes")
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "o/r") {
 		t.Fatalf("a failed upload must set the exit code: %v", err)
 	}
@@ -634,7 +638,7 @@ func TestSigningSetupAutoReportsAFailedUpload(t *testing.T) {
 	}
 
 	// --json says the same in github_upload, and still exits non-zero.
-	cmd, jsonOut, _ := signingSetupCommand(t, store, nil, "--distribution", "store", "--yes", "--json")
+	cmd, jsonOut, _ := signingSetupCommand(t, store, "--distribution", "store", "--yes", "--json")
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("--json run: a failed upload must set the exit code")
 	}
