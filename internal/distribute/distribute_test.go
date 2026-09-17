@@ -78,11 +78,14 @@ type fake struct {
 	created   []map[string]any
 	// users are team members by email; testers maps tester emails to IDs and
 	// testerStates IDs to states (default ACCEPTED, INVITED once an invitation
-	// is posted); pendingInvite makes every invitation lookup find one.
+	// is posted); pendingInvite makes every invitation lookup find one;
+	// noBuilds is a group without a build: new records stay NOT_INVITED and
+	// invitations are refused.
 	users         map[string]bool
 	testers       map[string]string
 	testerStates  map[string]string
 	pendingInvite bool
+	noBuilds      bool
 }
 
 func newFake(t *testing.T) *fake {
@@ -230,6 +233,10 @@ func newFake(t *testing.T) *fake {
 		w.WriteHeader(404)
 	}))
 	mux.HandleFunc("POST /v1/betaTesterInvitations", wrap(func(w http.ResponseWriter, r *http.Request) {
+		if f.noBuilds {
+			writeJSON(w, 409, map[string]any{"errors": []map[string]any{{"status": "409", "code": "STATE_ERROR.TESTER_INVITE.NO_INSTALLABLE_BUILDS", "title": "The request cannot be fulfilled because of the state of another resource.", "detail": "The tester has no installable builds."}}})
+			return
+		}
 		id, _ := obj(f.t, f.bodies["POST /v1/betaTesterInvitations"], "data", "relationships", "betaTester", "data")["id"].(string)
 		f.testerStates[id] = "INVITED"
 		one(w, 201, res("betaTesterInvitations", "bti-1", nil, nil))
@@ -242,7 +249,11 @@ func newFake(t *testing.T) *fake {
 		}
 		id := fmt.Sprintf("t-new-%d", len(f.testers)+1)
 		f.testers[email] = id
-		one(w, 201, res("betaTesters", id, map[string]any{"email": email, "state": "INVITED"}, nil))
+		state := "INVITED"
+		if f.noBuilds {
+			state = "NOT_INVITED"
+		}
+		one(w, 201, res("betaTesters", id, map[string]any{"email": email, "state": state}, nil))
 	}))
 	mux.HandleFunc("GET /v1/users", wrap(func(w http.ResponseWriter, r *http.Request) {
 		email := r.URL.Query().Get("filter[username]")
@@ -463,6 +474,22 @@ func TestUploadUndeclaredEncryptionStaysPending(t *testing.T) {
 	}
 	if res.Compliance != "pending" || f.called("PATCH /v1/builds/build-9") {
 		t.Errorf("compliance = %s, calls = %v", res.Compliance, f.calls)
+	}
+}
+
+func TestProgressSize(t *testing.T) {
+	for _, tc := range []struct {
+		sent, total int64
+		want        string
+	}{
+		{0, 200 << 10, "0/200 KB"},
+		{200 << 10, 200 << 10, "200/200 KB"},
+		{1 << 20, 3<<20 + 1<<19, "1.0/3.5 MB"},
+		{0, 24 << 20, "0.0/24.0 MB"},
+	} {
+		if got := progressSize(tc.sent, tc.total); got != tc.want {
+			t.Errorf("progressSize(%d, %d) = %q, want %q", tc.sent, tc.total, got, tc.want)
+		}
 	}
 }
 

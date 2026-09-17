@@ -454,7 +454,11 @@ internal/
   `app` + `betaTester`; the response has no attributes, so the state is read back with
   `GET betaTesters/{id}`). `AddTester` re-reads the state after a group add and invites when it is
   still NOT_INVITED; `asc testers invite` (`distribute.InviteTester`) does it on demand for
-  NOT_INVITED/INVITED records and leaves ACCEPTED/INSTALLED alone.
+  NOT_INVITED/INVITED records and leaves ACCEPTED/INSTALLED alone. While none of the tester's
+  groups has a build, the POST answers 409 `STATE_ERROR.TESTER_INVITE.NO_INSTALLABLE_BUILDS`
+  (`asc.CodeNoInstallableBuilds`, matched with `asc.HasCode`): `InviteTester` turns it into a
+  `noBuildError` naming `asc groups add-build`, and `AddTester` treats it as "added, invite goes
+  out once the group has a build" (status `added`, state NOT_INVITED) rather than failing.
 - **Group Name Matching**: `asc.MatchBetaGroup` is the only name lookup (command layer and
   `findOrCreateGroup`): case-insensitive, nil when absent, and an error listing the candidates when
   several groups fold to the same name, so nothing is created, deleted or linked on a guess.

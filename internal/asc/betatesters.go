@@ -95,6 +95,10 @@ func (c *Client) GetBetaTester(ctx context.Context, testerID string) (*BetaTeste
 	return &t, nil
 }
 
+// CodeNoInstallableBuilds is the 409 InviteBetaTester answers while none of
+// the tester's groups has a build they could install.
+const CodeNoInstallableBuilds = "STATE_ERROR.TESTER_INVITE.NO_INSTALLABLE_BUILDS"
+
 // InviteBetaTester sends, or resends, the app's TestFlight invitation email to
 // a tester the app already has. Team members put into an internal group stay
 // NOT_INVITED until this is called.

@@ -48,6 +48,32 @@ func TestAddTesterExternalGroup(t *testing.T) {
 	}
 }
 
+func TestAddTesterGroupWithoutBuild(t *testing.T) {
+	// A tester created in a group that has no build stays NOT_INVITED and
+	// App Store Connect refuses to send the email: the add is reported as
+	// such, not as an invitation, and is not an error.
+	f := newFake(t)
+	f.noBuilds = true
+	var log bytes.Buffer
+	c := f.client(t)
+	res, err := AddTester(context.Background(), c, &TesterOptions{AppID: "app-1", Group: externalGroup, Email: "new@example.com", Log: &log})
+	if err != nil || res.Status != TesterAdded || res.ID != "t-new-1" || res.State != "NOT_INVITED" {
+		t.Fatalf("result = %+v, err = %v", res, err)
+	}
+	if !f.called("POST /v1/betaTesterInvitations") {
+		t.Errorf("the invitation must be attempted: %v", f.calls)
+	}
+	if !strings.Contains(log.String(), "Added new@example.com to Beta Testers (invite goes out once the group has a build)") || strings.Contains(log.String(), "Invited new@example.com") {
+		t.Errorf("log = %q", log.String())
+	}
+
+	// Sending the invitation on demand is an error that says what to do.
+	_, err = InviteTester(context.Background(), c, &log, "app-1", &asc.BetaTester{ID: "t-new-1", Email: "new@example.com", State: "NOT_INVITED"})
+	if err == nil || !strings.Contains(err.Error(), "new@example.com has no installable build yet: add one to the group first (builder asc groups add-build <group>); external groups also need the build to pass Beta App Review") {
+		t.Errorf("err = %v", err)
+	}
+}
+
 func TestAddTesterInternalGroupMember(t *testing.T) {
 	f := newFake(t)
 	f.users["dev@example.com"] = true
