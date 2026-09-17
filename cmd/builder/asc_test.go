@@ -18,20 +18,27 @@ import (
 
 	"github.com/MobAI-App/ios-builder/internal/asc"
 	"github.com/MobAI-App/ios-builder/internal/distribute"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // ascFake is an in-memory App Store Connect covering what the command tests
-// touch: one app, one processed build, two groups, one existing tester.
+// touch: one app, one processed build, two groups, an accepted tester and a
+// NOT_INVITED one.
 type ascFake struct {
 	t      *testing.T
 	mu     sync.Mutex
 	calls  []string
 	bodies map[string]map[string]any
+	// dupGroup adds a second group whose name folds to "beta testers".
+	dupGroup bool
+	// quietState is the NOT_INVITED tester's state; an invitation flips it.
+	quietState string
 }
 
 func newASCFake(t *testing.T) *ascFake {
 	t.Helper()
-	f := &ascFake{t: t, bodies: map[string]map[string]any{}}
+	f := &ascFake{t: t, bodies: map[string]map[string]any{}, quietState: "NOT_INVITED"}
 	res := func(typ, id string, attrs map[string]any) map[string]any {
 		return map[string]any{"type": typ, "id": id, "attributes": attrs}
 	}
@@ -69,19 +76,57 @@ func newASCFake(t *testing.T) *ascFake {
 		many(w, res("builds", "build-9", map[string]any{"version": "7", "processingState": "VALID", "uploadedDate": "2026-09-16T10:00:00Z", "expired": false, "usesNonExemptEncryption": false}))
 	})
 	handle("GET /v1/betaGroups", func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
-		many(w, res("betaGroups", "g-int", map[string]any{"name": "Team", "isInternalGroup": true}), res("betaGroups", "g-ext", map[string]any{"name": "Beta Testers", "isInternalGroup": false}))
+		// The internal group mirrors a real one made in the UI: automatic distribution, null public link.
+		groups := []any{
+			res("betaGroups", "g-int", map[string]any{"name": "Team", "isInternalGroup": true, "hasAccessToAllBuilds": true, "publicLinkEnabled": nil}),
+			res("betaGroups", "g-ext", map[string]any{"name": "Beta Testers", "isInternalGroup": false}),
+		}
+		if f.dupGroup {
+			groups = append(groups, res("betaGroups", "g-dup", map[string]any{"name": "beta testers", "isInternalGroup": false}))
+		}
+		many(w, groups...)
 	})
 	handle("POST /v1/betaGroups", func(w http.ResponseWriter, r *http.Request, body map[string]any) {
 		one(w, 201, res("betaGroups", "g-new", obj(t, body, "data", "attributes")))
 	})
+	handle("DELETE /v1/betaGroups/{id}", func(w http.ResponseWriter, r *http.Request, _ map[string]any) { w.WriteHeader(204) })
 	handle("POST /v1/builds/{id}/relationships/betaGroups", func(w http.ResponseWriter, r *http.Request, _ map[string]any) { w.WriteHeader(204) })
 	handle("POST /v1/betaGroups/{id}/relationships/betaTesters", func(w http.ResponseWriter, r *http.Request, _ map[string]any) { w.WriteHeader(204) })
+	handle("DELETE /v1/betaGroups/{id}/relationships/betaTesters", func(w http.ResponseWriter, r *http.Request, _ map[string]any) { w.WriteHeader(204) })
+	old := func() map[string]any {
+		return res("betaTesters", "t-old", map[string]any{"email": "old@example.com", "firstName": "Old", "inviteType": "EMAIL", "state": "ACCEPTED"})
+	}
+	quiet := func() map[string]any {
+		return res("betaTesters", "t-quiet", map[string]any{"email": "quiet@example.com", "inviteType": "EMAIL", "state": f.quietState})
+	}
 	handle("GET /v1/betaTesters", func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
-		if r.URL.Query().Get("filter[email]") == "old@example.com" {
-			many(w, res("betaTesters", "t-old", map[string]any{"email": "old@example.com", "state": "ACCEPTED"}))
-			return
+		switch r.URL.Query().Get("filter[email]") {
+		case "old@example.com":
+			many(w, old())
+		case "quiet@example.com":
+			many(w, quiet())
+		case "":
+			many(w, old(), quiet())
+		default:
+			many(w)
 		}
-		many(w)
+	})
+	handle("GET /v1/betaTesters/{id}", func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
+		switch r.PathValue("id") {
+		case "t-old":
+			one(w, 200, old())
+		case "t-quiet":
+			one(w, 200, quiet())
+		default:
+			w.WriteHeader(404)
+		}
+	})
+	handle("DELETE /v1/betaTesters/{id}", func(w http.ResponseWriter, r *http.Request, _ map[string]any) { w.WriteHeader(204) })
+	handle("POST /v1/betaTesterInvitations", func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		if obj(t, body, "data", "relationships", "betaTester", "data")["id"] == "t-quiet" {
+			f.quietState = "INVITED"
+		}
+		one(w, 201, map[string]any{"type": "betaTesterInvitations", "id": "bti-1"})
 	})
 	handle("POST /v1/betaTesters", func(w http.ResponseWriter, r *http.Request, body map[string]any) {
 		attrs := obj(t, body, "data", "attributes")
@@ -162,15 +207,31 @@ func (f *ascFake) called(key string) bool {
 	return false
 }
 
-// run executes a builder command line and returns stdout and stderr.
+// run executes a builder command line and returns stdout and stderr. Flag
+// values survive Execute on the shared command tree, so they are reset first.
 func run(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
+	resetFlags(rootCmd)
 	var out, errOut bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&errOut)
 	rootCmd.SetArgs(args)
 	err = rootCmd.Execute()
 	return out.String(), errOut.String(), err
+}
+
+func resetFlags(c *cobra.Command) {
+	c.Flags().VisitAll(func(f *pflag.Flag) {
+		if sv, ok := f.Value.(pflag.SliceValue); ok {
+			_ = sv.Replace(nil)
+		} else {
+			_ = f.Value.Set(f.DefValue)
+		}
+		f.Changed = false
+	})
+	for _, sub := range c.Commands() {
+		resetFlags(sub)
+	}
 }
 
 func TestSubmitCreatesMissingGroup(t *testing.T) {
@@ -217,5 +278,147 @@ func TestASCTestersAddExistingTester(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "Added existing tester old@example.com to Beta Testers") || !strings.Contains(stderr, "Invited new@example.com to Beta Testers") {
 		t.Errorf("stderr = %q", stderr)
+	}
+	if stdout != "" && strings.Contains(stdout, "Added existing") {
+		t.Errorf("progress leaked into stdout: %q", stdout)
+	}
+}
+
+func TestASCTestersInvite(t *testing.T) {
+	f := newASCFake(t)
+	stdout, stderr, err := run(t, "asc", "testers", "invite", "quiet@example.com", "old@example.com", "--bundle-id", "com.example.app", "--json")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, stderr)
+	}
+	var rows []inviteRow
+	if err := json.Unmarshal([]byte(stdout), &rows); err != nil {
+		t.Fatalf("stdout is not a JSON array: %v\n%s", err, stdout)
+	}
+	if len(rows) != 2 || rows[0].ID != "t-quiet" || rows[0].State != "INVITED" || !rows[0].Invited || rows[1].ID != "t-old" || rows[1].State != "ACCEPTED" || rows[1].Invited {
+		t.Errorf("rows = %+v", rows)
+	}
+	invite := obj(t, f.body("POST /v1/betaTesterInvitations"), "data")
+	if obj(t, invite, "relationships", "app", "data")["id"] != "app-1" || obj(t, invite, "relationships", "betaTester", "data")["id"] != "t-quiet" {
+		t.Errorf("invitation = %v", invite)
+	}
+	if !strings.Contains(stderr, "Sent TestFlight invitation to quiet@example.com (INVITED)") || !strings.Contains(stderr, "old@example.com is ACCEPTED; no invitation sent") {
+		t.Errorf("stderr = %q", stderr)
+	}
+	if !strings.Contains(stdout, `"invited": true`) || strings.Contains(stdout, "Sent TestFlight") {
+		t.Errorf("stdout = %q", stdout)
+	}
+
+	// An address the app does not have is an error before anything is sent.
+	f = newASCFake(t)
+	if _, _, err := run(t, "asc", "testers", "invite", "nobody@example.com", "--bundle-id", "com.example.app"); err == nil || !strings.Contains(err.Error(), "no TestFlight tester nobody@example.com") || f.called("POST /v1/betaTesterInvitations") {
+		t.Errorf("err = %v, calls = %v", err, f.calls)
+	}
+}
+
+func TestASCTestersListHintsNotInvited(t *testing.T) {
+	newASCFake(t)
+	stdout, _, err := run(t, "asc", "testers", "--bundle-id", "com.example.app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout, "EMAIL") || !strings.Contains(stdout, "NOT_INVITED") || !strings.Contains(stdout, "builder asc testers invite") {
+		t.Errorf("stdout = %q", stdout)
+	}
+	stdout, _, err = run(t, "asc", "testers", "--bundle-id", "com.example.app", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []testerRow
+	if err := json.Unmarshal([]byte(stdout), &rows); err != nil || len(rows) != 2 || rows[1].State != "NOT_INVITED" {
+		t.Errorf("rows = %+v, err = %v\n%s", rows, err, stdout)
+	}
+}
+
+func TestASCGroupsDeleteNeedsYes(t *testing.T) {
+	f := newASCFake(t)
+	stdout, _, err := run(t, "asc", "groups", "delete", "beta testers", "--bundle-id", "com.example.app")
+	if err == nil || !strings.Contains(err.Error(), "--yes") || f.called("DELETE /v1/betaGroups/g-ext") {
+		t.Errorf("err = %v, calls = %v", err, f.calls)
+	}
+	if !strings.Contains(stdout, "Will delete TestFlight group Beta Testers (external, 2 testers, g-ext)") {
+		t.Errorf("the preview must name the group: %q", stdout)
+	}
+	stdout, stderr, err := run(t, "asc", "groups", "delete", "beta testers", "--yes", "--bundle-id", "com.example.app", "--json")
+	if err != nil || !f.called("DELETE /v1/betaGroups/g-ext") {
+		t.Fatalf("err = %v, calls = %v", err, f.calls)
+	}
+	var row groupRow
+	if err := json.Unmarshal([]byte(stdout), &row); err != nil || row.ID != "g-ext" || row.Testers != 2 {
+		t.Errorf("row = %+v, err = %v\n%s", row, err, stdout)
+	}
+	if !strings.Contains(stderr, "Deleted TestFlight group Beta Testers") {
+		t.Errorf("stderr = %q", stderr)
+	}
+}
+
+func TestASCTestersRemoveTeamWideNeedsYes(t *testing.T) {
+	f := newASCFake(t)
+	_, _, err := run(t, "asc", "testers", "remove", "old@example.com", "--bundle-id", "com.example.app")
+	if err == nil || !strings.Contains(err.Error(), "--yes") || len(f.calls) != 0 {
+		t.Errorf("err = %v, calls = %v", err, f.calls)
+	}
+	// Every address is resolved before the first deletion.
+	_, _, err = run(t, "asc", "testers", "remove", "old@example.com", "nobody@example.com", "--yes", "--bundle-id", "com.example.app")
+	if err == nil || !strings.Contains(err.Error(), "nobody@example.com") || f.called("DELETE /v1/betaTesters/t-old") {
+		t.Errorf("err = %v, calls = %v", err, f.calls)
+	}
+	stdout, _, err := run(t, "asc", "testers", "remove", "old@example.com", "--yes", "--bundle-id", "com.example.app")
+	if err != nil || !f.called("DELETE /v1/betaTesters/t-old") {
+		t.Fatalf("err = %v, calls = %v", err, f.calls)
+	}
+	if !strings.Contains(stdout, "Will remove old@example.com (t-old) from TestFlight for the whole team") {
+		t.Errorf("stdout = %q", stdout)
+	}
+
+	// With --group only the linkage goes.
+	f = newASCFake(t)
+	stdout, _, err = run(t, "asc", "testers", "remove", "old@example.com", "--group", "Beta Testers", "--bundle-id", "com.example.app", "--json")
+	if err != nil || f.called("DELETE /v1/betaTesters/t-old") {
+		t.Fatalf("err = %v, calls = %v", err, f.calls)
+	}
+	if links := arr(t, f.body("DELETE /v1/betaGroups/g-ext/relationships/betaTesters"), "data"); len(links) != 1 || obj(t, links[0])["id"] != "t-old" {
+		t.Errorf("linkage = %v", links)
+	}
+	var rows []testerRemoveRow
+	if err := json.Unmarshal([]byte(stdout), &rows); err != nil || len(rows) != 1 || rows[0].Group != "Beta Testers" {
+		t.Errorf("rows = %+v, err = %v\n%s", rows, err, stdout)
+	}
+}
+
+func TestASCAmbiguousGroupIsRefused(t *testing.T) {
+	f := newASCFake(t)
+	f.dupGroup = true
+	for _, args := range [][]string{
+		{"asc", "groups", "delete", "BETA TESTERS", "--yes"},
+		{"asc", "testers", "remove", "old@example.com", "--group", "beta testers"},
+		{"asc", "testers", "add", "new@example.com", "--group", "beta testers"},
+		{"asc", "groups", "add-build", "beta testers"},
+	} {
+		_, _, err := run(t, append(args, "--bundle-id", "com.example.app")...)
+		if err == nil || !strings.Contains(err.Error(), "Beta Testers (g-ext)") || !strings.Contains(err.Error(), "beta testers (g-dup)") {
+			t.Errorf("%v: err = %v", args, err)
+		}
+	}
+	for _, c := range f.calls {
+		if strings.HasPrefix(c, "DELETE") || c == "POST /v1/betaTesters" || strings.HasSuffix(c, "/relationships/betaGroups") {
+			t.Errorf("ambiguous name must change nothing: %v", f.calls)
+		}
+	}
+	// A unique case-insensitive match still works.
+	if _, _, err := run(t, "asc", "testers", "--group", "TEAM", "--bundle-id", "com.example.app"); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestASCResolvesAppOrExplains(t *testing.T) {
+	newASCFake(t)
+	_, _, err := run(t, "asc", "groups")
+	if err == nil || !strings.Contains(err.Error(), "--bundle-id") || !strings.Contains(err.Error(), "builder.json") {
+		t.Errorf("err = %v", err)
 	}
 }

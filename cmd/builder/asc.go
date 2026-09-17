@@ -124,6 +124,18 @@ var ascTestersRemoveCmd = &cobra.Command{
 	RunE:  runASCTestersRemove,
 }
 
+var ascTestersInviteCmd = &cobra.Command{
+	Use:   "invite <email>...",
+	Short: "Send (or resend) the TestFlight invitation email to the app's testers",
+	Long: `Emails the app's TestFlight invitation to testers it already has. A team
+member added to an internal group in App Store Connect stays NOT_INVITED and
+never hears about a build until this is run; INVITED testers get the email
+again. Accepted or installed testers are left alone. --group looks the
+testers up in that group only.`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: runASCTestersInvite,
+}
+
 func init() {
 	ascAppsCmd.Flags().Bool("json", false, "Print the result as JSON")
 	ascBuildsCmd.Flags().Int("limit", 20, "Newest builds to list (0 for all)")
@@ -145,44 +157,48 @@ func init() {
 	ascTestersAddCmd.Flags().String("role", asc.RoleCustomerSupport, "Team role for a person an internal group needs invited to the team")
 	ascTestersRemoveCmd.Flags().String("group", "", "Remove from this group only")
 	ascTestersRemoveCmd.Flags().Bool("yes", false, "Confirm removing the testers from TestFlight entirely (without --group)")
+	ascTestersInviteCmd.Flags().String("group", "", "Look the testers up in this group only")
 	ascUsersCmd.Flags().Bool("json", false, "Print the result as JSON")
 	ascUsersInviteCmd.Flags().String("role", asc.RoleCustomerSupport, "Team role (ADMIN, APP_MANAGER, DEVELOPER, MARKETING, CUSTOMER_SUPPORT, ...)")
 	ascUsersInviteCmd.Flags().String("first", "", "First name (required)")
 	ascUsersInviteCmd.Flags().String("last", "", "Last name (required)")
 	ascUsersInviteCmd.Flags().Bool("all-apps", false, "Make every app visible, not only this one")
-	for _, cmd := range []*cobra.Command{ascBuildsCmd, ascBuildsExpireCmd, ascGroupsCmd, ascGroupsCreateCmd, ascGroupsDeleteCmd, ascGroupsAddBuildCmd, ascTestersCmd, ascTestersAddCmd, ascTestersRemoveCmd, ascUsersInviteCmd} {
+	for _, cmd := range []*cobra.Command{ascBuildsCmd, ascBuildsExpireCmd, ascGroupsCmd, ascGroupsCreateCmd, ascGroupsDeleteCmd, ascGroupsAddBuildCmd, ascTestersCmd, ascTestersAddCmd, ascTestersRemoveCmd, ascTestersInviteCmd, ascUsersInviteCmd} {
 		cmd.Flags().String("bundle-id", "", "App bundle ID (default: ios.bundleId in builder.json, else the newest IPA in ./dist)")
 		cmd.Flags().Bool("json", false, "Print the result as JSON (progress goes to stderr)")
 	}
 	ascBuildsCmd.AddCommand(ascBuildsExpireCmd)
 	ascGroupsCmd.AddCommand(ascGroupsCreateCmd, ascGroupsDeleteCmd, ascGroupsAddBuildCmd)
-	ascTestersCmd.AddCommand(ascTestersAddCmd, ascTestersRemoveCmd)
+	ascTestersCmd.AddCommand(ascTestersAddCmd, ascTestersRemoveCmd, ascTestersInviteCmd)
 	ascUsersCmd.AddCommand(ascUsersInviteCmd)
 	ascCmd.AddCommand(ascAppsCmd, ascBuildsCmd, ascGroupsCmd, ascTestersCmd, ascUsersCmd)
 }
 
-// resolveBundleID picks the app the command works on: --bundle-id, else
-// ios.bundleId in builder.json, else the newest IPA in ./dist.
-func resolveBundleID(cmd *cobra.Command) (string, error) {
+// resolveApp picks the app a command works on: --bundle-id, else --ipa when
+// the command has that flag, else ios.bundleId in builder.json, else the
+// newest IPA in ./dist. version is the marketing version when an IPA was read.
+func resolveApp(cmd *cobra.Command) (bundleID, version string, err error) {
 	if id, _ := cmd.Flags().GetString("bundle-id"); id != "" {
-		return id, nil
+		return id, "", nil
 	}
-	cfg, err := config.NewManager().Load()
-	if err != nil && !errors.Is(err, config.ErrConfigNotFound) {
-		return "", err
-	}
-	if cfg != nil && cfg.IOS.BundleID != "" {
-		return cfg.IOS.BundleID, nil
-	}
-	path, err := ipa.Newest("dist")
-	if err != nil {
-		return "", fmt.Errorf("cannot tell which app: pass --bundle-id, set ios.bundleId in builder.json, or build an IPA into ./dist")
+	path, _ := cmd.Flags().GetString("ipa")
+	if path == "" {
+		cfg, err := config.NewManager().Load()
+		if err != nil && !errors.Is(err, config.ErrConfigNotFound) {
+			return "", "", err
+		}
+		if cfg != nil && cfg.IOS.BundleID != "" {
+			return cfg.IOS.BundleID, "", nil
+		}
+		if path, err = ipa.Newest("dist"); err != nil {
+			return "", "", fmt.Errorf("cannot tell which app: pass --bundle-id, set ios.bundleId in builder.json, or build an IPA into ./dist")
+		}
 	}
 	info, err := ipa.ReadInfo(path)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return info.BundleID, nil
+	return info.BundleID, info.Version, nil
 }
 
 // ascSession is what every asc command working on one app starts with.
@@ -198,7 +214,7 @@ func openASC(cmd *cobra.Command) (*ascSession, context.CancelFunc, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	bundleID, err := resolveBundleID(cmd)
+	bundleID, _, err := resolveApp(cmd)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -211,24 +227,59 @@ func openASC(cmd *cobra.Command) (*ascSession, context.CancelFunc, error) {
 	return &ascSession{ctx: ctx, client: client, app: app, out: newOutput(cmd)}, cancel, nil
 }
 
-// group finds the app's TestFlight group by name, case-insensitively.
-func (s *ascSession) group(name string) (*asc.BetaGroup, error) {
+// findGroup returns the app's TestFlight group called name (case-insensitive),
+// nil when there is none, and the app's groups either way.
+func (s *ascSession) findGroup(name string) (*asc.BetaGroup, []asc.BetaGroup, error) {
 	groups, err := s.client.ListBetaGroups(s.ctx, s.app.ID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	names := make([]string, 0, len(groups))
-	for _, g := range groups {
-		if strings.EqualFold(g.Name, name) {
-			return &g, nil
-		}
-		names = append(names, g.Name)
+	g, err := asc.MatchBetaGroup(groups, name)
+	return g, groups, err
+}
+
+// group is findGroup for commands that need the group to exist.
+func (s *ascSession) group(name string) (*asc.BetaGroup, error) {
+	g, groups, err := s.findGroup(name)
+	if err != nil || g != nil {
+		return g, err
 	}
 	has := "(none)"
-	if len(names) > 0 {
+	if len(groups) > 0 {
+		names := make([]string, 0, len(groups))
+		for _, g := range groups {
+			names = append(names, g.Name)
+		}
 		has = strings.Join(names, ", ")
 	}
 	return nil, fmt.Errorf("no TestFlight group named %s; %s has: %s", name, s.app.Name, has)
+}
+
+// testerFilter scopes tester lookups to the app, or to --group when given.
+func (s *ascSession) testerFilter(cmd *cobra.Command) (*asc.BetaTesterFilter, error) {
+	name, _ := cmd.Flags().GetString("group")
+	if name == "" {
+		return &asc.BetaTesterFilter{AppID: s.app.ID}, nil
+	}
+	g, err := s.group(name)
+	if err != nil {
+		return nil, err
+	}
+	return &asc.BetaTesterFilter{GroupID: g.ID}, nil
+}
+
+// tester finds one of the app's (or group's) testers by email.
+func (s *ascSession) tester(f *asc.BetaTesterFilter, email string) (*asc.BetaTester, error) {
+	scoped := *f
+	scoped.Email = email
+	t, err := s.client.FindBetaTester(s.ctx, &scoped)
+	if err != nil {
+		return nil, err
+	}
+	if t == nil {
+		return nil, fmt.Errorf("%s has no TestFlight tester %s", s.app.Name, email)
+	}
+	return t, nil
 }
 
 // printTable writes rows as aligned columns; the first row is the header.
@@ -337,15 +388,13 @@ func runASCBuilds(cmd *cobra.Command, _ []string) error {
 
 func runASCBuildsExpire(cmd *cobra.Command, _ []string) error {
 	number, _ := cmd.Flags().GetString("build-number")
-	if yes, _ := cmd.Flags().GetBool("yes"); !yes {
-		return fmt.Errorf("pass --yes to expire build %s; an expired build leaves TestFlight for good", number)
-	}
+	yes, _ := cmd.Flags().GetBool("yes")
 	s, cancel, err := openASC(cmd)
 	if err != nil {
 		return err
 	}
 	defer cancel()
-	builds, err := s.client.ListBuilds(s.ctx, &asc.BuildFilter{AppID: s.app.ID, Platform: asc.PlatformIOS, BuildNumber: number, Limit: 1})
+	builds, err := s.client.ListBuilds(s.ctx, &asc.BuildFilter{AppID: s.app.ID, Platform: asc.PlatformIOS, BuildNumber: number, Details: true, Limit: 1})
 	if err != nil {
 		return err
 	}
@@ -353,17 +402,21 @@ func runASCBuildsExpire(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("%s has no build %s", s.app.Name, number)
 	}
 	build := builds[0]
-	if build.Expired {
-		logf(s.out.log, "Build %s (%s) is already expired", build.BuildNumber, build.ID)
-	} else {
-		updated, err := s.client.ExpireBuild(s.ctx, build.ID)
-		if err != nil {
-			return err
-		}
-		build = *updated
-		logf(s.out.log, "Expired build %s (%s)", build.BuildNumber, build.ID)
-	}
 	row := toBuildRow(&build)
+	if build.Expired {
+		logf(s.out.log, "Build %s of %s (%s) is already expired", build.BuildNumber, build.Version, build.ID)
+		return finish(s.out, cmd, &row, nil, nil)
+	}
+	logf(s.out.log, "Will expire build %s of %s (%s, uploaded %s); it leaves TestFlight for good", build.BuildNumber, build.Version, build.ID, build.UploadedDate.Local().Format("2006-01-02"))
+	if !yes {
+		return fmt.Errorf("pass --yes to expire build %s", build.BuildNumber)
+	}
+	updated, err := s.client.ExpireBuild(s.ctx, build.ID)
+	if err != nil {
+		return err
+	}
+	row.Expired = updated.Expired
+	logf(s.out.log, "Expired build %s (%s)", build.BuildNumber, build.ID)
 	return finish(s.out, cmd, &row, nil, nil)
 }
 
@@ -455,7 +508,9 @@ func runASCGroupsCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer cancel()
-	if g, err := s.group(name); err == nil {
+	if g, _, err := s.findGroup(name); err != nil {
+		return err
+	} else if g != nil {
 		return fmt.Errorf("%s already has a TestFlight group named %s (%s)", s.app.Name, g.Name, groupKind(g))
 	}
 	g, err := s.client.CreateBetaGroup(s.ctx, asc.BetaGroupSpec{AppID: s.app.ID, Name: name, Internal: !external, PublicLinkEnabled: publicLink, HasAccessToAllBuilds: !external && !noAutoBuilds})
@@ -484,38 +539,27 @@ func runASCGroupsDelete(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if yes, _ := cmd.Flags().GetBool("yes"); row.Testers > 0 && !yes {
-		return fmt.Errorf("TestFlight group %s has %d testers; pass --yes to delete it anyway (the testers stay on the team)", g.Name, row.Testers)
+	logf(s.out.log, "Will delete TestFlight group %s (%s, %d testers, %s); its testers stay on the team", g.Name, groupKind(g), row.Testers, g.ID)
+	if yes, _ := cmd.Flags().GetBool("yes"); !yes {
+		return fmt.Errorf("pass --yes to delete TestFlight group %s", g.Name)
 	}
 	if err := s.client.DeleteBetaGroup(s.ctx, g.ID); err != nil {
 		return fmt.Errorf("delete TestFlight group %s: %w", g.Name, err)
 	}
-	logf(s.out.log, "Deleted TestFlight group %s (%s)", g.Name, groupKind(g))
+	logf(s.out.log, "Deleted TestFlight group %s", g.Name)
 	return finish(s.out, cmd, &row, nil, nil)
 }
 
 func runASCGroupsAddBuild(cmd *cobra.Command, args []string) error {
-	client, err := getASCClient()
+	s, cancel, err := openASC(cmd)
 	if err != nil {
 		return err
 	}
-	bundleID, err := resolveBundleID(cmd)
-	if err != nil {
-		return err
-	}
+	defer cancel()
 	buildNumber, _ := cmd.Flags().GetString("build-number")
 	noEncryption, _ := cmd.Flags().GetBool("no-encryption")
-	ctx, cancel := commandContext(cmd, false)
-	defer cancel()
-	out := newOutput(cmd)
-	res, err := distribute.SubmitTestFlight(ctx, client, &distribute.TestFlightOptions{
-		BundleID: bundleID, BuildNumber: buildNumber, Groups: []string{args[0]}, NoEncryption: noEncryption, Log: out.log,
-	})
-	return finish(out, cmd, res, err, func() {
-		fmt.Fprintf(cmd.OutOrStdout(), "Build ID: %s (build %s)\n", res.Build.ID, res.Build.BuildNumber)
-		if res.BetaReview != nil {
-			fmt.Fprintf(cmd.OutOrStdout(), "Beta review: %s\n", res.BetaReview.State)
-		}
+	return runTestFlight(s.ctx, cmd, s.client, s.out, &distribute.TestFlightOptions{
+		BundleID: s.app.BundleID, BuildNumber: buildNumber, Groups: []string{args[0]}, NoEncryption: noEncryption, Log: s.out.log,
 	})
 }
 
@@ -533,21 +577,21 @@ func runASCTesters(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	defer cancel()
-	f := &asc.BetaTesterFilter{AppID: s.app.ID}
-	if name, _ := cmd.Flags().GetString("group"); name != "" {
-		g, err := s.group(name)
-		if err != nil {
-			return err
-		}
-		f = &asc.BetaTesterFilter{GroupID: g.ID}
+	f, err := s.testerFilter(cmd)
+	if err != nil {
+		return err
 	}
 	testers, err := s.client.ListBetaTesters(s.ctx, f)
 	if err != nil {
 		return err
 	}
 	rows := make([]testerRow, 0, len(testers))
+	notInvited := 0
 	for _, t := range testers {
-		rows = append(rows, testerRow{ID: t.ID, Email: t.Email, FirstName: t.FirstName, LastName: t.LastName, State: t.State})
+		rows = append(rows, toTesterRow(&t))
+		if t.State == asc.BetaTesterNotInvited {
+			notInvited++
+		}
 	}
 	return finish(s.out, cmd, &rows, nil, func() {
 		if len(rows) == 0 {
@@ -559,7 +603,51 @@ func runASCTesters(cmd *cobra.Command, _ []string) error {
 			table = append(table, []string{r.Email, r.FirstName, r.LastName, r.State})
 		}
 		printTable(cmd.OutOrStdout(), table)
+		if notInvited > 0 {
+			fmt.Fprintf(cmd.OutOrStdout(), "%d NOT_INVITED: no email has gone out; send it with builder asc testers invite <email>\n", notInvited)
+		}
 	})
+}
+
+func toTesterRow(t *asc.BetaTester) testerRow {
+	return testerRow{ID: t.ID, Email: t.Email, FirstName: t.FirstName, LastName: t.LastName, State: t.State}
+}
+
+type inviteRow struct {
+	testerRow
+	// Invited is set when an invitation email was sent by this run.
+	Invited bool `json:"invited"`
+}
+
+func runASCTestersInvite(cmd *cobra.Command, emails []string) error {
+	s, cancel, err := openASC(cmd)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	f, err := s.testerFilter(cmd)
+	if err != nil {
+		return err
+	}
+	rows := make([]inviteRow, 0, len(emails))
+	for _, email := range emails {
+		t, err := s.tester(f, email)
+		if err != nil {
+			return err
+		}
+		row := inviteRow{testerRow: toTesterRow(t)}
+		switch t.State {
+		case asc.BetaTesterNotInvited, asc.BetaTesterInvited:
+			if t, err = distribute.InviteTester(s.ctx, s.client, s.out.log, s.app.ID, t); err != nil {
+				return err
+			}
+			row.State, row.Invited = t.State, true
+		default:
+			logf(s.out.log, "%s is %s; no invitation sent", t.Email, t.State)
+		}
+		rows = append(rows, row)
+	}
+	return finish(s.out, cmd, &rows, nil, nil)
 }
 
 func runASCTestersAdd(cmd *cobra.Command, emails []string) error {
@@ -699,7 +787,8 @@ type testerRemoveRow struct {
 
 func runASCTestersRemove(cmd *cobra.Command, emails []string) error {
 	groupName, _ := cmd.Flags().GetString("group")
-	if yes, _ := cmd.Flags().GetBool("yes"); groupName == "" && !yes {
+	yes, _ := cmd.Flags().GetBool("yes")
+	if groupName == "" && !yes {
 		return fmt.Errorf("pass --group <name> to remove the testers from one group, or --yes to remove them from TestFlight entirely")
 	}
 	s, cancel, err := openASC(cmd)
@@ -707,45 +796,44 @@ func runASCTestersRemove(cmd *cobra.Command, emails []string) error {
 		return err
 	}
 	defer cancel()
-	rows := make([]testerRemoveRow, 0, len(emails))
-	if groupName == "" {
-		for _, email := range emails {
-			t, err := s.client.FindBetaTester(s.ctx, &asc.BetaTesterFilter{AppID: s.app.ID, Email: email})
-			if err != nil {
-				return err
-			}
-			if t == nil {
-				return fmt.Errorf("%s has no tester %s", s.app.Name, email)
-			}
-			if err := s.client.DeleteBetaTester(s.ctx, t.ID); err != nil {
-				return fmt.Errorf("remove %s: %w", email, err)
-			}
-			logf(s.out.log, "Removed %s from TestFlight", t.Email)
-			rows = append(rows, testerRemoveRow{ID: t.ID, Email: t.Email})
+	var g *asc.BetaGroup
+	f := &asc.BetaTesterFilter{AppID: s.app.ID}
+	if groupName != "" {
+		if g, err = s.group(groupName); err != nil {
+			return err
 		}
-		return finish(s.out, cmd, &rows, nil, nil)
+		f = &asc.BetaTesterFilter{GroupID: g.ID}
 	}
-	g, err := s.group(groupName)
-	if err != nil {
-		return err
-	}
-	var ids []string
+	// Resolve every address before touching anything, so a typo in the
+	// second one does not leave the first half removed.
+	rows := make([]testerRemoveRow, 0, len(emails))
+	ids := make([]string, 0, len(emails))
 	for _, email := range emails {
-		t, err := s.client.FindBetaTester(s.ctx, &asc.BetaTesterFilter{GroupID: g.ID, Email: email})
+		t, err := s.tester(f, email)
 		if err != nil {
 			return err
 		}
-		if t == nil {
-			return fmt.Errorf("TestFlight group %s has no tester %s", g.Name, email)
-		}
+		rows = append(rows, testerRemoveRow{ID: t.ID, Email: t.Email})
 		ids = append(ids, t.ID)
-		rows = append(rows, testerRemoveRow{ID: t.ID, Email: t.Email, Group: g.Name})
 	}
-	if err := s.client.RemoveBetaTestersFromGroup(s.ctx, g.ID, ids); err != nil {
-		return fmt.Errorf("remove from %s: %w", g.Name, err)
+	if g != nil {
+		if err := s.client.RemoveBetaTestersFromGroup(s.ctx, g.ID, ids); err != nil {
+			return fmt.Errorf("remove from %s: %w", g.Name, err)
+		}
+		for i := range rows {
+			rows[i].Group = g.Name
+			logf(s.out.log, "Removed %s from %s", rows[i].Email, g.Name)
+		}
+		return finish(s.out, cmd, &rows, nil, nil)
 	}
 	for _, r := range rows {
-		logf(s.out.log, "Removed %s from %s", r.Email, g.Name)
+		logf(s.out.log, "Will remove %s (%s) from TestFlight for the whole team: every app and every group", r.Email, r.ID)
+	}
+	for _, r := range rows {
+		if err := s.client.DeleteBetaTester(s.ctx, r.ID); err != nil {
+			return fmt.Errorf("remove %s: %w", r.Email, err)
+		}
+		logf(s.out.log, "Removed %s from TestFlight", r.Email)
 	}
 	return finish(s.out, cmd, &rows, nil, nil)
 }
