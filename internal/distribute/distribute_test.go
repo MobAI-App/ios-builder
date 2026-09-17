@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -68,10 +69,20 @@ type fake struct {
 	openSubmission   bool
 	submitStatus     int
 	betaReviewExists bool
+	// noGroups empties the group list; autoGroup adds an internal group with
+	// automatic distribution; created collects groups made through the API.
+	noGroups  bool
+	autoGroup bool
+	created   []map[string]any
+	// users are team members by email; testers maps tester emails to IDs;
+	// pendingInvite makes every invitation lookup find one.
+	users         map[string]bool
+	testers       map[string]string
+	pendingInvite bool
 }
 
 func newFake(t *testing.T) *fake {
-	f := &fake{t: t, bodies: map[string]map[string]any{}, buildState: "VALID", versionState: "PREPARE_FOR_SUBMISSION", submitStatus: 200}
+	f := &fake{t: t, bodies: map[string]map[string]any{}, buildState: "VALID", versionState: "PREPARE_FOR_SUBMISSION", submitStatus: 200, users: map[string]bool{}, testers: map[string]string{}}
 	mux := http.NewServeMux()
 	res := func(typ, id string, attrs map[string]any, rels map[string]any) map[string]any {
 		r := map[string]any{"type": typ, "id": id, "attributes": attrs}
@@ -159,9 +170,68 @@ func newFake(t *testing.T) *fake {
 		one(w, 200, build())
 	}))
 	mux.HandleFunc("GET /v1/betaGroups", wrap(func(w http.ResponseWriter, r *http.Request) {
-		many(w,
-			res("betaGroups", "g-int", map[string]any{"name": "Team", "isInternalGroup": true}, nil),
-			res("betaGroups", "g-ext", map[string]any{"name": "Beta Testers", "isInternalGroup": false, "publicLinkEnabled": true}, nil))
+		if f.noGroups {
+			many(w)
+			return
+		}
+		groups := []any{
+			res("betaGroups", "g-int", map[string]any{"name": "Team", "isInternalGroup": true, "hasAccessToAllBuilds": false}, nil),
+			res("betaGroups", "g-ext", map[string]any{"name": "Beta Testers", "isInternalGroup": false, "publicLinkEnabled": true}, nil),
+		}
+		if f.autoGroup {
+			groups = append(groups, res("betaGroups", "g-auto", map[string]any{"name": "Everyone", "isInternalGroup": true, "hasAccessToAllBuilds": true}, nil))
+		}
+		for _, g := range f.created {
+			groups = append(groups, g)
+		}
+		many(w, groups...)
+	}))
+	mux.HandleFunc("POST /v1/betaGroups", wrap(func(w http.ResponseWriter, r *http.Request) {
+		attrs := obj(f.t, f.bodies["POST /v1/betaGroups"], "data", "attributes")
+		g := res("betaGroups", fmt.Sprintf("g-new-%d", len(f.created)+1), attrs, nil)
+		f.created = append(f.created, g)
+		one(w, 201, g)
+	}))
+	mux.HandleFunc("POST /v1/betaGroups/{id}/relationships/betaTesters", wrap(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
+	mux.HandleFunc("GET /v1/betaTesters", wrap(func(w http.ResponseWriter, r *http.Request) {
+		email := r.URL.Query().Get("filter[email]")
+		var testers []any
+		for e, id := range f.testers {
+			if email == "" || strings.EqualFold(e, email) {
+				testers = append(testers, res("betaTesters", id, map[string]any{"email": e, "state": "ACCEPTED"}, nil))
+			}
+		}
+		many(w, testers...)
+	}))
+	mux.HandleFunc("POST /v1/betaTesters", wrap(func(w http.ResponseWriter, r *http.Request) {
+		email, _ := obj(f.t, f.bodies["POST /v1/betaTesters"], "data", "attributes")["email"].(string)
+		if _, exists := f.testers[email]; exists {
+			writeJSON(w, 409, map[string]any{"errors": []map[string]any{{"status": "409", "code": "ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE", "title": "duplicate", "detail": "A beta tester with the email '" + email + "' already exists."}}})
+			return
+		}
+		id := fmt.Sprintf("t-new-%d", len(f.testers)+1)
+		f.testers[email] = id
+		one(w, 201, res("betaTesters", id, map[string]any{"email": email, "state": "INVITED"}, nil))
+	}))
+	mux.HandleFunc("GET /v1/users", wrap(func(w http.ResponseWriter, r *http.Request) {
+		email := r.URL.Query().Get("filter[username]")
+		if f.users[email] {
+			many(w, res("users", "u-"+email, map[string]any{"username": email, "firstName": "Team", "lastName": "Member", "roles": []string{"DEVELOPER"}}, nil))
+			return
+		}
+		many(w)
+	}))
+	mux.HandleFunc("GET /v1/userInvitations", wrap(func(w http.ResponseWriter, r *http.Request) {
+		email := r.URL.Query().Get("filter[email]")
+		if f.pendingInvite {
+			many(w, res("userInvitations", "inv-0", map[string]any{"email": email, "roles": []string{"CUSTOMER_SUPPORT"}}, nil))
+			return
+		}
+		many(w)
+	}))
+	mux.HandleFunc("POST /v1/userInvitations", wrap(func(w http.ResponseWriter, r *http.Request) {
+		attrs := obj(f.t, f.bodies["POST /v1/userInvitations"], "data", "attributes")
+		one(w, 201, res("userInvitations", "inv-1", attrs, nil))
 	}))
 	mux.HandleFunc("GET /v1/builds/{id}/betaBuildLocalizations", wrap(func(w http.ResponseWriter, r *http.Request) {
 		many(w, res("betaBuildLocalizations", "loc-en", map[string]any{"locale": "en-US", "whatsNew": "old"}, nil))

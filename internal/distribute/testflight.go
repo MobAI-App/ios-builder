@@ -17,8 +17,10 @@ type TestFlightOptions struct {
 	Version     string
 	BuildNumber string
 	// Groups are TestFlight group names (case-insensitive). Empty adds the
-	// build nowhere and reports the available groups instead.
-	Groups []string
+	// build nowhere and reports the available groups instead. A name the app
+	// has no group for is created: internal, or external with External.
+	Groups   []string
+	External bool
 	// Notes is the "What to Test" text; Locale defaults to the app's primary locale.
 	Notes  string
 	Locale string
@@ -35,6 +37,11 @@ type GroupRef struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
 	Internal bool   `json:"internal"`
+	// Created is set when the group did not exist and was made for this submit.
+	Created bool `json:"created,omitempty"`
+	// AutoBuilds marks an internal group with automatic distribution; the
+	// build was not added to it because every build already reaches it.
+	AutoBuilds bool `json:"auto_builds,omitempty"`
 }
 
 // ReviewRef describes a review's state.
@@ -98,13 +105,14 @@ func SubmitTestFlight(ctx context.Context, client *asc.Client, opts *TestFlightO
 		for _, g := range groups {
 			res.AvailableGroups = append(res.AvailableGroups, GroupRef{ID: g.ID, Name: g.Name, Internal: g.Internal})
 		}
-		logf(opts.Log, "No --group given; the build was added to no TestFlight group. Available groups:")
+		logf(opts.Log, "No --group given; the build was added to no TestFlight group.")
+		if len(groups) == 0 {
+			logf(opts.Log, "Available groups: (none)")
+		} else {
+			logf(opts.Log, "Available groups:")
+		}
 		for _, g := range groups {
-			kind := "external"
-			if g.Internal {
-				kind = "internal"
-			}
-			logf(opts.Log, "  %s (%s)", g.Name, kind)
+			logf(opts.Log, "  %s (%s)", g.Name, groupKind(g.Internal))
 		}
 		if res.Compliance == "pending" {
 			logf(opts.Log, "Export compliance is unanswered (Missing Compliance); pass --no-encryption if the app uses no non-exempt encryption.")
@@ -114,31 +122,25 @@ func SubmitTestFlight(ctx context.Context, client *asc.Client, opts *TestFlightO
 
 	var ids []string
 	var external bool
-	var unknown []string
 	for _, name := range opts.Groups {
-		found := false
-		for _, g := range groups {
-			if strings.EqualFold(g.Name, name) {
-				ids = append(ids, g.ID)
-				res.Groups = append(res.Groups, GroupRef{ID: g.ID, Name: g.Name, Internal: g.Internal})
-				external = external || !g.Internal
-				found = true
-				break
-			}
+		g, err := findOrCreateGroup(ctx, client, opts.Log, app.ID, groups, name, !opts.External)
+		if err != nil {
+			return res, err
 		}
-		if !found {
-			unknown = append(unknown, name)
+		res.Groups = append(res.Groups, *g)
+		if g.AutoBuilds {
+			logf(opts.Log, "%s is an internal group with automatic distribution: every processed build is already available to its testers", g.Name)
+			continue
 		}
-	}
-	if len(unknown) > 0 {
-		names := make([]string, 0, len(groups))
-		for _, g := range groups {
-			names = append(names, g.Name)
-		}
-		return res, fmt.Errorf("no TestFlight group named %s; %s has: %s", strings.Join(unknown, ", "), app.Name, strings.Join(names, ", "))
+		ids = append(ids, g.ID)
+		external = external || !g.Internal
 	}
 	if res.Compliance == "pending" {
 		return res, fmt.Errorf("build %s has no export compliance answer, so TestFlight cannot distribute it; pass --no-encryption if the app uses no non-exempt encryption, or answer in App Store Connect", build.BuildNumber)
+	}
+	if len(ids) == 0 {
+		logf(opts.Log, "TestFlight: %s", res.Link)
+		return res, nil
 	}
 
 	if external {
@@ -179,4 +181,27 @@ func SubmitTestFlight(ctx context.Context, client *asc.Client, opts *TestFlightO
 	}
 	logf(opts.Log, "TestFlight: %s", res.Link)
 	return res, nil
+}
+
+func groupKind(internal bool) string {
+	if internal {
+		return "internal"
+	}
+	return "external"
+}
+
+// findOrCreateGroup matches name against the app's groups (case-insensitive)
+// and creates it when none matches. Existing groups keep their type.
+func findOrCreateGroup(ctx context.Context, client *asc.Client, log io.Writer, appID string, groups []asc.BetaGroup, name string, internal bool) (*GroupRef, error) {
+	for _, g := range groups {
+		if strings.EqualFold(g.Name, name) {
+			return &GroupRef{ID: g.ID, Name: g.Name, Internal: g.Internal, AutoBuilds: g.Internal && g.HasAccessToAllBuilds}, nil
+		}
+	}
+	g, err := client.CreateBetaGroup(ctx, asc.BetaGroupSpec{AppID: appID, Name: name, Internal: internal})
+	if err != nil {
+		return nil, fmt.Errorf("create TestFlight group %s: %w", name, err)
+	}
+	logf(log, "Created TestFlight group %s (%s)", g.Name, groupKind(g.Internal))
+	return &GroupRef{ID: g.ID, Name: g.Name, Internal: g.Internal, Created: true}, nil
 }

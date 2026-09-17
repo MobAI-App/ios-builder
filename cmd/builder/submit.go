@@ -17,8 +17,9 @@ var iosSubmitCmd = &cobra.Command{
 
   --testflight   adds the build to the named TestFlight groups (--group, repeatable),
                  sets the "What to Test" notes (--notes) and, for external groups,
-                 submits the build for beta review. Without --group it reports the
-                 build and lists the available groups.
+                 submits the build for beta review. A group that does not exist is
+                 created (internal, or external with --external). Without --group
+                 it reports the build and lists the available groups.
   --app-store    finds or creates the App Store version for the marketing version,
                  attaches the build, sets the release type and submits it for review.
                  The version's metadata (description, screenshots, pricing, privacy)
@@ -37,7 +38,8 @@ func init() {
 	iosSubmitCmd.Flags().String("bundle-id", "", "App bundle ID, instead of reading an IPA")
 	iosSubmitCmd.Flags().String("build-number", "", "Build number (CFBundleVersion) to use (default: newest VALID build)")
 	iosSubmitCmd.Flags().String("version", "", "Marketing version (default: from the IPA; required with --app-store and --bundle-id)")
-	iosSubmitCmd.Flags().StringArray("group", nil, "TestFlight group name to add the build to (repeatable)")
+	iosSubmitCmd.Flags().StringArray("group", nil, "TestFlight group name to add the build to (repeatable; created if missing)")
+	iosSubmitCmd.Flags().Bool("external", false, "Create missing --group names as external groups (default: internal)")
 	iosSubmitCmd.Flags().String("notes", "", "What to Test notes for the build")
 	iosSubmitCmd.Flags().String("locale", "", "Locale for --notes (default: the app's primary locale)")
 	iosSubmitCmd.Flags().String("release", "", "App Store release: manual or after-approval")
@@ -83,10 +85,11 @@ func runIOSSubmit(cmd *cobra.Command, _ []string) error {
 
 	if testflight {
 		groups, _ := cmd.Flags().GetStringArray("group")
+		external, _ := cmd.Flags().GetBool("external")
 		notes, _ := cmd.Flags().GetString("notes")
 		locale, _ := cmd.Flags().GetString("locale")
 		res, err := distribute.SubmitTestFlight(ctx, client, &distribute.TestFlightOptions{
-			BundleID: bundleID, Version: version, BuildNumber: buildNumber, Groups: groups, Notes: notes, Locale: locale,
+			BundleID: bundleID, Version: version, BuildNumber: buildNumber, Groups: groups, External: external, Notes: notes, Locale: locale,
 			NoEncryption: noEncryption, Wait: wait, Log: out.log,
 		})
 		return finish(out, cmd, res, err, func() {
