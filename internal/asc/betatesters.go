@@ -56,7 +56,8 @@ func (c *Client) ListBetaTesters(ctx context.Context, f *BetaTesterFilter) ([]Be
 		q.Set("filter[betaGroups]", f.GroupID)
 	}
 	if f.Email != "" {
-		q.Set("filter[email]", f.Email)
+		// App Store Connect stores addresses lowercased.
+		q.Set("filter[email]", strings.ToLower(f.Email))
 	}
 	rs, err := getAll[betaTesterAttributes](ctx, c, "/v1/betaTesters", q)
 	if err != nil {
@@ -82,6 +83,27 @@ func (c *Client) FindBetaTester(ctx context.Context, f *BetaTesterFilter) (*Beta
 		}
 	}
 	return nil, nil
+}
+
+// GetBetaTester fetches one tester, e.g. for its current state.
+func (c *Client) GetBetaTester(ctx context.Context, testerID string) (*BetaTester, error) {
+	r, err := getOne[betaTesterAttributes](ctx, c, "/v1/betaTesters/"+testerID, nil)
+	if err != nil {
+		return nil, err
+	}
+	t := toBetaTester(*r)
+	return &t, nil
+}
+
+// InviteBetaTester sends, or resends, the app's TestFlight invitation email to
+// a tester the app already has. Team members put into an internal group stay
+// NOT_INVITED until this is called.
+func (c *Client) InviteBetaTester(ctx context.Context, appID, testerID string) error {
+	req := Resource[struct{}]{
+		Type:          "betaTesterInvitations",
+		Relationships: Relationships{"app": ToOne("apps", appID), "betaTester": ToOne("betaTesters", testerID)},
+	}
+	return c.Post(ctx, "/v1/betaTesterInvitations", Document[Resource[struct{}]]{Data: req}, nil)
 }
 
 // BetaTesterSpec describes a tester to invite.

@@ -2,7 +2,9 @@ package asc
 
 import (
 	"context"
+	"fmt"
 	"net/url"
+	"strings"
 )
 
 // BetaGroup is a TestFlight tester group.
@@ -51,6 +53,29 @@ func (c *Client) ListBetaGroups(ctx context.Context, appID string) ([]BetaGroup,
 		groups = append(groups, toBetaGroup(r))
 	}
 	return groups, nil
+}
+
+// MatchBetaGroup picks the group called name, case-insensitively. It returns
+// nil when none matches and an error when several do, since acting on the
+// wrong one of "Team" and "team" would be silent.
+func MatchBetaGroup(groups []BetaGroup, name string) (*BetaGroup, error) {
+	var matches []BetaGroup
+	for _, g := range groups {
+		if strings.EqualFold(g.Name, name) {
+			matches = append(matches, g)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return nil, nil
+	case 1:
+		return &matches[0], nil
+	}
+	names := make([]string, 0, len(matches))
+	for _, g := range matches {
+		names = append(names, g.Name+" ("+g.ID+")")
+	}
+	return nil, fmt.Errorf("%d TestFlight groups match %s: %s; rename one in App Store Connect first", len(matches), name, strings.Join(names, ", "))
 }
 
 // BetaGroupSpec describes a TestFlight group to create.

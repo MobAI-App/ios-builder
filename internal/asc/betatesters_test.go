@@ -33,10 +33,14 @@ func TestListBetaTestersFilters(t *testing.T) {
 	if len(testers) != 2 || testers[0].ID != "t1" || testers[0].FirstName != "Ann" || testers[0].State != BetaTesterInstalled || testers[1].State != BetaTesterNotInvited {
 		t.Errorf("testers = %+v", testers)
 	}
-	// FindBetaTester matches the address exactly, since Apple's filter is a substring match.
+	// FindBetaTester matches the address exactly, since Apple's filter is a
+	// substring match, and sends it lowercased, since Apple stores it so.
 	found, err := c.FindBetaTester(context.Background(), &BetaTesterFilter{Email: "B@example.com"})
 	if err != nil || found == nil || found.ID != "t2" {
 		t.Errorf("found = %+v, err = %v", found, err)
+	}
+	if query.Get("filter[email]") != "b@example.com" {
+		t.Errorf("filter[email] = %q, want lowercased", query.Get("filter[email]"))
 	}
 	if found, err = c.FindBetaTester(context.Background(), &BetaTesterFilter{Email: "example.com"}); err != nil || found != nil {
 		t.Errorf("substring must not match: %+v, %v", found, err)
@@ -118,6 +122,43 @@ func TestAddBetaTesterAlreadyExists(t *testing.T) {
 	}
 	if err := c.DeleteBetaTester(context.Background(), "t-old"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestInviteBetaTesterBody(t *testing.T) {
+	var body map[string]any
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/betaTesterInvitations":
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			writeJSON(w, 201, map[string]any{"data": map[string]any{"type": "betaTesterInvitations", "id": "inv-9"}})
+		case "GET /v1/betaTesters/t1":
+			writeJSON(w, 200, map[string]any{"data": map[string]any{"type": "betaTesters", "id": "t1", "attributes": map[string]any{"email": "a@example.com", "inviteType": "EMAIL", "state": "INVITED"}}})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL)
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	if err := c.InviteBetaTester(context.Background(), "app-1", "t1"); err != nil {
+		t.Fatal(err)
+	}
+	data := obj(t, body, "data")
+	if data["type"] != "betaTesterInvitations" {
+		t.Errorf("type = %v", data["type"])
+	}
+	if _, has := data["attributes"]; has {
+		t.Errorf("an invitation has no attributes: %v", data)
+	}
+	if obj(t, data, "relationships", "app", "data")["id"] != "app-1" || obj(t, data, "relationships", "betaTester", "data")["id"] != "t1" || obj(t, data, "relationships", "betaTester", "data")["type"] != "betaTesters" {
+		t.Errorf("relationships = %v", data["relationships"])
+	}
+	tester, err := c.GetBetaTester(context.Background(), "t1")
+	if err != nil || tester.State != BetaTesterInvited || tester.InviteType != "EMAIL" {
+		t.Errorf("tester = %+v, err = %v", tester, err)
 	}
 }
 

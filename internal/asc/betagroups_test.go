@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -55,6 +56,20 @@ func TestCreateBetaGroupBodies(t *testing.T) {
 	}
 	if _, has := attrs["hasAccessToAllBuilds"]; has {
 		t.Errorf("hasAccessToAllBuilds is internal-only: %v", attrs)
+	}
+}
+
+func TestMatchBetaGroup(t *testing.T) {
+	groups := []BetaGroup{{ID: "g1", Name: "Team", Internal: true}, {ID: "g2", Name: "Beta Testers"}, {ID: "g3", Name: "beta testers"}}
+	if g, err := MatchBetaGroup(groups, "team"); err != nil || g == nil || g.ID != "g1" {
+		t.Errorf("case-insensitive match = %+v, err = %v", g, err)
+	}
+	if g, err := MatchBetaGroup(groups, "Nightly"); err != nil || g != nil {
+		t.Errorf("no match = %+v, err = %v", g, err)
+	}
+	g, err := MatchBetaGroup(groups, "Beta Testers")
+	if g != nil || err == nil || !strings.Contains(err.Error(), "Beta Testers (g2)") || !strings.Contains(err.Error(), "beta testers (g3)") {
+		t.Errorf("duplicates must be refused and listed: %+v, %v", g, err)
 	}
 }
 
