@@ -42,11 +42,10 @@ func ParseDistribution(s string) (string, error) {
 	return "", fmt.Errorf("distribution %q must be one of %s (internal is ad-hoc)", s, strings.Join(Distributions, ", "))
 }
 
-// SigningSet returns the suffix of the secrets a distribution is signed with:
-// the canonical name upper-cased with - as _ (DEVELOPMENT, AD_HOC, STORE,
-// ENTERPRISE). No distribution has no set: that is the legacy ios.signing
-// path, which reads the unsuffixed secrets. The shell function signing_set in
-// ios-build.yml and runner.sh is the same table.
+// SigningSet returns the suffix of the secrets a distribution is signed with
+// (DEVELOPMENT, AD_HOC, STORE, ENTERPRISE; "" for the legacy ios.signing path,
+// which reads the unsuffixed secrets). The shell function signing_set in
+// ios-build.yml and runner.sh is the same table and must agree.
 func SigningSet(distribution string) (string, error) {
 	d, err := ParseDistribution(distribution)
 	if err != nil {

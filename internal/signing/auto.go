@@ -172,9 +172,9 @@ type AutoResult struct {
 
 // Auto provisions everything an iOS build needs to sign through the App Store
 // Connect API: the App ID, a certificate whose private key is on this
-// machine, the devices, and a profile tying them together. It is idempotent:
-// a second run reuses what is valid and recreates only what is missing,
-// expired, invalid or no longer matches. Nothing is ever revoked.
+// machine, the devices, and a profile tying them together. It is idempotent
+// (a second run recreates only what is missing, expired, invalid or changed)
+// and never revokes anything.
 func Auto(ctx context.Context, client *asc.Client, opts *AutoOptions) (*AutoResult, error) {
 	if opts.BundleID == "" {
 		return nil, errors.New("bundle ID is required")
@@ -223,9 +223,8 @@ func Auto(ctx context.Context, client *asc.Client, opts *AutoOptions) (*AutoResu
 		}
 	}
 
-	// 3. Certificate. A generated key is on disk before the CSR goes to
-	// Apple: a certificate whose key is lost cannot be revoked by Builder and
-	// occupies one of the team's slots for a year.
+	// 3. Certificate, with a generated key on disk before the CSR goes to
+	// Apple: a certificate whose key is lost occupies a team slot for a year.
 	if err := os.MkdirAll(opts.OutDir, 0755); err != nil {
 		return res, fmt.Errorf("create %s: %w", opts.OutDir, err)
 	}

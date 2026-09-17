@@ -32,10 +32,9 @@ func (c *Client) GetPublicKey(ctx context.Context, owner, repo string) (*PublicK
 }
 
 // ListSecretNames returns the names of the repository's Actions secrets
-// (values are never readable). It follows the pages GitHub returns. GitHub
-// answers 404 (token without the repo scope) or 403 (no admin access) rather
-// than an empty list, so those name the cause instead of reading as "no
-// secrets".
+// (values are never readable), following every page. GitHub answers 404
+// (token without the repo scope) or 403 (no admin access) rather than an
+// empty list, so those name the cause instead of reading as "no secrets".
 func (c *Client) ListSecretNames(ctx context.Context, owner, repo string) ([]string, error) {
 	var names []string
 	for page := 1; ; page++ {

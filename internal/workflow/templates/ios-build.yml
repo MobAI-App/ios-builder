@@ -81,10 +81,9 @@ jobs:
           git checkout --force snapshot
           echo "Building $(git rev-parse --short HEAD)"
 
-      # Dispatch inputs arrive with their declared defaults. A tag push has no
-      # inputs, so the values come from builder.json in the tagged commit and
-      # the build id is the tag name after the prefix. A tag build cannot pick
-      # a profile per run; it applies builder.json's defaultProfile, if any.
+      # Dispatch inputs arrive with their declared defaults; a tag push has none,
+      # so the values come from builder.json in the tagged commit (defaultProfile
+      # included) and the build id is the tag name after the prefix.
       - name: Resolve parameters
         id: params
         env:
@@ -129,10 +128,8 @@ jobs:
           param flutter_version  "$IN_FLUTTER_VERSION" '.flutter.version' ''
           param jdk_version      "$IN_JDK_VERSION" '.kmp.jdkVersion' '17'
 
-          # The rest of the profile: name (for the summary), distribution
-          # (which signing set the signing step reads and which profile type
-          # it expects) and env, exported to every step from here on so
-          # dependency installs and the build see it.
+          # The rest of the profile: name, distribution (selects the signing
+          # set) and env, exported from here on so dependency installs see it.
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             PROFILE_JSON="$IN_PROFILE"
           elif [ -f builder.json ]; then
@@ -141,12 +138,10 @@ jobs:
           [ -n "${PROFILE_JSON:-}" ] || PROFILE_JSON='{}'
           PROFILE=$(jq -r '.name // ""' <<< "$PROFILE_JSON")
           DISTRIBUTION=$(jq -r '.distribution // ""' <<< "$PROFILE_JSON")
-          # internal is an alias of ad-hoc; the CLI sends the canonical name,
-          # a tag build reads whatever builder.json says.
+          # The CLI sends the canonical name; a tag build reads whatever builder.json says.
           case "$DISTRIBUTION" in internal) DISTRIBUTION=ad-hoc ;; esac
-          # The suffix of the IOS_* secrets a distribution is signed with: its
-          # canonical name upper-cased. No distribution has no set (the legacy
-          # ios.signing path reads the unsuffixed secrets). Same table in runner.sh.
+          # The suffix of the IOS_* secrets a distribution is signed with; no
+          # distribution means the legacy unsuffixed secrets. Same table in runner.sh.
           signing_set() {
             case "$1" in
               '') echo '' ;;
@@ -166,10 +161,9 @@ jobs:
           echo "profile=${PROFILE:-(none)}"
           echo "distribution=$DISTRIBUTION"
           echo "signing_set=$SIGNING_SET"
-          # Values are base64 per entry so newlines and quotes survive; the
-          # heredoc form of GITHUB_ENV then takes them verbatim, with a random
-          # delimiter so no value line can end it early. Names are checked so a
-          # value cannot smuggle in a second variable.
+          # Values are base64 per entry so newlines and quotes survive, and the
+          # GITHUB_ENV heredoc gets a random delimiter so no value line can end
+          # it early. Names are checked so a value cannot smuggle in a second variable.
           if [ "$(jq -r '.env // {} | type' <<< "$PROFILE_JSON")" != "object" ]; then
             echo "::error::the profile's env must be a JSON object of variable names to string values"; exit 1
           fi
@@ -349,10 +343,8 @@ jobs:
           restore-keys: |
             pods-${{ runner.os }}-
 
-      # One set of secrets per distribution, IOS_*_<SET>, selected by the
-      # build profile's distribution; the unsuffixed names serve builds
-      # without a profile (ios.signing). A secret that does not exist arrives
-      # empty.
+      # One set of secrets per distribution, IOS_*_<SET>; the unsuffixed names
+      # serve builds without a profile. A secret that does not exist arrives empty.
       - name: Install certificate and provisioning profile
         if: steps.params.outputs.use_signing == 'true'
         env:
@@ -378,13 +370,10 @@ jobs:
           set -e
           fail() { echo "::error::$*"; exit 1; }
 
-          # Picks the secrets of the set the build profile's distribution names
-          # (IOS_CERTIFICATE_<SET> and friends) into IOS_CERTIFICATE,
-          # IOS_CERTIFICATE_PASSWORD and IOS_PROVISIONING_PROFILE. A set needs
-          # all three (builder signing setup always writes a password). With
-          # no distribution — ios.signing without a profile — the unsuffixed
-          # secrets are used as they are, password optional. SIGNING_SET_USED
-          # says which it was. Same function in runner.sh.
+          # Picks the set's IOS_*_<SET> secrets into the unsuffixed names, or with
+          # no distribution takes the unsuffixed ones as they are (password
+          # optional). A suffixed set needs all three, since builder signing setup
+          # always writes a password.
           select_signing_set() {
             if [ -z "$SIGNING_SET" ]; then
               if [ -z "${IOS_CERTIFICATE:-}" ] || [ -z "${IOS_PROVISIONING_PROFILE:-}" ]; then
@@ -407,12 +396,10 @@ jobs:
             echo "Signing set: $SIGNING_SET_USED"
           }
 
-          # The profile in the set must be the type the build profile asked
-          # for, or the export method, and the IPA, would not be what the
-          # profile promised. Names are compared canonically: the export
-          # method calls the store distribution app-store, and a tag build may
-          # say internal for ad-hoc. The unsuffixed secrets (no distribution)
-          # are taken as they are.
+          # The profile in the set must be the type the build profile asked for,
+          # or the IPA would not be what the profile promised. Compared
+          # canonically: the export method says app-store for store, and a tag
+          # build may say internal for ad-hoc.
           check_signing_set() {
             [ "$SIGNING_SET_USED" != legacy ] || return 0
             local have="$1" want="$DISTRIBUTION"
@@ -424,10 +411,9 @@ jobs:
           }
 
           # The export method has to match the profile, or -exportArchive fails
-          # and App Store Connect rejects the IPA. Xcode 15.3+ also accepts
-          # debugging/release-testing/app-store-connect, but these legacy names
-          # still work in Xcode 16 and are the only ones older Xcodes (pinned or
-          # self-hosted runners) understand, so both templates use them.
+          # and App Store Connect rejects the IPA. These legacy names are the only
+          # ones older Xcodes (pinned or self-hosted runners) understand, and
+          # Xcode 16 still takes them.
           detect_export_method() {
             if [ "$(plutil -extract ProvisionsAllDevices raw -o - "$1" 2>/dev/null)" = "true" ]; then
               echo enterprise
@@ -443,10 +429,8 @@ jobs:
           }
 
           # The certificate names that can sign for a profile of this type, the
-          # current one first. Apple renamed the certificates in 2021; keychains
-          # still hold iPhone Developer / iPhone Distribution certificates that
-          # sign exactly the same profiles. Duplicated verbatim in ios-build.yml
-          # and runner.sh.
+          # current one first: keychains still hold pre-2021 iPhone Developer /
+          # iPhone Distribution certificates that sign the same profiles.
           signing_identities() {
             case "$1" in
               development) printf '%s\n' "Apple Development" "iPhone Developer" ;;
@@ -455,12 +439,10 @@ jobs:
             esac
           }
 
-          # The identity to archive with: the first of those names the imported
-          # certificate actually goes by ($2 is security find-identity output).
-          # Without an explicit CODE_SIGN_IDENTITY the archive keeps the
-          # project's default, and Xcode refuses to pair a development identity
-          # with a distribution profile: "No signing certificate iOS Development
-          # found". Duplicated verbatim in ios-build.yml and runner.sh.
+          # The identity to archive with: the first of those names in security
+          # find-identity's output ($2). Without an explicit CODE_SIGN_IDENTITY the
+          # archive keeps the project's default, which Xcode refuses to pair with a
+          # distribution profile ("No signing certificate iOS Development found").
           signing_identity() {
             local names name
             names=$(signing_identities "$1") || return 1
@@ -553,18 +535,11 @@ jobs:
           set -e
           fail() { echo "::error::$*"; exit 1; }
 
-          # Manual signing goes into the app target's build configurations, not on
-          # the xcodebuild command line: a command-line setting applies to every
-          # target in the workspace, and a CocoaPods framework target refuses a
-          # provisioning profile ("FirebaseCore does not support provisioning
-          # profiles"). Edits the application targets of the .xcodeproj files in the
-          # current directory (Pods/Pods.xcodeproj is a level down): the only one, or
-          # with several the ones whose PRODUCT_BUNDLE_IDENTIFIER the profile's app id
-          # ($1, "*" or "com.example.*" for a wildcard) covers. DEVELOPMENT_TEAM,
-          # PROVISIONING_PROFILE_NAME and CODE_SIGN_IDENTITY come from the
-          # environment. The pbxproj is written back as an XML plist, which Xcode
-          # reads like the OpenStep form. Duplicated verbatim in ios-build.yml and
-          # runner.sh.
+          # Writes the manual signing settings (team, profile and identity from the
+          # environment) into the application targets of ./*.xcodeproj that the
+          # profile's app id ($1, "*" wildcards) covers, as an XML plist Xcode reads.
+          # On the xcodebuild command line they would apply to every target, and a
+          # CocoaPods framework target refuses a provisioning profile.
           apply_signing_to_app_target() {
             local projects=(*.xcodeproj) out
             [ -d "${projects[0]}" ] || fail "No .xcodeproj in $PWD to apply the signing settings to"
@@ -753,10 +728,8 @@ jobs:
 
             if [ "$USE_SIGNING" = "true" ]; then
               # Must archive, not build: the IPA step below exports
-              # build/App.xcarchive whenever signing is on. The manual signing
-              # settings go on the app target, now that the project is
-              # generated and pod install has run, never on the command line,
-              # where every pod would inherit the profile.
+              # build/App.xcarchive whenever signing is on. The signing settings
+              # go on the app target now that pod install has generated the project.
               apply_signing_to_app_target "$PROFILE_BUNDLE_ID"
               BUILD_CMD="$BUILD_CMD -archivePath '$GITHUB_WORKSPACE/build/App.xcarchive' archive"
             else

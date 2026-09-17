@@ -26,10 +26,9 @@ type BuildSettings struct {
 	Distribution string
 }
 
-// reservedEnv names the variables the runners read their parameters and
-// secrets from, and the ones the shell and the CI services own. A profile that
-// set one of these would silently change the build, or on runner.sh replace a
-// provider secret, since the env is exported before the signing step reads it.
+// reservedEnv names the variables the runners, the shell and the CI services
+// own. A profile that set one would silently change the build or, on
+// runner.sh, replace a provider secret, since the env is exported first.
 var reservedEnv = []string{
 	"BUILD_ID", "SNAPSHOT_REF", "SNAPSHOT_SHA", "IOS_PATH", "SCHEME", "CONFIGURATION",
 	"USE_SIGNING", "FLUTTER_VERSION", "JDK_VERSION", "BUILD_ENV", "DISTRIBUTION",
@@ -72,13 +71,10 @@ func (c *Config) ProfileNames() []string {
 }
 
 // ResolveProfile applies the named profile, or defaultProfile when name is
-// empty, over the top-level ios.* and provider settings. With neither, the
-// result is the top-level settings unchanged, so projects without profiles
-// build exactly as before.
-//
-// A profile signs exactly when it has a distribution; ios.signing does not
-// apply to it. Its configuration is the one it sets, else Debug for
-// development and Release for every other distribution, else ios.configuration.
+// empty, over the top-level ios.* and provider settings; with neither the
+// top-level settings come back unchanged. A profile signs exactly when it has a
+// distribution (ios.signing does not apply to it), and its configuration
+// defaults to Debug for development and Release for every other distribution.
 func (c *Config) ResolveProfile(name string) (BuildSettings, error) {
 	s := BuildSettings{
 		Configuration: c.IOS.Configuration,
@@ -135,9 +131,9 @@ func (c *Config) ResolveProfile(name string) (BuildSettings, error) {
 	return s, nil
 }
 
-// EnvJSON encodes the profile's environment as a JSON object, which is how it
-// travels to the runner: workflow inputs and CI variables are strings, and JSON
-// survives values with spaces, quotes and newlines. Empty when there is none.
+// EnvJSON encodes the profile's environment as a JSON object (empty when there
+// is none), because workflow inputs and CI variables are strings and JSON
+// survives values with spaces, quotes and newlines.
 func (s *BuildSettings) EnvJSON() string {
 	if len(s.Env) == 0 {
 		return ""
@@ -146,11 +142,9 @@ func (s *BuildSettings) EnvJSON() string {
 	return string(data)
 }
 
-// ProfileInput encodes the parts of the profile that are not workflow inputs of
-// their own (name, env, distribution) as the single `profile` dispatch input,
-// keeping the workflow under GitHub's limit of ten inputs. Empty when no
-// profile is selected, so older workflow files keep receiving the inputs they
-// declare.
+// ProfileInput encodes name, env and distribution as the single `profile`
+// dispatch input, keeping the workflow under GitHub's limit of ten inputs. It
+// is empty when no profile is selected, so older workflow files still work.
 func (s *BuildSettings) ProfileInput() string {
 	if s.Profile == "" {
 		return ""

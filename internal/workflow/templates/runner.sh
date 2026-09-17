@@ -7,10 +7,8 @@ mkdir -p "$ci_dir"
 mode="${1:-build}"
 export IOS_PATH="${IOS_PATH:-.}" SCHEME="${SCHEME:-}" CONFIGURATION="${CONFIGURATION:-Debug}"
 export USE_SIGNING="${USE_SIGNING:-false}" JDK_VERSION="${JDK_VERSION:-17}"
-# From the selected builder.json profile: DISTRIBUTION (canonical: internal
-# arrives as ad-hoc) picks the signing set (IOS_*_<SET> secrets) and the
-# profile type install_signing expects; BUILD_ENV is a JSON object exported by
-# prepare().
+# From the selected builder.json profile: DISTRIBUTION (canonical, so internal
+# arrives as ad-hoc) picks the signing set, BUILD_ENV is a JSON object prepare() exports.
 export DISTRIBUTION="${DISTRIBUTION:-}" BUILD_ENV="${BUILD_ENV:-}"
 
 fail() { echo "$*" >&2; exit 1; }
@@ -150,11 +148,10 @@ cleanup_signing() {
   if [ -n "${signing_dir:-}" ]; then rm -rf "$signing_dir"; fi
 }
 
-# The export method has to match the profile, or -exportArchive fails and App
-# Store Connect rejects the IPA. Xcode 15.3+ also accepts
-# debugging/release-testing/app-store-connect, but these legacy names still work
-# in Xcode 16 and are the only ones older Xcodes (pinned or self-hosted runners)
-# understand, so both templates use them.
+# The export method has to match the profile, or -exportArchive fails
+# and App Store Connect rejects the IPA. These legacy names are the only
+# ones older Xcodes (pinned or self-hosted runners) understand, and
+# Xcode 16 still takes them.
 detect_export_method() {
   if [ "$(plutil -extract ProvisionsAllDevices raw -o - "$1" 2>/dev/null)" = "true" ]; then
     echo enterprise
@@ -170,10 +167,8 @@ detect_export_method() {
 }
 
 # The certificate names that can sign for a profile of this type, the
-# current one first. Apple renamed the certificates in 2021; keychains
-# still hold iPhone Developer / iPhone Distribution certificates that
-# sign exactly the same profiles. Duplicated verbatim in ios-build.yml
-# and runner.sh.
+# current one first: keychains still hold pre-2021 iPhone Developer /
+# iPhone Distribution certificates that sign the same profiles.
 signing_identities() {
   case "$1" in
     development) printf '%s\n' "Apple Development" "iPhone Developer" ;;
@@ -182,12 +177,10 @@ signing_identities() {
   esac
 }
 
-# The identity to archive with: the first of those names the imported
-# certificate actually goes by ($2 is security find-identity output).
-# Without an explicit CODE_SIGN_IDENTITY the archive keeps the
-# project's default, and Xcode refuses to pair a development identity
-# with a distribution profile: "No signing certificate iOS Development
-# found". Duplicated verbatim in ios-build.yml and runner.sh.
+# The identity to archive with: the first of those names in security
+# find-identity's output ($2). Without an explicit CODE_SIGN_IDENTITY the
+# archive keeps the project's default, which Xcode refuses to pair with a
+# distribution profile ("No signing certificate iOS Development found").
 signing_identity() {
   local names name
   names=$(signing_identities "$1") || return 1
@@ -197,9 +190,8 @@ signing_identity() {
   return 2
 }
 
-# The suffix of the IOS_* secrets a distribution is signed with: its
-# canonical name upper-cased. No distribution has no set (the legacy
-# ios.signing path reads the unsuffixed secrets). Same table in ios-build.yml.
+# The suffix of the IOS_* secrets a distribution is signed with; no
+# distribution means the legacy unsuffixed secrets. Same table in ios-build.yml.
 signing_set() {
   case "$1" in
     '') echo '' ;;
@@ -211,13 +203,10 @@ signing_set() {
   esac
 }
 
-# Picks the secrets of the set the build profile's distribution names
-# (IOS_CERTIFICATE_<SET> and friends) into IOS_CERTIFICATE,
-# IOS_CERTIFICATE_PASSWORD and IOS_PROVISIONING_PROFILE. A set needs all three
-# (builder signing setup always writes a password). With no distribution —
-# ios.signing without a profile — the unsuffixed secrets are used as they are,
-# password optional. SIGNING_SET_USED says which it was. Same function in
-# ios-build.yml.
+# Picks the set's IOS_*_<SET> secrets into the unsuffixed names, or with
+# no distribution takes the unsuffixed ones as they are (password
+# optional). A suffixed set needs all three, since builder signing setup
+# always writes a password.
 select_signing_set() {
   if [ -z "$SIGNING_SET" ]; then
     if [ -z "${IOS_CERTIFICATE:-}" ] || [ -z "${IOS_PROVISIONING_PROFILE:-}" ]; then
@@ -240,11 +229,10 @@ select_signing_set() {
   echo "Signing set: $SIGNING_SET_USED"
 }
 
-# The profile in the set must be the type the build profile asked for, or the
-# export method, and the IPA, would not be what the profile promised. Names
-# are compared canonically: the export method calls the store distribution
-# app-store, and a tag build may say internal for ad-hoc. The unsuffixed
-# secrets (no distribution) are taken as they are.
+# The profile in the set must be the type the build profile asked for,
+# or the IPA would not be what the profile promised. Compared
+# canonically: the export method says app-store for store, and a tag
+# build may say internal for ad-hoc.
 check_signing_set() {
   [ "$SIGNING_SET_USED" != legacy ] || return 0
   local have="$1" want="$DISTRIBUTION"
@@ -255,18 +243,11 @@ check_signing_set() {
   fi
 }
 
-# Manual signing goes into the app target's build configurations, not on
-# the xcodebuild command line: a command-line setting applies to every
-# target in the workspace, and a CocoaPods framework target refuses a
-# provisioning profile ("FirebaseCore does not support provisioning
-# profiles"). Edits the application targets of the .xcodeproj files in the
-# current directory (Pods/Pods.xcodeproj is a level down): the only one, or
-# with several the ones whose PRODUCT_BUNDLE_IDENTIFIER the profile's app id
-# ($1, "*" or "com.example.*" for a wildcard) covers. DEVELOPMENT_TEAM,
-# PROVISIONING_PROFILE_NAME and CODE_SIGN_IDENTITY come from the
-# environment. The pbxproj is written back as an XML plist, which Xcode
-# reads like the OpenStep form. Duplicated verbatim in ios-build.yml and
-# runner.sh.
+# Writes the manual signing settings (team, profile and identity from the
+# environment) into the application targets of ./*.xcodeproj that the
+# profile's app id ($1, "*" wildcards) covers, as an XML plist Xcode reads.
+# On the xcodebuild command line they would apply to every target, and a
+# CocoaPods framework target refuses a provisioning profile.
 apply_signing_to_app_target() {
   local projects=(*.xcodeproj) out
   [ -d "${projects[0]}" ] || fail "No .xcodeproj in $PWD to apply the signing settings to"

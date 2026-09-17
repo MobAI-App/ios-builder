@@ -99,11 +99,10 @@ func (c *Coordinator) workflowInputs(buildID, ref string, s *config.BuildSetting
 	if s.Scheme != "" {
 		inputs["scheme"] = s.Scheme
 	}
-	// Pass Flutter version if configured (ensures SDK version match for hot reload)
+	// The Flutter SDK version must match the local one for hot reload.
 	if c.config.Flutter.Version != "" {
 		inputs["flutter_version"] = c.config.Flutter.Version
 	}
-	// Pass JDK version for Kotlin Multiplatform Gradle builds
 	if c.config.KMP.JDKVersion != "" {
 		inputs["jdk_version"] = c.config.KMP.JDKVersion
 	}
@@ -111,15 +110,14 @@ func (c *Coordinator) workflowInputs(buildID, ref string, s *config.BuildSetting
 }
 
 // buildInputs are the ios-build.yml inputs: the shared ones plus signing,
-// configuration and the profile, none of which the simulator workflow has a
-// use for. `profile` is only sent when one is selected: a workflow file from
+// configuration and the profile, which the simulator workflow does not declare.
+// `profile` is only sent when one is selected, since a workflow file from
 // before profiles rejects a dispatch carrying an input it does not declare.
 func (c *Coordinator) buildInputs(buildID, ref string, s *config.BuildSettings) map[string]string {
 	inputs := c.workflowInputs(buildID, ref, s)
 	if s.Signing {
 		inputs["use_signing"] = "true"
 	}
-	// Pass build configuration (Debug is faster, Release for production)
 	if s.Configuration != "" {
 		inputs["configuration"] = s.Configuration
 	}
