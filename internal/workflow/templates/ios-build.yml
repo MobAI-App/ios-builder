@@ -827,6 +827,7 @@ jobs:
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
           echo "DEVELOPMENT_TEAM=$TEAM_ID" >> $GITHUB_ENV
           echo "PROVISIONING_PROFILE_NAME=$PROFILE_NAME" >> $GITHUB_ENV
+          echo "PROFILE_BUNDLE_ID=$PROFILE_BUNDLE_ID" >> $GITHUB_ENV
           echo "EXPORT_METHOD=$EXPORT_METHOD" >> $GITHUB_ENV
           echo "CODE_SIGN_IDENTITY=$CODE_SIGN_IDENTITY" >> $GITHUB_ENV
           echo "SIGNING_SET_USED=$SIGNING_SET_USED" >> $GITHUB_ENV
@@ -837,7 +838,7 @@ jobs:
           echo "  set:     $SIGNING_SET_USED"
           echo "  export:  $EXPORT_METHOD"
           echo "  identity: $CODE_SIGN_IDENTITY"
-          echo "If the build fails on a provisioning mismatch, the app's PRODUCT_BUNDLE_IDENTIFIER must match the app id above."
+          echo "The build writes these into the app target's build settings; its PRODUCT_BUNDLE_IDENTIFIER must match the app id above."
 
       - name: Build IPA
         env:
@@ -850,6 +851,67 @@ jobs:
           BUILD_NUMBER: ${{ steps.params.outputs.build_number }}
         run: |
           set -e
+          fail() { echo "::error::$*"; exit 1; }
+
+          # Manual signing goes into the app target's build configurations, not on
+          # the xcodebuild command line: a command-line setting applies to every
+          # target in the workspace, and a CocoaPods framework target refuses a
+          # provisioning profile ("FirebaseCore does not support provisioning
+          # profiles"). Edits the application targets of the .xcodeproj files in the
+          # current directory (Pods/Pods.xcodeproj is a level down): the only one, or
+          # with several the ones whose PRODUCT_BUNDLE_IDENTIFIER the profile's app id
+          # ($1, "*" or "com.example.*" for a wildcard) covers. DEVELOPMENT_TEAM,
+          # PROVISIONING_PROFILE_NAME and CODE_SIGN_IDENTITY come from the
+          # environment. The pbxproj is written back as an XML plist, which Xcode
+          # reads like the OpenStep form. Duplicated verbatim in ios-build.yml and
+          # runner.sh.
+          apply_signing_to_app_target() {
+            local projects=(*.xcodeproj) out
+            [ -d "${projects[0]}" ] || fail "No .xcodeproj in $PWD to apply the signing settings to"
+            out=$(python3 - "$1" "${projects[@]}" 2>&1 <<'PY'
+          import json, os, subprocess, sys
+          app_id, projects = sys.argv[1], sys.argv[2:]
+          settings = {'CODE_SIGN_STYLE': 'Manual', 'DEVELOPMENT_TEAM': os.environ['DEVELOPMENT_TEAM'],
+                      'PROVISIONING_PROFILE_SPECIFIER': os.environ['PROVISIONING_PROFILE_NAME'],
+                      'CODE_SIGN_IDENTITY': os.environ['CODE_SIGN_IDENTITY']}
+
+          def covers(bundle_id):
+              if app_id.endswith('*'):
+                  return bundle_id.startswith(app_id[:-1])
+              return bundle_id == app_id
+
+          apps, plists = [], {}
+          for project in projects:
+              path = os.path.join(project, 'project.pbxproj')
+              plists[project] = json.loads(subprocess.check_output(['plutil', '-convert', 'json', '-o', '-', path]))
+              objects = plists[project]['objects']
+              for target in objects.values():
+                  if target.get('isa') != 'PBXNativeTarget' or target.get('productType') != 'com.apple.product-type.application':
+                      continue
+                  configs = [objects[c] for c in objects[target['buildConfigurationList']]['buildConfigurations']]
+                  ids = sorted({c.setdefault('buildSettings', {}).get('PRODUCT_BUNDLE_IDENTIFIER', '') for c in configs})
+                  apps.append((project, target['name'], configs, ids))
+          if not apps:
+              sys.exit('No application target in %s to apply the signing settings to' % ', '.join(projects))
+          chosen = apps if len(apps) == 1 else [a for a in apps if any(covers(i) for i in a[3])]
+          if not chosen:
+              found = '; '.join('%s in %s (%s)' % (name, project, ', '.join(i or '?' for i in ids)) for project, name, _, ids in apps)
+              sys.exit('No application target has the PRODUCT_BUNDLE_IDENTIFIER the provisioning profile covers (%s): %s' % (app_id, found))
+          for project, name, configs, _ in chosen:
+              for config in configs:
+                  build = config['buildSettings']
+                  # A conditional setting (CODE_SIGN_IDENTITY[sdk=iphoneos*]) would win over the plain one.
+                  for key in [k for k in build if k.split('[')[0] in settings]:
+                      del build[key]
+                  build.update(settings)
+              print('Signing settings applied to target %s in %s: %s' % (name, project, ', '.join(c['name'] for c in configs)))
+          for project in sorted({a[0] for a in chosen}):
+              subprocess.run(['plutil', '-convert', 'xml1', '-o', os.path.join(project, 'project.pbxproj'), '-'],
+                             input=json.dumps(plists[project]).encode(), check=True)
+          PY
+            ) || fail "$out"
+            echo "$out"
+          }
 
           # BUILD_NUMBER is "N", or "X.Y.Z+N" to set the marketing version as
           # well (the pubspec convention). Sets build_number, build_name and
@@ -1000,13 +1062,12 @@ jobs:
               ARCHIVE_CMD="$ARCHIVE_CMD -destination 'generic/platform=iOS'"
               ARCHIVE_CMD="$ARCHIVE_CMD -derivedDataPath '$DERIVED_DATA_PATH'"
               ARCHIVE_CMD="$ARCHIVE_CMD COMPILER_INDEX_STORE_ENABLE=NO $version_settings"
-              ARCHIVE_CMD="$ARCHIVE_CMD DEVELOPMENT_TEAM='$DEVELOPMENT_TEAM'"
-              ARCHIVE_CMD="$ARCHIVE_CMD CODE_SIGN_STYLE=Manual"
-              ARCHIVE_CMD="$ARCHIVE_CMD CODE_SIGN_IDENTITY='$CODE_SIGN_IDENTITY'"
-              ARCHIVE_CMD="$ARCHIVE_CMD PROVISIONING_PROFILE_SPECIFIER='$PROVISIONING_PROFILE_NAME'"
               ARCHIVE_CMD="$ARCHIVE_CMD -quiet"
               ARCHIVE_CMD="$ARCHIVE_CMD -archivePath '$GITHUB_WORKSPACE/build/App.xcarchive' archive"
 
+              # The manual signing settings go on the Runner target, after
+              # flutter build ios has regenerated the project.
+              apply_signing_to_app_target "$PROFILE_BUNDLE_ID"
               echo "Running: $ARCHIVE_CMD"
               eval $ARCHIVE_CMD
             fi
@@ -1049,11 +1110,11 @@ jobs:
 
             if [ "$USE_SIGNING" = "true" ]; then
               # Must archive, not build: the IPA step below exports
-              # build/App.xcarchive whenever signing is on.
-              BUILD_CMD="$BUILD_CMD DEVELOPMENT_TEAM='$DEVELOPMENT_TEAM'"
-              BUILD_CMD="$BUILD_CMD CODE_SIGN_STYLE=Manual"
-              BUILD_CMD="$BUILD_CMD CODE_SIGN_IDENTITY='$CODE_SIGN_IDENTITY'"
-              BUILD_CMD="$BUILD_CMD PROVISIONING_PROFILE_SPECIFIER='$PROVISIONING_PROFILE_NAME'"
+              # build/App.xcarchive whenever signing is on. The manual signing
+              # settings go on the app target, now that the project is
+              # generated and pod install has run, never on the command line,
+              # where every pod would inherit the profile.
+              apply_signing_to_app_target "$PROFILE_BUNDLE_ID"
               BUILD_CMD="$BUILD_CMD -archivePath '$GITHUB_WORKSPACE/build/App.xcarchive' archive"
             else
               BUILD_CMD="$BUILD_CMD CODE_SIGNING_ALLOWED=NO build"
@@ -1088,12 +1149,9 @@ jobs:
 
             if [ "$USE_SIGNING" = "true" ]; then
               # For signed builds, use archive. Automatic signing cannot resolve a
-              # team on a runner (no Xcode account), so sign manually against the
-              # profile installed above.
-              BUILD_CMD="$BUILD_CMD DEVELOPMENT_TEAM='$DEVELOPMENT_TEAM'"
-              BUILD_CMD="$BUILD_CMD CODE_SIGN_STYLE=Manual"
-              BUILD_CMD="$BUILD_CMD CODE_SIGN_IDENTITY='$CODE_SIGN_IDENTITY'"
-              BUILD_CMD="$BUILD_CMD PROVISIONING_PROFILE_SPECIFIER='$PROVISIONING_PROFILE_NAME'"
+              # team on a runner (no Xcode account), so sign the app target
+              # manually against the profile installed above.
+              apply_signing_to_app_target "$PROFILE_BUNDLE_ID"
               BUILD_CMD="$BUILD_CMD -archivePath '$GITHUB_WORKSPACE/build/App.xcarchive' archive"
             else
               # For unsigned builds, use faster 'build' action

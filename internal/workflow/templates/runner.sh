@@ -403,6 +403,66 @@ check_signing_set() {
   fi
 }
 
+# Manual signing goes into the app target's build configurations, not on
+# the xcodebuild command line: a command-line setting applies to every
+# target in the workspace, and a CocoaPods framework target refuses a
+# provisioning profile ("FirebaseCore does not support provisioning
+# profiles"). Edits the application targets of the .xcodeproj files in the
+# current directory (Pods/Pods.xcodeproj is a level down): the only one, or
+# with several the ones whose PRODUCT_BUNDLE_IDENTIFIER the profile's app id
+# ($1, "*" or "com.example.*" for a wildcard) covers. DEVELOPMENT_TEAM,
+# PROVISIONING_PROFILE_NAME and CODE_SIGN_IDENTITY come from the
+# environment. The pbxproj is written back as an XML plist, which Xcode
+# reads like the OpenStep form. Duplicated verbatim in ios-build.yml and
+# runner.sh.
+apply_signing_to_app_target() {
+  local projects=(*.xcodeproj) out
+  [ -d "${projects[0]}" ] || fail "No .xcodeproj in $PWD to apply the signing settings to"
+  out=$(python3 - "$1" "${projects[@]}" 2>&1 <<'PY'
+import json, os, subprocess, sys
+app_id, projects = sys.argv[1], sys.argv[2:]
+settings = {'CODE_SIGN_STYLE': 'Manual', 'DEVELOPMENT_TEAM': os.environ['DEVELOPMENT_TEAM'],
+            'PROVISIONING_PROFILE_SPECIFIER': os.environ['PROVISIONING_PROFILE_NAME'],
+            'CODE_SIGN_IDENTITY': os.environ['CODE_SIGN_IDENTITY']}
+
+def covers(bundle_id):
+    if app_id.endswith('*'):
+        return bundle_id.startswith(app_id[:-1])
+    return bundle_id == app_id
+
+apps, plists = [], {}
+for project in projects:
+    path = os.path.join(project, 'project.pbxproj')
+    plists[project] = json.loads(subprocess.check_output(['plutil', '-convert', 'json', '-o', '-', path]))
+    objects = plists[project]['objects']
+    for target in objects.values():
+        if target.get('isa') != 'PBXNativeTarget' or target.get('productType') != 'com.apple.product-type.application':
+            continue
+        configs = [objects[c] for c in objects[target['buildConfigurationList']]['buildConfigurations']]
+        ids = sorted({c.setdefault('buildSettings', {}).get('PRODUCT_BUNDLE_IDENTIFIER', '') for c in configs})
+        apps.append((project, target['name'], configs, ids))
+if not apps:
+    sys.exit('No application target in %s to apply the signing settings to' % ', '.join(projects))
+chosen = apps if len(apps) == 1 else [a for a in apps if any(covers(i) for i in a[3])]
+if not chosen:
+    found = '; '.join('%s in %s (%s)' % (name, project, ', '.join(i or '?' for i in ids)) for project, name, _, ids in apps)
+    sys.exit('No application target has the PRODUCT_BUNDLE_IDENTIFIER the provisioning profile covers (%s): %s' % (app_id, found))
+for project, name, configs, _ in chosen:
+    for config in configs:
+        build = config['buildSettings']
+        # A conditional setting (CODE_SIGN_IDENTITY[sdk=iphoneos*]) would win over the plain one.
+        for key in [k for k in build if k.split('[')[0] in settings]:
+            del build[key]
+        build.update(settings)
+    print('Signing settings applied to target %s in %s: %s' % (name, project, ', '.join(c['name'] for c in configs)))
+for project in sorted({a[0] for a in chosen}):
+    subprocess.run(['plutil', '-convert', 'xml1', '-o', os.path.join(project, 'project.pbxproj'), '-'],
+                   input=json.dumps(plists[project]).encode(), check=True)
+PY
+  ) || fail "$out"
+  echo "$out"
+}
+
 install_signing() {
   SIGNING_SET=$(signing_set "$DISTRIBUTION") || fail "DISTRIBUTION \"$DISTRIBUTION\" must be development, ad-hoc (or internal), store or enterprise"
   select_signing_set
@@ -415,9 +475,13 @@ install_signing() {
   profile_uuid=$(plutil -extract UUID raw -o - "$signing_dir/profile.plist")
   export DEVELOPMENT_TEAM="$(plutil -extract TeamIdentifier.0 raw -o - "$signing_dir/profile.plist")"
   export PROVISIONING_PROFILE_NAME="$(plutil -extract Name raw -o - "$signing_dir/profile.plist")"
+  # The app id the profile covers, without the team prefix: the target to
+  # sign is the one whose bundle id it matches.
+  app_id=$(plutil -extract Entitlements.application-identifier raw -o - "$signing_dir/profile.plist")
+  export PROFILE_BUNDLE_ID="${app_id#"$DEVELOPMENT_TEAM".}"
   export EXPORT_METHOD="$(detect_export_method "$signing_dir/profile.plist")"
   check_signing_set "$EXPORT_METHOD"
-  echo "Signing with '$PROVISIONING_PROFILE_NAME' (team $DEVELOPMENT_TEAM, set $SIGNING_SET_USED), export method $EXPORT_METHOD"
+  echo "Signing with '$PROVISIONING_PROFILE_NAME' (team $DEVELOPMENT_TEAM, app id $PROFILE_BUNDLE_ID, set $SIGNING_SET_USED), export method $EXPORT_METHOD"
   # A Debug archive carries get-task-allow=true, which no distribution profile
   # grants: the export fails, or an IPA that App Store Connect rejects comes
   # out. Say so now instead of after the whole build.
@@ -514,9 +578,10 @@ build_ipa() {
     -derivedDataPath "$BUILDER_WORKSPACE/DerivedData" COMPILER_INDEX_STORE_ENABLE=NO $version_settings)
   mkdir -p "$BUILDER_WORKSPACE/build"
   if [ "$USE_SIGNING" = true ]; then
-    xcodebuild "${args[@]}" DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" CODE_SIGN_STYLE=Manual \
-      CODE_SIGN_IDENTITY="$CODE_SIGN_IDENTITY" \
-      PROVISIONING_PROFILE_SPECIFIER="$PROVISIONING_PROFILE_NAME" -archivePath "$BUILDER_WORKSPACE/build/App.xcarchive" archive
+    # After pod install / expo prebuild / flutter build ios, so the project
+    # the archive reads exists; select_project left us in the iOS directory.
+    apply_signing_to_app_target "$PROFILE_BUNDLE_ID"
+    xcodebuild "${args[@]}" -archivePath "$BUILDER_WORKSPACE/build/App.xcarchive" archive
     export APP_BUNDLE_ID="$(plutil -extract ApplicationProperties.CFBundleIdentifier raw -o - "$BUILDER_WORKSPACE/build/App.xcarchive/Info.plist")"
     python3 - "$signing_dir/ExportOptions.plist" <<'PY'
 import os, plistlib, sys

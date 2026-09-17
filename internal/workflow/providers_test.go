@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -374,12 +376,13 @@ func TestSigningIdentityFollowsProfileType(t *testing.T) {
 				t.Errorf("%s: the identity is not derived from the profile, missing %q", name, want)
 			}
 		}
-		// Every manually signed command must name the identity: one that sets
-		// CODE_SIGN_STYLE=Manual without it signs with the project's default.
-		manual := strings.Count(data, "CODE_SIGN_STYLE=Manual")
-		identity := strings.Count(data, `CODE_SIGN_IDENTITY='$CODE_SIGN_IDENTITY'`) + strings.Count(data, `CODE_SIGN_IDENTITY="$CODE_SIGN_IDENTITY"`)
-		if manual == 0 || manual != identity {
-			t.Errorf("%s: %d manual signing commands but %d pass CODE_SIGN_IDENTITY", name, manual, identity)
+		// The identity reaches the app target through apply_signing_to_app_target
+		// (TestSigningSettingsOnAppTargetOnly), which reads it from the
+		// environment together with CODE_SIGN_STYLE=Manual; a command line that
+		// set the style without it would sign with the project's default.
+		fn := shellFunc(t, data, "apply_signing_to_app_target")
+		if !strings.Contains(fn, "'CODE_SIGN_IDENTITY': os.environ['CODE_SIGN_IDENTITY']") || !strings.Contains(fn, "'CODE_SIGN_STYLE': 'Manual'") {
+			t.Errorf("%s: apply_signing_to_app_target does not set the identity with the manual style", name)
 		}
 		// The imported certificate is checked against that identity, after the
 		// import and before the archive, so a distribution set holding a
@@ -437,6 +440,300 @@ func TestSigningIdentityFollowsProfileType(t *testing.T) {
 			}
 		})
 	}
+}
+
+// pbxTarget describes one native target of a test project.
+type pbxTarget struct {
+	name, productType, bundleID string
+	extra                       map[string]string // more build settings on both configurations
+}
+
+// pbxproj writes a minimal OpenStep-format project.pbxproj with Debug and
+// Release configurations for each target, the way Xcode lays one out.
+func pbxproj(targets ...pbxTarget) string {
+	var b strings.Builder
+	b.WriteString("// !$*UTF8*$!\n{\n\tarchiveVersion = 1;\n\tclasses = {\n\t};\n\tobjectVersion = 56;\n\tobjects = {\n")
+	b.WriteString("\t\tP0 = {\n\t\t\tisa = PBXProject;\n\t\t\tbuildConfigurationList = L0;\n\t\t\tcompatibilityVersion = \"Xcode 14.0\";\n\t\t\tmainGroup = G0;\n\t\t\tproductRefGroup = G0;\n\t\t\tprojectDirPath = \"\";\n\t\t\tprojectRoot = \"\";\n\t\t\ttargets = (\n")
+	for i := range targets {
+		fmt.Fprintf(&b, "\t\t\t\tT%d,\n", i)
+	}
+	b.WriteString("\t\t\t);\n\t\t};\n\t\tG0 = {\n\t\t\tisa = PBXGroup;\n\t\t\tchildren = (\n\t\t\t);\n\t\t\tsourceTree = \"<group>\";\n\t\t};\n")
+	configList := func(id string, settings map[string]string) {
+		fmt.Fprintf(&b, "\t\t%s = {\n\t\t\tisa = XCConfigurationList;\n\t\t\tbuildConfigurations = (\n\t\t\t\t%sD,\n\t\t\t\t%sR,\n\t\t\t);\n\t\t\tdefaultConfigurationIsVisible = 0;\n\t\t\tdefaultConfigurationName = Release;\n\t\t};\n", id, id, id)
+		for _, c := range []struct{ suffix, name string }{{"D", "Debug"}, {"R", "Release"}} {
+			fmt.Fprintf(&b, "\t\t%s%s = {\n\t\t\tisa = XCBuildConfiguration;\n\t\t\tbuildSettings = {\n", id, c.suffix)
+			for k, v := range settings {
+				fmt.Fprintf(&b, "\t\t\t\t%q = %q;\n", k, v)
+			}
+			fmt.Fprintf(&b, "\t\t\t};\n\t\t\tname = %s;\n\t\t};\n", c.name)
+		}
+	}
+	configList("L0", map[string]string{"SDKROOT": "iphoneos"})
+	for i, tg := range targets {
+		fmt.Fprintf(&b, "\t\tT%d = {\n\t\t\tisa = PBXNativeTarget;\n\t\t\tbuildConfigurationList = L%d;\n\t\t\tbuildPhases = (\n\t\t\t);\n\t\t\tbuildRules = (\n\t\t\t);\n\t\t\tdependencies = (\n\t\t\t);\n\t\t\tname = %s;\n\t\t\tproductName = %s;\n\t\t\tproductReference = F%d;\n\t\t\tproductType = %q;\n\t\t};\n", i, i+1, tg.name, tg.name, i, tg.productType)
+		fmt.Fprintf(&b, "\t\tF%d = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = %s.app; sourceTree = BUILT_PRODUCTS_DIR; };\n", i, tg.name)
+		settings := map[string]string{"CODE_SIGN_STYLE": "Automatic", "PRODUCT_BUNDLE_IDENTIFIER": tg.bundleID, "PRODUCT_NAME": "$(TARGET_NAME)"}
+		for k, v := range tg.extra {
+			settings[k] = v
+		}
+		configList(fmt.Sprintf("L%d", i+1), settings)
+	}
+	b.WriteString("\t};\n\trootObject = P0;\n}\n")
+	return b.String()
+}
+
+// pbxSettings reads the build settings of every configuration of every native
+// target of a project, as target → configuration → settings.
+func pbxSettings(t *testing.T, project string) map[string]map[string]map[string]string {
+	t.Helper()
+	out, err := exec.Command("plutil", "-convert", "json", "-o", "-", filepath.Join(project, "project.pbxproj")).CombinedOutput()
+	if err != nil {
+		t.Fatalf("plutil: %s %v", out, err)
+	}
+	var parsed struct {
+		Objects map[string]struct {
+			Isa                    string            `json:"isa"`
+			Name                   string            `json:"name"`
+			BuildConfigurationList string            `json:"buildConfigurationList"`
+			BuildConfigurations    []string          `json:"buildConfigurations"`
+			BuildSettings          map[string]string `json:"buildSettings"`
+		} `json:"objects"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	result := map[string]map[string]map[string]string{}
+	for _, o := range parsed.Objects {
+		if o.Isa != "PBXNativeTarget" {
+			continue
+		}
+		result[o.Name] = map[string]map[string]string{}
+		for _, id := range parsed.Objects[o.BuildConfigurationList].BuildConfigurations {
+			c := parsed.Objects[id]
+			result[o.Name][c.Name] = c.BuildSettings
+		}
+	}
+	return result
+}
+
+// TestSigningSettingsOnAppTargetOnly holds both templates to writing the
+// manual signing settings into the app target's build configurations rather
+// than passing them to xcodebuild, where every target in the workspace — the
+// CocoaPods framework targets included — would inherit them: "FirebaseCore
+// does not support provisioning profiles, but provisioning profile ... has
+// been manually specified".
+func TestSigningSettingsOnAppTargetOnly(t *testing.T) {
+	workflowTemplate, err := GetWorkflowTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := GetTemplate("runner.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromWorkflow := shellFunc(t, string(workflowTemplate), "apply_signing_to_app_target")
+	fromRunner := shellFunc(t, string(runner), "apply_signing_to_app_target")
+	if fromWorkflow != fromRunner {
+		t.Fatalf("templates disagree on apply_signing_to_app_target:\n%s\n---\n%s", fromWorkflow, fromRunner)
+	}
+	if n := strings.Count(fromRunner, "\n"); n > 70 {
+		t.Errorf("apply_signing_to_app_target has grown to %d lines", n)
+	}
+
+	call := `apply_signing_to_app_target "$PROFILE_BUNDLE_ID"`
+	wiring := map[string][]string{
+		"ios-build.yml": {`echo "PROFILE_BUNDLE_ID=$PROFILE_BUNDLE_ID" >> $GITHUB_ENV`, `PROFILE_BUNDLE_ID=${APP_ID#"$TEAM_ID".}`},
+		"runner.sh":     {`export PROFILE_BUNDLE_ID="${app_id#"$DEVELOPMENT_TEAM".}"`},
+	}
+	for name, data := range map[string]string{"ios-build.yml": string(workflowTemplate), "runner.sh": string(runner)} {
+		data = strings.ReplaceAll(data, "\r\n", "\n") // Windows checkouts
+		for _, want := range wiring[name] {
+			if !strings.Contains(data, want) {
+				t.Errorf("%s: the profile's app id does not reach the build, missing %q", name, want)
+			}
+		}
+		// No signed archive passes the settings on the command line any more.
+		for _, arg := range []string{"PROVISIONING_PROFILE_SPECIFIER=", "CODE_SIGN_STYLE=", `DEVELOPMENT_TEAM='$DEVELOPMENT_TEAM'`, `DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM"`, `CODE_SIGN_IDENTITY='$CODE_SIGN_IDENTITY'`, `CODE_SIGN_IDENTITY="$CODE_SIGN_IDENTITY"`} {
+			if strings.Contains(data, arg) {
+				t.Errorf("%s: still passes %s to xcodebuild, which applies it to every Pods target too", name, arg)
+			}
+		}
+		// Every archive is preceded by its own call, after the generated
+		// projects exist: pod install and flutter build ios come first (the
+		// runner's prepare, with expo prebuild, precedes build_ipa; on GitHub
+		// the Build IPA step follows every setup step).
+		archives, calls := strings.Count(data, `.xcarchive' archive`)+strings.Count(data, `.xcarchive" archive`), strings.Count(data, call)
+		if archives == 0 || archives != calls {
+			t.Errorf("%s: %d signed archives but %d calls of apply_signing_to_app_target", name, archives, calls)
+		}
+		steps := []string{"pod install\n", "flutter build ios --release --no-codesign"}
+		if name == "runner.sh" {
+			steps = append(steps, "expo prebuild")
+		}
+		for _, step := range steps {
+			if first, applied := strings.Index(data, step), strings.Index(data, call); first < 0 || applied < first {
+				t.Errorf("%s: apply_signing_to_app_target (offset %d) must run after %q (offset %d)", name, applied, step, first)
+			}
+		}
+	}
+
+	if runtime.GOOS != "darwin" {
+		t.Skip("plutil is macOS only")
+	}
+	script := "set -euo pipefail\nfail() { echo \"$*\" >&2; exit 1; }\n" + fromRunner + "\ncd \"$1\"\napply_signing_to_app_target \"$2\"\n"
+	want := map[string]string{"CODE_SIGN_STYLE": "Manual", "DEVELOPMENT_TEAM": "ABCDE12345", "PROVISIONING_PROFILE_SPECIFIER": "Builder store run.mobai.flicker", "CODE_SIGN_IDENTITY": "Apple Distribution"}
+	run := func(t *testing.T, dir, appID string) (string, error) {
+		t.Helper()
+		cmd := exec.Command("bash", "-c", script, "bash", dir, appID)
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "DEVELOPMENT_TEAM=" + want["DEVELOPMENT_TEAM"], "PROVISIONING_PROFILE_NAME=" + want["PROVISIONING_PROFILE_SPECIFIER"], "CODE_SIGN_IDENTITY=" + want["CODE_SIGN_IDENTITY"]}
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	write := func(t *testing.T, dir, project string, targets ...pbxTarget) string {
+		t.Helper()
+		path := filepath.Join(dir, project)
+		if err := os.MkdirAll(path, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "project.pbxproj"), []byte(pbxproj(targets...)), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	// signed asserts the four settings on both configurations of a target and
+	// that nothing conditional is left to override them.
+	signed := func(t *testing.T, settings map[string]map[string]string, target string) {
+		t.Helper()
+		for _, config := range []string{"Debug", "Release"} {
+			for k, v := range want {
+				if got := settings[config][k]; got != v {
+					t.Errorf("%s %s: %s = %q, want %q", target, config, k, got, v)
+				}
+			}
+			for k := range settings[config] {
+				if strings.Contains(k, "[") {
+					t.Errorf("%s %s: conditional %s left in place", target, config, k)
+				}
+			}
+		}
+	}
+	untouched := func(t *testing.T, settings map[string]map[string]string, target string) {
+		t.Helper()
+		for _, config := range []string{"Debug", "Release"} {
+			if s := settings[config]; s["CODE_SIGN_STYLE"] != "Automatic" || s["PROVISIONING_PROFILE_SPECIFIER"] != "" || s["DEVELOPMENT_TEAM"] != "" {
+				t.Errorf("%s %s was signed: %v", target, config, s)
+			}
+		}
+	}
+	app := pbxTarget{"App", "com.apple.product-type.application", "run.mobai.flicker", map[string]string{"CODE_SIGN_IDENTITY[sdk=iphoneos*]": "iPhone Developer"}}
+	other := pbxTarget{"Other", "com.apple.product-type.application", "run.mobai.other", nil}
+	kit := pbxTarget{"Kit", "com.apple.product-type.framework", "run.mobai.Kit", nil}
+	widget := pbxTarget{"Widget", "com.apple.product-type.app-extension", "run.mobai.flicker.widget", nil}
+
+	t.Run("app target only", func(t *testing.T) {
+		dir := t.TempDir()
+		project := write(t, dir, "App.xcodeproj", app, kit, widget)
+		// The pods project sits a level down and is never a candidate.
+		pods := write(t, filepath.Join(dir, "Pods"), "Pods.xcodeproj", pbxTarget{"FirebaseCore", "com.apple.product-type.framework", "org.cocoapods.FirebaseCore", nil})
+		before, _ := os.ReadFile(filepath.Join(pods, "project.pbxproj"))
+		out, err := run(t, dir, "run.mobai.flicker")
+		if err != nil {
+			t.Fatalf("%s %v", out, err)
+		}
+		if !strings.Contains(out, "target App in App.xcodeproj: Debug, Release") {
+			t.Errorf("log does not say what changed: %s", out)
+		}
+		settings := pbxSettings(t, project)
+		signed(t, settings["App"], "App")
+		untouched(t, settings["Kit"], "Kit")
+		untouched(t, settings["Widget"], "Widget")
+		after, _ := os.ReadFile(filepath.Join(pods, "project.pbxproj"))
+		if !bytes.Equal(before, after) {
+			t.Error("Pods.xcodeproj was rewritten")
+		}
+		data, err := os.ReadFile(filepath.Join(project, "project.pbxproj"))
+		if err != nil || !strings.HasPrefix(string(data), "<?xml") {
+			t.Errorf("project is not an XML plist: %.40q %v", data, err)
+		}
+		// Xcode must still read the rewritten project.
+		if err := exec.Command("xcodebuild", "-version").Run(); err == nil {
+			if out, err := exec.Command("xcodebuild", "-project", project, "-list", "-json").CombinedOutput(); err != nil || !strings.Contains(string(out), `"App"`) {
+				t.Errorf("xcodebuild cannot read the rewritten project: %s %v", out, err)
+			}
+		}
+	})
+	t.Run("several apps: the one the profile covers", func(t *testing.T) {
+		dir := t.TempDir()
+		project := write(t, dir, "App.xcodeproj", other, app, kit)
+		if out, err := run(t, dir, "run.mobai.flicker"); err != nil {
+			t.Fatalf("%s %v", out, err)
+		}
+		settings := pbxSettings(t, project)
+		signed(t, settings["App"], "App")
+		untouched(t, settings["Other"], "Other")
+		untouched(t, settings["Kit"], "Kit")
+	})
+	t.Run("wildcard profile covers every app", func(t *testing.T) {
+		for _, appID := range []string{"*", "run.mobai.*"} {
+			dir := t.TempDir()
+			project := write(t, dir, "App.xcodeproj", app, other, kit)
+			if out, err := run(t, dir, appID); err != nil {
+				t.Fatalf("%s: %s %v", appID, out, err)
+			}
+			settings := pbxSettings(t, project)
+			signed(t, settings["App"], "App")
+			signed(t, settings["Other"], "Other")
+			untouched(t, settings["Kit"], "Kit")
+		}
+	})
+	t.Run("prefix wildcard covers only its apps", func(t *testing.T) {
+		dir := t.TempDir()
+		project := write(t, dir, "App.xcodeproj", app, pbxTarget{"Tool", "com.apple.product-type.application", "com.example.tool", nil})
+		if out, err := run(t, dir, "run.mobai.*"); err != nil {
+			t.Fatalf("%s %v", out, err)
+		}
+		settings := pbxSettings(t, project)
+		signed(t, settings["App"], "App")
+		untouched(t, settings["Tool"], "Tool")
+	})
+	t.Run("a single app is signed whatever its bundle id", func(t *testing.T) {
+		// The export names the mismatch later; the profile's app id may also be
+		// resolved from an xcconfig the project does not show.
+		dir := t.TempDir()
+		project := write(t, dir, "App.xcodeproj", app, kit)
+		if out, err := run(t, dir, "com.example.elsewhere"); err != nil {
+			t.Fatalf("%s %v", out, err)
+		}
+		signed(t, pbxSettings(t, project)["App"], "App")
+	})
+	t.Run("several apps, none covered", func(t *testing.T) {
+		dir := t.TempDir()
+		project := write(t, dir, "App.xcodeproj", app, other)
+		out, err := run(t, dir, "com.example.elsewhere")
+		if err == nil {
+			t.Fatalf("accepted: %s", out)
+		}
+		for _, want := range []string{"com.example.elsewhere", "App in App.xcodeproj (run.mobai.flicker)", "Other in App.xcodeproj (run.mobai.other)"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("error does not name %q: %s", want, out)
+			}
+		}
+		if data, _ := os.ReadFile(filepath.Join(project, "project.pbxproj")); !strings.HasPrefix(string(data), "// !$*UTF8*$!") {
+			t.Error("project rewritten although nothing was signed")
+		}
+	})
+	t.Run("no application target", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "Kit.xcodeproj", kit)
+		if out, err := run(t, dir, "run.mobai.flicker"); err == nil || !strings.Contains(out, "No application target in Kit.xcodeproj") {
+			t.Fatalf("%s %v", out, err)
+		}
+	})
+	t.Run("no project", func(t *testing.T) {
+		if out, err := run(t, t.TempDir(), "run.mobai.flicker"); err == nil || !strings.Contains(out, "No .xcodeproj in") {
+			t.Fatalf("%s %v", out, err)
+		}
+	})
 }
 
 // TestSigningSetSelection runs the set selection and profile check the way
