@@ -15,46 +15,109 @@ import (
 	pkcs12 "software.sslmate.com/src/go-pkcs12"
 )
 
-// GenerateKeyAndCSR creates an RSA-2048 private key and a certificate signing
-// request for the Apple Developer portal, both PEM-encoded. Apple requires
-// RSA 2048 for signing certificates; the subject mirrors what Keychain Access
-// puts in its CSRs (email address and common name).
+// GenerateKeyAndCSR creates an RSA-2048 private key (Apple's requirement) and
+// a certificate signing request whose subject mirrors Keychain Access's, both
+// PEM-encoded. The key is PKCS#8 ("PRIVATE KEY"), the form openssl and zsign
+// read without a legacy flag.
 func GenerateKeyAndCSR(commonName, email string) (keyPEM, csrPEM []byte, err error) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to generate private key: %w", err)
 	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to encode private key: %w", err)
+	}
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	csrPEM, err = CreateCSR(keyPEM, commonName, email)
+	if err != nil {
+		return nil, nil, err
+	}
+	return keyPEM, csrPEM, nil
+}
 
+// CreateCSR makes a PEM certificate signing request for an existing private
+// key (as written by GenerateKeyAndCSR). The email is omitted from the
+// subject when empty.
+func CreateCSR(keyPEM []byte, commonName, email string) ([]byte, error) {
+	key, err := parseKey(keyPEM)
+	if err != nil {
+		return nil, err
+	}
 	template := x509.CertificateRequest{
-		Subject: pkix.Name{
-			CommonName: commonName,
-			ExtraNames: []pkix.AttributeTypeAndValue{
-				// emailAddress (OID 1.2.840.113549.1.9.1), as in Keychain CSRs.
-				// Forced to IA5String: Go would otherwise encode the '@' as
-				// UTF8String, which is not the standard encoding for this field.
-				{
-					Type:  []int{1, 2, 840, 113549, 1, 9, 1},
-					Value: asn1.RawValue{Tag: asn1.TagIA5String, Bytes: []byte(email)},
-				},
-			},
-		},
+		Subject:            pkix.Name{CommonName: commonName},
 		SignatureAlgorithm: x509.SHA256WithRSA,
+	}
+	if email != "" {
+		// emailAddress (OID 1.2.840.113549.1.9.1), as in Keychain CSRs.
+		// Forced to IA5String: Go would otherwise encode the '@' as
+		// UTF8String, which is not the standard encoding for this field.
+		template.Subject.ExtraNames = []pkix.AttributeTypeAndValue{{
+			Type:  []int{1, 2, 840, 113549, 1, 9, 1},
+			Value: asn1.RawValue{Tag: asn1.TagIA5String, Bytes: []byte(email)},
+		}}
 	}
 
 	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &template, key)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create CSR: %w", err)
+		return nil, fmt.Errorf("failed to create CSR: %w", err)
 	}
-
-	keyPEM = pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(key),
-	})
-	csrPEM = pem.EncodeToMemory(&pem.Block{
+	return pem.EncodeToMemory(&pem.Block{
 		Type:  "CERTIFICATE REQUEST",
 		Bytes: csrDER,
-	})
-	return keyPEM, csrPEM, nil
+	}), nil
+}
+
+// parseKey reads a PEM RSA key in PKCS#8 ("PRIVATE KEY", as written now) or
+// PKCS#1 ("RSA PRIVATE KEY", as earlier Builder versions wrote it).
+func parseKey(keyPEM []byte) (*rsa.PrivateKey, error) {
+	block, _ := pem.Decode(keyPEM)
+	if block == nil {
+		return nil, fmt.Errorf("invalid private key: not PEM encoded")
+	}
+	if block.Type == "RSA PRIVATE KEY" {
+		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse private key: %w", err)
+		}
+		return key, nil
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse private key: %w", err)
+	}
+	key, ok := parsed.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("private key is %T, Apple signing certificates need an RSA key", parsed)
+	}
+	return key, nil
+}
+
+func parseCertificate(certData []byte) (*x509.Certificate, error) {
+	certDER := certData
+	if certBlock, _ := pem.Decode(certData); certBlock != nil {
+		certDER = certBlock.Bytes
+	}
+	cert, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse certificate (expected the .cer file downloaded from the Apple Developer portal): %w", err)
+	}
+	return cert, nil
+}
+
+// KeyMatchesCertificate reports whether the certificate (DER or PEM) was
+// issued for the private key's public key.
+func KeyMatchesCertificate(keyPEM, certData []byte) bool {
+	key, err := parseKey(keyPEM)
+	if err != nil {
+		return false
+	}
+	cert, err := parseCertificate(certData)
+	if err != nil {
+		return false
+	}
+	certKey, ok := cert.PublicKey.(*rsa.PublicKey)
+	return ok && certKey.Equal(key.Public())
 }
 
 // BuildP12 combines a PEM private key (from GenerateKeyAndCSR) with the
@@ -63,22 +126,13 @@ func GenerateKeyAndCSR(commonName, email string) (keyPEM, csrPEM []byte, err err
 // Keychain Access exports. The legacy encoding is used because that is what
 // macOS `security import` expects.
 func BuildP12(keyPEM, certData []byte, password string) ([]byte, error) {
-	block, _ := pem.Decode(keyPEM)
-	if block == nil {
-		return nil, fmt.Errorf("invalid private key: not PEM encoded")
-	}
-	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	key, err := parseKey(keyPEM)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse private key: %w", err)
+		return nil, err
 	}
-
-	certDER := certData
-	if certBlock, _ := pem.Decode(certData); certBlock != nil {
-		certDER = certBlock.Bytes
-	}
-	cert, err := x509.ParseCertificate(certDER)
+	cert, err := parseCertificate(certData)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse certificate (expected the .cer file downloaded from the Apple Developer portal): %w", err)
+		return nil, err
 	}
 
 	certKey, ok := cert.PublicKey.(*rsa.PublicKey)

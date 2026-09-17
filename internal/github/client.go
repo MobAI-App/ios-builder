@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 
 	"golang.org/x/crypto/nacl/box"
 )
@@ -87,6 +88,9 @@ func (c *Client) do(ctx context.Context, path string, result any) error {
 		var apiErr APIError
 		if err := json.Unmarshal(respBody, &apiErr); err != nil {
 			return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
+		}
+		if apiErr.Status == "" { // GitHub sends it as a string; keep it so even when it does not
+			apiErr.Status = strconv.Itoa(resp.StatusCode)
 		}
 		return &apiErr
 	}

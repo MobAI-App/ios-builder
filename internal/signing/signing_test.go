@@ -20,15 +20,16 @@ func TestGenerateKeyAndCSR(t *testing.T) {
 	}
 
 	keyBlock, _ := pem.Decode(keyPEM)
-	if keyBlock == nil || keyBlock.Type != "RSA PRIVATE KEY" {
-		t.Fatalf("key is not a PEM RSA PRIVATE KEY block")
+	if keyBlock == nil || keyBlock.Type != "PRIVATE KEY" {
+		t.Fatalf("key is not a PEM PKCS#8 PRIVATE KEY block")
 	}
-	key, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
+	parsed, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
 	if err != nil {
-		t.Fatalf("ParsePKCS1PrivateKey: %v", err)
+		t.Fatalf("ParsePKCS8PrivateKey: %v", err)
 	}
-	if key.N.BitLen() != 2048 {
-		t.Errorf("key size = %d, want 2048", key.N.BitLen())
+	key, ok := parsed.(*rsa.PrivateKey)
+	if !ok || key.N.BitLen() != 2048 {
+		t.Errorf("key = %T, want an RSA key of 2048 bits", parsed)
 	}
 
 	csrBlock, _ := pem.Decode(csrPEM)
@@ -73,10 +74,9 @@ func TestBuildP12Roundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKeyAndCSR: %v", err)
 	}
-	keyBlock, _ := pem.Decode(keyPEM)
-	key, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
+	key, err := parseKey(keyPEM)
 	if err != nil {
-		t.Fatalf("ParsePKCS1PrivateKey: %v", err)
+		t.Fatalf("parseKey: %v", err)
 	}
 	certDER := issueCert(t, &key.PublicKey, key)
 
@@ -103,8 +103,7 @@ func TestBuildP12AcceptsPEMCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKeyAndCSR: %v", err)
 	}
-	keyBlock, _ := pem.Decode(keyPEM)
-	key, _ := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
+	key, _ := parseKey(keyPEM)
 	certPEM := pem.EncodeToMemory(&pem.Block{
 		Type:  "CERTIFICATE",
 		Bytes: issueCert(t, &key.PublicKey, key),
@@ -112,6 +111,26 @@ func TestBuildP12AcceptsPEMCertificate(t *testing.T) {
 
 	if _, err := BuildP12(keyPEM, certPEM, "secret"); err != nil {
 		t.Errorf("BuildP12 with PEM certificate: %v", err)
+	}
+}
+
+// Keys written by earlier versions are PKCS#1 "RSA PRIVATE KEY" blocks; they
+// still open, so a --key from before this change keeps its certificate.
+func TestParseKeyAcceptsPKCS1(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkcs1 := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	got, err := parseKey(pkcs1)
+	if err != nil || !got.Equal(key) {
+		t.Fatalf("parseKey(PKCS#1) = %v, err = %v", got, err)
+	}
+	if _, err := CreateCSR(pkcs1, "Jane", ""); err != nil {
+		t.Errorf("CreateCSR with a PKCS#1 key: %v", err)
+	}
+	if !KeyMatchesCertificate(pkcs1, issueCert(t, &key.PublicKey, key)) {
+		t.Error("KeyMatchesCertificate with a PKCS#1 key")
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/MobAI-App/ios-builder/internal/config"
 	"github.com/MobAI-App/ios-builder/internal/snapshot"
 )
 
@@ -44,12 +45,22 @@ const sharePublishGrace = 30 * time.Second
 // Share builds the working tree for the simulator and publishes it to the
 // account's MobAI app, then returns while the job outlives the command.
 func (c *Coordinator) Share(ctx context.Context, opts ShareOptions) (*ShareResult, error) {
-	name, err := c.config.ProviderName(opts.Provider)
+	// A simulator build takes no build profile: it is always Debug, never
+	// signed and never exported, so only the top-level settings apply.
+	settings := &config.BuildSettings{
+		Configuration: c.config.IOS.Configuration,
+		Scheme:        c.config.IOS.Scheme,
+		Provider:      c.config.Provider,
+	}
+	if opts.Provider != "" {
+		settings.Provider = opts.Provider
+	}
+	name, err := c.config.ProviderName(settings.Provider)
 	if err != nil {
 		return nil, err
 	}
 	if name != "github" || c.provider != nil {
-		return c.shareRemote(ctx, opts)
+		return c.shareRemote(ctx, opts, settings)
 	}
 	if c.github == nil {
 		return nil, fmt.Errorf("GitHub client is required")
@@ -82,26 +93,12 @@ func (c *Coordinator) Share(ctx context.Context, opts ShareOptions) (*ShareResul
 	c.progress.Complete(PhaseSnapshot, fmt.Sprintf("Pushed %s", sha[:7]))
 
 	c.progress.Update(PhaseTriggering, "Starting the simulator session...")
-	inputs := map[string]string{
-		"build_id":     buildID,
-		"snapshot_ref": ref,
-		"duration":     opts.Duration.String(),
-	}
-	if c.config.IOS.Path != "" {
-		inputs["ios_path"] = c.config.IOS.Path
-	}
-	if c.config.IOS.Scheme != "" {
-		inputs["scheme"] = c.config.IOS.Scheme
-	}
-	if c.config.Flutter.Version != "" {
-		inputs["flutter_version"] = c.config.Flutter.Version
-	}
-	if c.config.KMP.JDKVersion != "" {
-		inputs["jdk_version"] = c.config.KMP.JDKVersion
-	}
+	inputs := c.workflowInputs(buildID, ref, settings)
+	inputs["duration"] = opts.Duration.String()
 	if err := c.github.TriggerWorkflow(ctx, c.config.GitHub.Owner, c.config.GitHub.Repo, ShareWorkflowFile, inputs); err != nil {
+		err = triggerError(err, inputs, ShareWorkflowFile)
 		c.progress.Error(PhaseTriggering, err)
-		return nil, fmt.Errorf("failed to trigger workflow: %w", err)
+		return nil, err
 	}
 	c.progress.Complete(PhaseTriggering, "Session starting")
 

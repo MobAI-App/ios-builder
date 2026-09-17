@@ -40,7 +40,7 @@ func (c Credentials) Validate() error {
 func ParsePrivateKey(pemKey string) (*ecdsa.PrivateKey, error) {
 	block, _ := pem.Decode([]byte(strings.TrimSpace(pemKey)))
 	if block == nil {
-		return nil, errors.New("private key is not PEM encoded (expected the .p8 file contents)")
+		return nil, errors.New("key is not valid PEM (expected the AuthKey_*.p8 contents)")
 	}
 	var key any
 	var err error
@@ -57,7 +57,7 @@ func ParsePrivateKey(pemKey string) (*ecdsa.PrivateKey, error) {
 	}
 	ecKey, ok := key.(*ecdsa.PrivateKey)
 	if !ok {
-		return nil, errors.New("private key is not an EC key; App Store Connect API keys are P-256")
+		return nil, fmt.Errorf("key is not an EC key (got %T); App Store Connect API keys are P-256", key)
 	}
 	if ecKey.Curve != elliptic.P256() {
 		return nil, errors.New("private key is not on the P-256 curve")

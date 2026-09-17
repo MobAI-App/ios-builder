@@ -112,8 +112,10 @@ builder ios build --provider bitrise --unsigned
 builder ios build --provider github    # explicit override
 ```
 
-Provider selection is: command flag, then `builder.json`'s `provider`, then
-`github`. Adding or logging into a provider does not change the default.
+Provider selection is: command flag, then the selected build profile's
+`provider` (see the README's Build Profiles section), then `builder.json`'s
+`provider`, then `github`. Adding or logging into a provider does not change
+the default.
 To change it, edit `provider`, or pass `--set-default` when configuring a provider.
 
 ```json
@@ -147,16 +149,21 @@ same build may consume different minutes on each provider.
 
 See [step-by-step signing and MobAI secret setup](provider-secrets.md).
 
-`builder signing setup` continues to upload signing secrets to **GitHub**.
-For Codemagic/Bitrise, separately configure these secrets on that provider:
+`builder signing setup` uploads signing secrets to **GitHub** only, and prints
+the three names and the values to paste on every run. For Codemagic/Bitrise,
+take them from that output and set these secrets there yourself, one set
+per distribution (`<SET>` is `DEVELOPMENT`, `AD_HOC`, `STORE` or `ENTERPRISE`;
+a build reads the set its profile's `distribution` names; a build without a
+profile and with `ios.signing: true` reads the unsuffixed legacy names):
 
-- `IOS_CERTIFICATE`: base64-encoded `.p12`
-- `IOS_CERTIFICATE_PASSWORD`: the `.p12` password (can be empty)
-- `IOS_PROVISIONING_PROFILE`: base64-encoded `.mobileprovision`
+- `IOS_CERTIFICATE_<SET>`: base64-encoded `.p12`
+- `IOS_CERTIFICATE_PASSWORD_<SET>`: the `.p12` password (required; only the unsuffixed legacy one can be empty)
+- `IOS_PROVISIONING_PROFILE_<SET>`: base64-encoded `.mobileprovision`
 
-Set `ios.signing` to `true` after configuring the secrets. `--unsigned` disables
-signing for a particular build. The runner installs a temporary signing keychain
-and removes it on exit. The CSR and P12 commands remain usable for all providers.
+Build with a profile whose `distribution` names the set (`signing setup`
+writes one). `--unsigned` disables signing for a particular build. The runner
+installs a temporary signing keychain and removes it on exit. The CSR and P12
+commands remain usable for all providers.
 
 ## Simulator sessions
 

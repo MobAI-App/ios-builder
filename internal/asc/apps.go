@@ -54,9 +54,3 @@ func (c *Client) ListApps(ctx context.Context) ([]App, error) {
 	}
 	return apps, nil
 }
-
-// CheckAccess makes the cheapest authenticated call to verify the key works.
-func (c *Client) CheckAccess(ctx context.Context) error {
-	_, err := getPage[appAttributes](ctx, c, "/v1/apps", url.Values{"limit": {"1"}})
-	return err
-}

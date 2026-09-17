@@ -7,6 +7,28 @@ mkdir -p "$ci_dir"
 mode="${1:-build}"
 export IOS_PATH="${IOS_PATH:-.}" SCHEME="${SCHEME:-}" CONFIGURATION="${CONFIGURATION:-Debug}"
 export USE_SIGNING="${USE_SIGNING:-false}" JDK_VERSION="${JDK_VERSION:-17}"
+# From the selected builder.json profile: DISTRIBUTION (canonical, so internal
+# arrives as ad-hoc) picks the signing set, BUILD_ENV is a JSON object prepare() exports.
+export DISTRIBUTION="${DISTRIBUTION:-}" BUILD_ENV="${BUILD_ENV:-}"
+# Codemagic sets BUILD_NUMBER itself (its build counter), so the CLI sends
+# the CFBundleVersion to stamp as BUILDER_BUILD_NUMBER; empty means none.
+export BUILD_NUMBER="${BUILDER_BUILD_NUMBER:-}"
+
+fail() { echo "$*" >&2; exit 1; }
+
+# Exports the profile's env before any dependency install or build, as the
+# GitHub workflows do. Values are base64 per entry so newlines and quotes
+# survive; names are checked so a value cannot become a second variable.
+export_build_env() {
+  [ -n "$BUILD_ENV" ] || return 0
+  if [ "$(jq -r 'type' <<< "$BUILD_ENV" 2>/dev/null)" != "object" ]; then echo "BUILD_ENV must be a JSON object of variable names to string values" >&2; exit 1; fi
+  while IFS=' ' read -r key encoded; do
+    name=$(printf '%s' "$key" | base64 --decode)
+    if ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then echo "Invalid env name in BUILD_ENV: $name" >&2; exit 1; fi
+    export "$name=$(printf '%s' "$encoded" | base64 --decode)"
+    echo "env: $name"
+  done < <(jq -r 'to_entries[] | "\(.key | @base64) \(.value | tostring | @base64)"' <<< "$BUILD_ENV")
+}
 
 snapshot_checkout() {
   case "${SNAPSHOT_REF:-}" in
@@ -188,6 +210,7 @@ prepare() {
   fi
   echo "Project type: $project_type"
   if ! command -v jq >/dev/null; then brew install jq; fi
+  export_build_env
 
   # Match the GitHub workflows' committed xcconfig-template convention.
   find . -path ./DerivedData -prune -o -type f \
@@ -270,17 +293,256 @@ select_project() {
 cleanup_signing() {
   if [ -n "${keychain_path:-}" ]; then security delete-keychain "$keychain_path" || true; fi
   if [ -n "${profile_dest:-}" ]; then rm -f "$profile_dest"; fi
+  if [ -f "${signing_dir:-}/extensions/installed" ]; then
+    while IFS= read -r uuid; do rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$uuid.mobileprovision"; done < "$signing_dir/extensions/installed"
+  fi
   if [ -n "${signing_dir:-}" ]; then rm -rf "$signing_dir"; fi
 }
 
+# The export method has to match the profile, or -exportArchive fails
+# and App Store Connect rejects the IPA. These legacy names are the only
+# ones older Xcodes (pinned or self-hosted runners) understand, and
+# Xcode 16 still takes them.
+detect_export_method() {
+  if [ "$(plutil -extract ProvisionsAllDevices raw -o - "$1" 2>/dev/null)" = "true" ]; then
+    echo enterprise
+  elif plutil -extract ProvisionedDevices xml1 -o /dev/null "$1" >/dev/null 2>&1; then
+    if [ "$(plutil -extract Entitlements.get-task-allow raw -o - "$1" 2>/dev/null)" = "true" ]; then
+      echo development
+    else
+      echo ad-hoc
+    fi
+  else
+    echo app-store
+  fi
+}
+
+# The certificate names that can sign for a profile of this type, the
+# current one first: keychains still hold pre-2021 iPhone Developer /
+# iPhone Distribution certificates that sign the same profiles.
+signing_identities() {
+  case "$1" in
+    development) printf '%s\n' "Apple Development" "iPhone Developer" ;;
+    ad-hoc|app-store|enterprise) printf '%s\n' "Apple Distribution" "iPhone Distribution" ;;
+    *) return 1 ;;
+  esac
+}
+
+# The identity to archive with: the first of those names in security
+# find-identity's output ($2). Without an explicit CODE_SIGN_IDENTITY the
+# archive keeps the project's default, which Xcode refuses to pair with a
+# distribution profile ("No signing certificate iOS Development found").
+signing_identity() {
+  local names name
+  names=$(signing_identities "$1") || return 1
+  while IFS= read -r name; do
+    case "$2" in *"$name: "*) echo "$name"; return 0 ;; esac
+  done <<< "$names"
+  return 2
+}
+
+# The suffix of the IOS_* secrets a distribution is signed with; no
+# distribution means the legacy unsuffixed secrets. Same table in ios-build.yml.
+signing_set() {
+  case "$1" in
+    '') echo '' ;;
+    development) echo DEVELOPMENT ;;
+    ad-hoc|internal) echo AD_HOC ;;
+    store) echo STORE ;;
+    enterprise) echo ENTERPRISE ;;
+    *) return 1 ;;
+  esac
+}
+
+# Picks the set's IOS_*_<SET> secrets into the unsuffixed names, or with
+# no distribution takes the unsuffixed ones as they are (password
+# optional). A suffixed set needs all three, since builder signing setup
+# always writes a password; the extension profiles are optional, since an
+# app without extension targets has none.
+select_signing_set() {
+  if [ -z "$SIGNING_SET" ]; then
+    if [ -z "${IOS_CERTIFICATE:-}" ] || [ -z "${IOS_PROVISIONING_PROFILE:-}" ]; then
+      fail "No signing secrets: ios.signing needs IOS_CERTIFICATE, IOS_CERTIFICATE_PASSWORD and IOS_PROVISIONING_PROFILE; a build profile with a distribution reads its own IOS_*_<SET> secrets instead (builder signing setup --distribution <d> writes them)."
+    fi
+    IOS_CERTIFICATE_PASSWORD="${IOS_CERTIFICATE_PASSWORD:-}"
+    IOS_EXTENSION_PROFILES="${IOS_EXTENSION_PROFILES:-}"
+    SIGNING_SET_USED=legacy
+  else
+    local cert="IOS_CERTIFICATE_$SIGNING_SET" pass="IOS_CERTIFICATE_PASSWORD_$SIGNING_SET" prof="IOS_PROVISIONING_PROFILE_$SIGNING_SET" ext="IOS_EXTENSION_PROFILES_$SIGNING_SET"
+    local missing="" name
+    for name in "$cert" "$pass" "$prof"; do
+      [ -n "${!name:-}" ] || missing="${missing:+$missing, }$name"
+    done
+    [ -z "$missing" ] || fail "Signing set $SIGNING_SET for distribution $DISTRIBUTION is missing $missing. Run builder signing setup --distribution $DISTRIBUTION (builder ios build does it too when an App Store Connect key is configured)."
+    IOS_CERTIFICATE="${!cert}"
+    IOS_CERTIFICATE_PASSWORD="${!pass}"
+    IOS_PROVISIONING_PROFILE="${!prof}"
+    IOS_EXTENSION_PROFILES="${!ext:-}"
+    SIGNING_SET_USED="$SIGNING_SET"
+  fi
+  echo "Signing set: $SIGNING_SET_USED"
+}
+
+# Decodes the set's extension profiles (IOS_EXTENSION_PROFILES, a JSON object
+# of extension bundle id to base64 .mobileprovision) into $1, installs them
+# next to the app's, and prints a JSON object of bundle id to profile name
+# for apply_signing_to_app_target and write_export_options.
+install_extension_profiles() {
+  local dir="$1" json="${IOS_EXTENSION_PROFILES:-}" i=0 id encoded path uuid name map='{}'
+  [ -n "$json" ] || json='{}'
+  if [ "$(jq -r 'type' <<< "$json" 2>/dev/null)" != "object" ]; then
+    fail "IOS_EXTENSION_PROFILES${SIGNING_SET:+_$SIGNING_SET} must be a JSON object of extension bundle id to base64 .mobileprovision, as builder signing setup writes it."
+  fi
+  mkdir -p "$dir" "$HOME/Library/MobileDevice/Provisioning Profiles"
+  while IFS=' ' read -r id encoded; do
+    id=$(printf '%s' "$id" | base64 --decode)
+    i=$((i + 1))
+    path="$dir/extension-$i.mobileprovision"
+    printf '%s' "$encoded" | base64 --decode > "$path"
+    security cms -D -i "$path" > "$path.plist"
+    uuid=$(plutil -extract UUID raw -o - "$path.plist")
+    name=$(plutil -extract Name raw -o - "$path.plist")
+    cp "$path" "$HOME/Library/MobileDevice/Provisioning Profiles/$uuid.mobileprovision"
+    echo "$uuid" >> "$dir/installed"
+    map=$(jq -c --arg id "$id" --arg name "$name" '. + {($id): $name}' <<< "$map")
+    echo "  extension: $id -> '$name' ($uuid)" >&2
+  done < <(jq -r 'to_entries[] | "\(.key | @base64) \(.value)"' <<< "$json")
+  printf '%s' "$map"
+}
+
+# The profile in the set must be the type the build profile asked for,
+# or the IPA would not be what the profile promised. Compared
+# canonically: the export method says app-store for store, and a tag
+# build may say internal for ad-hoc.
+check_signing_set() {
+  [ "$SIGNING_SET_USED" != legacy ] || return 0
+  local have="$1" want="$DISTRIBUTION"
+  case "$have" in app-store) have=store ;; esac
+  case "$want" in internal) want=ad-hoc ;; esac
+  if [ "$have" != "$want" ]; then
+    fail "IOS_PROVISIONING_PROFILE_$SIGNING_SET holds a $1 provisioning profile, but the build profile asks for distribution $want. Run builder signing setup --distribution $want, or set the profile's distribution to $have."
+  fi
+}
+
+# Writes the manual signing settings (team, profile and identity from the
+# environment) into the application targets of ./*.xcodeproj that the
+# profile's app id ($1, "*" wildcards) covers, and into every extension target
+# with the EXTENSION_PROFILES entry (bundle id to name) covering its bundle
+# id, as an XML plist Xcode reads. On the xcodebuild command line they would
+# apply to every target, and a CocoaPods framework target refuses a profile.
+apply_signing_to_app_target() {
+  local projects=(*.xcodeproj) out
+  [ -d "${projects[0]}" ] || fail "No .xcodeproj in $PWD to apply the signing settings to"
+  out=$(python3 - "$1" "${projects[@]}" 2>&1 <<'PY'
+import json, os, subprocess, sys
+app_id, projects = sys.argv[1], sys.argv[2:]
+settings = {'CODE_SIGN_STYLE': 'Manual', 'DEVELOPMENT_TEAM': os.environ['DEVELOPMENT_TEAM'],
+            'PROVISIONING_PROFILE_SPECIFIER': os.environ['PROVISIONING_PROFILE_NAME'],
+            'CODE_SIGN_IDENTITY': os.environ['CODE_SIGN_IDENTITY']}
+extension_profiles = json.loads(os.environ.get('EXTENSION_PROFILES') or '{}')
+# The same list as ExtensionProductTypes in internal/xcodeproj.
+extension_types = {'com.apple.product-type.app-extension', 'com.apple.product-type.app-extension.messages',
+                   'com.apple.product-type.extensionkit-extension', 'com.apple.product-type.application.watchapp2',
+                   'com.apple.product-type.watchkit2-extension', 'com.apple.product-type.application.on-demand-install-capable'}
+
+def covers(pattern, bundle_id):
+    if pattern.endswith('*'):
+        return bundle_id.startswith(pattern[:-1])
+    return bundle_id == pattern
+
+apps, extensions, plists = [], [], {}
+for project in projects:
+    path = os.path.join(project, 'project.pbxproj')
+    plists[project] = json.loads(subprocess.check_output(['plutil', '-convert', 'json', '-o', '-', path]))
+    objects = plists[project]['objects']
+    for target in objects.values():
+        kind = target.get('productType')
+        if target.get('isa') != 'PBXNativeTarget' or (kind != 'com.apple.product-type.application' and kind not in extension_types):
+            continue
+        configs = [objects[c] for c in objects[target['buildConfigurationList']]['buildConfigurations']]
+        ids = sorted({c.setdefault('buildSettings', {}).get('PRODUCT_BUNDLE_IDENTIFIER', '') for c in configs})
+        (apps if kind == 'com.apple.product-type.application' else extensions).append((project, target['name'], configs, ids))
+if not apps:
+    sys.exit('No application target in %s to apply the signing settings to' % ', '.join(projects))
+chosen = apps if len(apps) == 1 else [a for a in apps if any(covers(app_id, i) for i in a[3])]
+if not chosen:
+    found = '; '.join('%s in %s (%s)' % (name, project, ', '.join(i or '?' for i in ids)) for project, name, _, ids in apps)
+    sys.exit('No application target has the PRODUCT_BUNDLE_IDENTIFIER the provisioning profile covers (%s): %s' % (app_id, found))
+chosen = [a + (settings['PROVISIONING_PROFILE_SPECIFIER'],) for a in chosen]
+# An extension is signed with the most specific profile covering it; the app's never does.
+missing = []
+for project, name, configs, ids in extensions:
+    names = [extension_profiles[p] for p in sorted(extension_profiles, key=len, reverse=True) if any(covers(p, i) for i in ids)]
+    if names:
+        chosen.append((project, name, configs, ids, names[0]))
+    else:
+        missing.append('%s in %s (%s)' % (name, project, ', '.join(i or '?' for i in ids)))
+if missing:
+    sys.exit('No provisioning profile for extension target %s. Add each bundle id to ios.extensions in builder.json and run builder signing setup --distribution %s.' % ('; '.join(missing), os.environ.get('DISTRIBUTION') or '<distribution>'))
+for project, name, configs, _, profile in chosen:
+    for config in configs:
+        build = config['buildSettings']
+        # A conditional setting (CODE_SIGN_IDENTITY[sdk=iphoneos*]) would win over the plain one.
+        for key in [k for k in build if k.split('[')[0] in settings]:
+            del build[key]
+        build.update(settings)
+        build['PROVISIONING_PROFILE_SPECIFIER'] = profile
+    print('Signing settings applied to target %s in %s: %s (profile %s)' % (name, project, ', '.join(c['name'] for c in configs), profile))
+for project in sorted({a[0] for a in chosen}):
+    subprocess.run(['plutil', '-convert', 'xml1', '-o', os.path.join(project, 'project.pbxproj'), '-'],
+                   input=json.dumps(plists[project]).encode(), check=True)
+PY
+  ) || fail "$out"
+  echo "$out"
+}
+
+# Writes the export options ($1) with the same manual signing as the archive:
+# the app's real bundle id (APP_BUNDLE_ID) maps to its profile and every
+# extension keeps its own from EXTENSION_PROFILES.
+write_export_options() {
+  python3 - "$1" <<'PY'
+import json, os, plistlib, sys
+options = {'method': os.environ['EXPORT_METHOD'], 'signingStyle': 'manual',
+           'teamID': os.environ['DEVELOPMENT_TEAM'],
+           'provisioningProfiles': {os.environ['APP_BUNDLE_ID']: os.environ['PROVISIONING_PROFILE_NAME']}}
+options['provisioningProfiles'].update(json.loads(os.environ.get('EXTENSION_PROFILES') or '{}'))
+# Distribution exports keep the version numbers the archive was built with;
+# Xcode would otherwise renumber the build on export.
+if options['method'] != 'development':
+    options['manageAppVersionAndBuildNumber'] = False
+with open(sys.argv[1], 'wb') as out:
+    plistlib.dump(options, out)
+PY
+}
+
 install_signing() {
-  : "${IOS_CERTIFICATE:?Set the IOS_CERTIFICATE secret on this provider}"
-  : "${IOS_CERTIFICATE_PASSWORD?Set IOS_CERTIFICATE_PASSWORD on this provider (may be empty)}"
-  : "${IOS_PROVISIONING_PROFILE:?Set IOS_PROVISIONING_PROFILE on this provider}"
+  SIGNING_SET=$(signing_set "$DISTRIBUTION") || fail "DISTRIBUTION \"$DISTRIBUTION\" must be development, ad-hoc (or internal), store or enterprise"
+  select_signing_set
   signing_dir=$(mktemp -d "$ci_dir/signing.XXXXXX")
+  trap cleanup_signing EXIT
+  # Read the profile first: its type is checked against the build profile
+  # before any keychain exists or the certificate is imported.
+  printf '%s' "$IOS_PROVISIONING_PROFILE" | base64 --decode > "$signing_dir/profile.mobileprovision"
+  security cms -D -i "$signing_dir/profile.mobileprovision" > "$signing_dir/profile.plist"
+  profile_uuid=$(plutil -extract UUID raw -o - "$signing_dir/profile.plist")
+  export DEVELOPMENT_TEAM="$(plutil -extract TeamIdentifier.0 raw -o - "$signing_dir/profile.plist")"
+  export PROVISIONING_PROFILE_NAME="$(plutil -extract Name raw -o - "$signing_dir/profile.plist")"
+  # The app id the profile covers, without the team prefix: the target to
+  # sign is the one whose bundle id it matches.
+  app_id=$(plutil -extract Entitlements.application-identifier raw -o - "$signing_dir/profile.plist")
+  export PROFILE_BUNDLE_ID="${app_id#"$DEVELOPMENT_TEAM".}"
+  export EXPORT_METHOD="$(detect_export_method "$signing_dir/profile.plist")"
+  check_signing_set "$EXPORT_METHOD"
+  echo "Signing with '$PROVISIONING_PROFILE_NAME' (team $DEVELOPMENT_TEAM, app id $PROFILE_BUNDLE_ID, set $SIGNING_SET_USED), export method $EXPORT_METHOD"
+  # A Debug archive carries get-task-allow=true, which no distribution profile
+  # grants: the export fails, or an IPA that App Store Connect rejects comes
+  # out. Say so now instead of after the whole build.
+  if [ "$EXPORT_METHOD" != development ] && [ "$CONFIGURATION" = Debug ]; then
+    echo "The provisioning profile is an $EXPORT_METHOD profile, but the build configuration is Debug. A Debug build is signed with get-task-allow, which distribution profiles do not allow and App Store Connect rejects. Drop the profile's \"configuration\" (a distribution build defaults to Release) or set \"configuration\": \"Release\", or build with a development profile." >&2
+    exit 1
+  fi
   keychain_path="$signing_dir/signing.keychain-db"
   keychain_password=$(openssl rand -base64 32)
-  trap cleanup_signing EXIT
   security create-keychain -p "$keychain_password" "$keychain_path"
   security set-keychain-settings -lut 7200 "$keychain_path"
   security unlock-keychain -p "$keychain_password" "$keychain_path"
@@ -288,37 +550,92 @@ install_signing() {
   security import "$signing_dir/certificate.p12" -P "$IOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
   security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain_path"
   security list-keychains -d user -s "$keychain_path" "$HOME/Library/Keychains/login.keychain-db"
-  printf '%s' "$IOS_PROVISIONING_PROFILE" | base64 --decode > "$signing_dir/profile.mobileprovision"
-  security cms -D -i "$signing_dir/profile.mobileprovision" > "$signing_dir/profile.plist"
-  profile_uuid=$(plutil -extract UUID raw -o - "$signing_dir/profile.plist")
-  export DEVELOPMENT_TEAM="$(plutil -extract TeamIdentifier.0 raw -o - "$signing_dir/profile.plist")"
-  export PROVISIONING_PROFILE_NAME="$(plutil -extract Name raw -o - "$signing_dir/profile.plist")"
+  # The certificate has to be the kind the profile asks for, under whichever of
+  # its names it carries. Say so here instead of letting xcodebuild discover it
+  # after the whole archive.
+  identities=$(security find-identity -v -p codesigning "$keychain_path")
+  echo "$identities"
+  CODE_SIGN_IDENTITY=$(signing_identity "$EXPORT_METHOD" "$identities") ||
+    fail "IOS_CERTIFICATE${SIGNING_SET:+_$SIGNING_SET} holds no $(signing_identities "$EXPORT_METHOD" | paste -sd '/' -) certificate, which an $EXPORT_METHOD profile must be signed with. Run builder signing setup --distribution ${DISTRIBUTION:-<distribution>} to issue the right one."
+  export CODE_SIGN_IDENTITY
+  echo "Signing identity: $CODE_SIGN_IDENTITY"
   mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
   profile_dest="$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision"
   cp "$signing_dir/profile.mobileprovision" "$profile_dest"
+  EXTENSION_PROFILES=$(install_extension_profiles "$signing_dir/extensions")
+  export EXTENSION_PROFILES
+}
+
+# BUILD_NUMBER is "N" or "X.Y.Z+N" (pubspec convention); sets build_number,
+# build_name and version_settings for xcodebuild. Given a target and scheme
+# it also rewrites an Info.plist that hardcodes CFBundleVersion, which
+# CURRENT_PROJECT_VERSION never reaches; identical in ios-build.yml and runner.sh.
+apply_build_number() {
+  build_number="" build_name="" version_settings=""
+  [ -n "${BUILD_NUMBER:-}" ] || return 0
+  if ! [[ "$BUILD_NUMBER" =~ ^([0-9]+(\.[0-9]+)*\+)?[0-9]+(\.[0-9]+)*$ ]]; then
+    echo "BUILD_NUMBER must be N or X.Y.Z+N, got '$BUILD_NUMBER'" >&2
+    return 1
+  fi
+  build_number="${BUILD_NUMBER##*+}"
+  case "$BUILD_NUMBER" in *+*) build_name="${BUILD_NUMBER%+*}" ;; esac
+  version_settings="CURRENT_PROJECT_VERSION=$build_number${build_name:+ MARKETING_VERSION=$build_name}"
+  echo "Build number: $build_number${build_name:+ (version $build_name)}"
+  [ $# -gt 0 ] || return 0
+  plist=$(xcodebuild "$@" -showBuildSettings -json 2>/dev/null \
+    | jq -r 'map(.buildSettings)
+             | map(select(.PRODUCT_TYPE == "com.apple.product-type.application" and .INFOPLIST_FILE != null and .INFOPLIST_FILE != ""))
+             | map(.SRCROOT + "/" + .INFOPLIST_FILE) | first // empty' || true)
+  if [ -z "$plist" ] || [ ! -f "$plist" ]; then
+    echo "No Info.plist file in the app target; CFBundleVersion comes from CURRENT_PROJECT_VERSION"
+    return 0
+  fi
+  current=$(plutil -extract CFBundleVersion raw -o - "$plist" 2>/dev/null || true)
+  case "$current" in
+    '$(CURRENT_PROJECT_VERSION)'|'${CURRENT_PROJECT_VERSION}'|'$(FLUTTER_BUILD_NUMBER)'|'${FLUTTER_BUILD_NUMBER}')
+      echo "$plist reads CFBundleVersion from $current" ;;
+    *)
+      echo "$plist hardcodes CFBundleVersion '$current'; setting $build_number in the plist"
+      plutil -replace CFBundleVersion -string "$build_number" "$plist" ;;
+  esac
+  [ -n "$build_name" ] || return 0
+  current=$(plutil -extract CFBundleShortVersionString raw -o - "$plist" 2>/dev/null || true)
+  case "$current" in
+    '$(MARKETING_VERSION)'|'${MARKETING_VERSION}'|'$(FLUTTER_BUILD_NAME)'|'${FLUTTER_BUILD_NAME}') ;;
+    *)
+      echo "$plist hardcodes CFBundleShortVersionString '$current'; setting $build_name in the plist"
+      plutil -replace CFBundleShortVersionString -string "$build_name" "$plist" ;;
+  esac
 }
 
 build_ipa() {
+  # Before the compile, so a profile/configuration mismatch fails without
+  # waiting for the archive.
+  if [ "$USE_SIGNING" = true ]; then install_signing; fi
+  apply_build_number
   if [ "$project_type" = flutter ]; then
     cd "$BUILDER_WORKSPACE"
-    case "$CONFIGURATION" in Debug) flutter build ios --debug --no-codesign ;; *) flutter build ios --release --no-codesign ;; esac
+    flutter_flags=(--no-codesign)
+    if [ -n "$build_number" ]; then flutter_flags+=("--build-number=$build_number"); fi
+    if [ -n "$build_name" ]; then flutter_flags+=("--build-name=$build_name"); fi
+    case "$CONFIGURATION" in Debug) flutter build ios --debug "${flutter_flags[@]}" ;; *) flutter build ios --release "${flutter_flags[@]}" ;; esac
   fi
   select_project
+  # Flutter wrote the build number into Generated.xcconfig; for it this only
+  # catches a Runner Info.plist that hardcodes CFBundleVersion.
+  apply_build_number "${target[@]}" -scheme "$SCHEME"
+  # version_settings is unquoted on purpose: validated above, it holds zero
+  # to two KEY=VALUE words.
   args=("${target[@]}" -scheme "$SCHEME" -configuration "$CONFIGURATION" -destination 'generic/platform=iOS'
-    -derivedDataPath "$BUILDER_WORKSPACE/DerivedData" COMPILER_INDEX_STORE_ENABLE=NO)
+    -derivedDataPath "$BUILDER_WORKSPACE/DerivedData" COMPILER_INDEX_STORE_ENABLE=NO $version_settings)
   mkdir -p "$BUILDER_WORKSPACE/build"
   if [ "$USE_SIGNING" = true ]; then
-    install_signing
-    xcodebuild "${args[@]}" DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" CODE_SIGN_STYLE=Manual \
-      PROVISIONING_PROFILE_SPECIFIER="$PROVISIONING_PROFILE_NAME" -archivePath "$BUILDER_WORKSPACE/build/App.xcarchive" archive
+    # After pod install / expo prebuild / flutter build ios, so the project
+    # the archive reads exists; select_project left us in the iOS directory.
+    apply_signing_to_app_target "$PROFILE_BUNDLE_ID"
+    xcodebuild "${args[@]}" -archivePath "$BUILDER_WORKSPACE/build/App.xcarchive" archive
     export APP_BUNDLE_ID="$(plutil -extract ApplicationProperties.CFBundleIdentifier raw -o - "$BUILDER_WORKSPACE/build/App.xcarchive/Info.plist")"
-    python3 - "$signing_dir/ExportOptions.plist" <<'PY'
-import os, plistlib, sys
-with open(sys.argv[1], 'wb') as out:
-    plistlib.dump({'method': 'development', 'signingStyle': 'manual',
-                  'teamID': os.environ['DEVELOPMENT_TEAM'],
-                  'provisioningProfiles': {os.environ['APP_BUNDLE_ID']: os.environ['PROVISIONING_PROFILE_NAME']}}, out)
-PY
+    write_export_options "$signing_dir/ExportOptions.plist"
     xcodebuild -exportArchive -archivePath "$BUILDER_WORKSPACE/build/App.xcarchive" \
       -exportOptionsPlist "$signing_dir/ExportOptions.plist" -exportPath "$signing_dir/export"
     ipa=$(find "$signing_dir/export" -maxdepth 1 -name '*.ipa' -print -quit)

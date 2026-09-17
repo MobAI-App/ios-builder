@@ -97,7 +97,10 @@ The run is named after the tag. Build settings come from `builder.json` in the
 tagged commit (`ios.path`, `ios.scheme`, `ios.signing`, `ios.configuration`,
 `flutter.version`, `kmp.jdkVersion`), the simulator stays available for the
 default 30 minutes, and the tag is deleted when the run ends. The IPA is
-attached to the run as an artifact.
+attached to the run as an artifact. A tag carries no flags, so a tagged IPA
+build cannot pick a [profile](#build-profiles) per run; it applies the profile
+named by `defaultProfile`, if there is one. The simulator build takes no
+profile at all.
 
 ## Additional macOS Providers
 
@@ -209,6 +212,7 @@ builder update                # Update builder to the latest release
 builder ios build             # Trigger build and download IPA to ./dist/
 builder ios build --unsigned  # Build without code signing (if signing is configured)
 builder ios build --provider codemagic  # Build on another provider (also: bitrise)
+builder ios build --profile production  # Build with a profile from builder.json
 
 # Simulator (free, needs a MOBAI_API_KEY secret)
 builder ios share             # Try the build on a simulator in the MobAI app
@@ -230,12 +234,18 @@ builder mobai install <ipa>   # Install an IPA on the device
 builder mobai run-debug <bundle-id>  # Launch an app with the debugger attached
 builder mobai forward <device-port> <host-port>  # Forward a device port
 
-# Code signing
-builder signing csr           # Create a private key + certificate signing request
-builder signing p12           # Assemble a .p12 from the key and Apple's certificate
-builder signing setup         # Upload code signing secrets to GitHub
+# Code signing (automatic mode needs builder auth apple)
+builder signing setup --devices-from-mobai       # development: certificate, devices, profile, GitHub secrets, no portal
+builder signing setup --distribution store       # Apple Distribution certificate + App Store profile
+builder signing setup --certificate ios-signing.p12 --profile MyApp.mobileprovision  # Upload your own files
+builder ios build --profile store                # Signs with the set; provisions it first when missing
+builder signing csr           # Manual path: create a private key + certificate signing request
+builder signing p12           # Manual path: assemble a .p12 from the key and Apple's certificate
 
 # TestFlight and App Store (needs builder auth apple)
+builder ios release --profile store --group "Beta Testers" --notes "What to test"  # Build with the next build number, upload, wait, add to TestFlight
+builder ios release --profile store --app-store --release after-approval  # Same, then submit the version for App Review
+builder ios build --profile store --submit    # Short for: ios release (TestFlight, no groups)
 builder ios upload --wait     # Upload ./dist/*.ipa to App Store Connect and wait for processing
 builder ios submit --testflight --group "Beta Testers" --notes "What to test"
 builder ios submit --app-store --release after-approval  # Submit the version for App Review
@@ -256,8 +266,8 @@ builder asc users             # Team members and whether they can test internall
 builder asc users invite dev@example.com --role DEVELOPER --first Dee --last Vee
 ```
 
-Every `upload`/`submit`/`asc` command takes `--json` for machine-readable output
-and never prompts, so agents and CI jobs can drive them.
+Every `release`/`upload`/`submit`/`asc` command takes `--json` for
+machine-readable output and never prompts, so agents and CI jobs can drive them.
 
 ## Configuration
 
@@ -274,8 +284,12 @@ and never prompts, so agents and CI jobs can drive them.
   "ios": {
     "path": "ios",
     "scheme": "",
-    "signing": true,
+    "bundleId": "com.example.app",
     "configuration": "Debug"
+  },
+  "profiles": {
+    "development": { "distribution": "development" },
+    "store":       { "distribution": "store" }
   },
   "mobai": {
     "url": "http://localhost:8686",
@@ -298,8 +312,70 @@ and never prompts, so agents and CI jobs can drive them.
 |-------|-------------|---------|
 | `ios.path` | Path to the Xcode project relative to the repo root | detected by `init` |
 | `ios.scheme` | Xcode scheme to build | auto-detected |
-| `ios.signing` | Sign the IPA with the uploaded certificate and profile | `false` |
+| `ios.bundleId` | App bundle identifier, used by `signing setup` and by `ios release` to find the App Store Connect app before the first IPA exists | detected by `init` when the project has one app target; else saved by `signing setup`, else the newest IPA in `./dist/` |
+| `ios.extensions` | Bundle identifiers of the app's extension targets (widgets, share/notification extensions, watch apps, app clips), each signed with its own profile | filled by `init` and `signing setup` from the Xcode project; list them by hand for a managed Expo project |
 | `ios.configuration` | Xcode build configuration. **Builds are `Debug` unless you set `Release`**; Debug is faster and is what the dev commands expect | `Debug` |
+| `ios.signing` | Legacy: sign builds that select no profile, with the unsuffixed `IOS_CERTIFICATE`, `IOS_CERTIFICATE_PASSWORD` and `IOS_PROVISIONING_PROFILE` secrets. Profiles ignore it; use `distribution` there | `false` |
+
+### Build Profiles
+
+Profiles are named sets of build settings, in the spirit of `eas.json`, selected
+with `--profile` on `ios build`:
+
+```json
+{
+  "ios": { "path": "ios", "bundleId": "com.example.app" },
+  "defaultProfile": "development",
+  "profiles": {
+    "development": { "distribution": "development" },
+    "preview":     { "distribution": "internal",
+                     "env": { "API_URL": "https://staging.example.com" } },
+    "production":  { "distribution": "store", "scheme": "MyApp", "provider": "codemagic" }
+  }
+}
+```
+
+```bash
+builder ios build --profile preview
+```
+
+| Field | Description |
+|-------|-------------|
+| `distribution` | The only signing setting: `development`, `ad-hoc` (or `internal`, the same thing), `store` or `enterprise`. The build signs with that distribution's [signing set](#code-signing) and its provisioning profile must be of that type; the IPA is exported with the matching method. Omitted means an unsigned build |
+| `configuration` | Overrides the derived configuration: `Debug` for `development`, `Release` for every other distribution, `ios.configuration` for unsigned profiles |
+| `scheme` | Overrides `ios.scheme` |
+| `provider` | Overrides the top-level `provider` (`github`, `codemagic`, `bitrise`) |
+| `env` | String map exported as environment variables on the runner before dependencies are installed and the app is built, so `pod install`, `npm install`, `flutter pub get`, Gradle and xcodebuild all see them |
+
+How a build's settings are resolved:
+
+- Without `--profile`, the profile named by `defaultProfile` applies. With
+  neither, the top-level `ios.*` and `provider` settings are used exactly as
+  before, so existing projects are unaffected.
+- A profile only overrides the fields it sets; everything else comes from the
+  top level. An unknown profile name is an error that lists the available ones.
+- `--unsigned` and `--provider` on the command line override the profile.
+- The resolved settings (profile, configuration, scheme, signing set, provider,
+  env names) are printed before anything is dispatched.
+- Profiles apply to `ios build` only. `ios share` takes no `--profile`:
+  simulator builds are always Debug and unsigned, and use `ios.scheme` and the
+  top-level `provider` (or `--provider`).
+
+**`env` values are build-time configuration, not secrets.** They are stored in
+`builder.json`, sent to the CI provider as plain workflow inputs, and visible in
+the run's inputs and logs. Keep tokens and passwords in the provider's secrets
+(`gh secret set` on GitHub, or the [Codemagic / Bitrise secrets
+guide](docs/provider-secrets.md)); the build reads those as environment
+variables too. Names the runner owns are rejected: its own parameters (`SCHEME`,
+`CONFIGURATION`, `USE_SIGNING`, `BUILD_ENV`, ...), the signing secrets, `PATH`,
+`HOME`, `DEVELOPER_DIR`, and the `GITHUB_`, `RUNNER_`, `CM_`, `BITRISE_`, `BUILDER_` prefixes.
+
+Selecting a profile, with `--profile` or `defaultProfile`, needs the workflow
+file from this version of Builder, which declares a `profile` input; an older
+committed workflow rejects the dispatch. Run `builder init` again to refresh
+`.github/workflows/ios-build.yml` (or `builder init --provider ...` for
+`runner.sh`) in a project set up earlier, then commit and push it to the
+default branch.
 
 ### MobAI Configuration
 
@@ -326,23 +402,190 @@ mirrored networking.
 
 ## Code Signing
 
-For Codemagic and Bitrise, follow the [signing and MobAI secrets guide](docs/provider-secrets.md)
-for dashboard instructions, file encoding, and verification. The `signing setup`
-command below uploads to GitHub Actions only.
-
-By default, builds are unsigned. Signed builds need a signing certificate and a
+By default, builds are unsigned. A signed build needs a certificate and a
 provisioning profile — and despite what many guides claim, **you do not need a
-Mac to create either one**. The `.p12` certificate is normally created through
-Keychain Access, but Builder does the same thing itself: it generates the
-private key and certificate signing request, and assembles the `.p12` from the
-certificate Apple issues.
+Mac to create either one**, nor a tour of the Apple Developer portal. Signing
+is configured per [build profile](#build-profiles) with one field,
+`distribution`, and `builder signing setup` produces the material for it
+through the App Store Connect API (or takes your own files).
 
 You need a paid [Apple Developer Program](https://developer.apple.com/programs/)
-membership — the portal only issues certificates to paid accounts. (Without one,
+membership — Apple only issues certificates to paid accounts. (Without one,
 build unsigned and let [MobAI](https://mobai.run) re-sign on install with a free
 Apple ID.)
 
-### 1. Create a certificate signing request
+### Profiles and signing sets
+
+Each distribution has its own set of GitHub secrets, so a development set
+for your devices and a store set for TestFlight live side by side:
+
+| `distribution` | Certificate, profile | Secrets |
+|----------------|----------------------|---------|
+| `development` | Apple Development, iOS App Development (devices required) | `IOS_CERTIFICATE_DEVELOPMENT`, `IOS_CERTIFICATE_PASSWORD_DEVELOPMENT`, `IOS_PROVISIONING_PROFILE_DEVELOPMENT` |
+| `ad-hoc` or `internal` | Apple Distribution, Ad Hoc (devices required) | `IOS_CERTIFICATE_AD_HOC`, `IOS_CERTIFICATE_PASSWORD_AD_HOC`, `IOS_PROVISIONING_PROFILE_AD_HOC` |
+| `store` | Apple Distribution, App Store | `IOS_CERTIFICATE_STORE`, `IOS_CERTIFICATE_PASSWORD_STORE`, `IOS_PROVISIONING_PROFILE_STORE` |
+| `enterprise` | In-house (portal only) | `IOS_CERTIFICATE_ENTERPRISE`, `IOS_CERTIFICATE_PASSWORD_ENTERPRISE`, `IOS_PROVISIONING_PROFILE_ENTERPRISE` |
+
+An app with extension targets has a fourth secret per set,
+`IOS_EXTENSION_PROFILES_<SET>`, holding their profiles (see
+[Extensions](#builder-signing-setup) below).
+
+A build with `--profile <name>` signs with the set of that profile's
+`distribution`; `configuration` follows it (`Debug` for `development`,
+`Release` otherwise) unless the profile sets one. The runner checks that the
+profile in the set is of the requested type and fails by name before compiling
+anything, and a distribution profile refuses a `Debug` configuration. On
+Codemagic and Bitrise the same names are variables you add in the dashboard,
+see the [secrets guide](docs/provider-secrets.md).
+
+### Create an App Store Connect API key
+
+Automatic signing, `ios upload`, `ios submit` and `ios release` all use one
+App Store Connect API key. You create it once, in the browser:
+
+1. Sign in to [App Store Connect](https://appstoreconnect.apple.com) as the
+   Account Holder or an Admin (only they can create team keys).
+2. Go to **Users and Access → Integrations → App Store Connect API**, tab
+   **Team Keys**, and press **+** (or **Generate API Key**).
+3. Name it (for example `Builder`) and choose the role **Admin**. **App
+   Manager** works too if you also tick *Access to Certificates, Identifiers &
+   Profiles*; a **Developer** key can upload builds but cannot create
+   certificates.
+4. Press **Generate**, then **Download API Key**. The `AuthKey_<KEYID>.p8`
+   file downloads once; keep it somewhere private, never in the repo.
+5. Note the **Issuer ID** at the top of the page and the **Key ID** in the
+   row of your key.
+
+Then save it in your keychain:
+
+```bash
+builder auth apple --issuer-id 12345678-abcd-... --key-id ABC123DEFG --key ~/Downloads/AuthKey_ABC123DEFG.p8
+```
+
+`builder auth status` shows it, `builder auth logout apple` removes it. On a
+machine without a keychain (CI, a coding agent), set `ASC_ISSUER_ID`,
+`ASC_KEY_ID` and `ASC_KEY_PATH` (or `ASC_PRIVATE_KEY` with the file's contents)
+instead.
+
+### `builder signing setup`
+
+```bash
+builder auth apple                                  # once: save the App Store Connect API key
+builder signing setup --devices-from-mobai          # development set for the devices MobAI sees
+builder signing setup --distribution store          # store set for TestFlight / App Store
+```
+
+Without files, `setup` works through the App Store Connect API for the given
+`--distribution` (default `development`; `--name <profile>` reads it from an
+existing profile). The key needs the **Admin** role (or App Manager plus
+*Access to Certificates, Identifiers & Profiles*): Developer-role keys cannot
+create certificates. It then:
+
+1. Registers the **App ID** if the bundle identifier is not on the account yet.
+   The bundle ID comes from `--bundle-id`, `ios.bundleId` in `builder.json`
+   (which `init` fills when the Xcode project has a single app target), or the
+   newest IPA in `./dist/`; in a terminal it asks as a last resort.
+2. Issues a **certificate** — Apple Development for `development`, Apple
+   Distribution for `ad-hoc` and `store` — for a private key generated on your
+   machine (`ios-signing-<distribution>.key`; `--key` reuses one from
+   `signing csr`, and an `ios-signing.key` from an earlier version is picked up
+   too). A valid certificate on the account is reused only when its private
+   key is here, since the `.p12` needs it; otherwise a new one is issued.
+   Nothing is ever revoked: at Apple's limit (2 Development, 3 Distribution)
+   the error says so and points at the portal.
+3. Registers **devices** from `--device <udid>` (repeatable) and
+   `--devices-from-mobai` (name and UDID of every physical iOS device MobAI has
+   connected; simulators and cloud farm devices are skipped). Development and
+   ad-hoc profiles cover every enabled iOS device on the account, so with none
+   given and none registered the command stops and says so. Store profiles
+   take no devices. Apple allows 100 devices per membership year and never
+   frees a slot; that error is passed through too.
+4. Creates the **profile** `Builder <distribution> <bundle id>`. An existing
+   one is reused while it is `ACTIVE`, unexpired and still lists exactly this
+   certificate and these devices; otherwise it is deleted and recreated, and
+   the summary says why (`invalid`, `expired`, `certificate changed`, `devices
+   changed`, `forced`).
+5. Writes `ios-signing-<distribution>.key` (when generated),
+   `ios-signing-<distribution>.p12` and `Builder-<distribution>-<bundle
+   id>.mobileprovision` to `--out-dir` (default `.`), uploads the set's
+   secrets to GitHub, and writes `"distribution": "<distribution>"` into the
+   `--name` profile (default: the distribution name) in `builder.json`, keeping
+   its other fields and reporting a replaced distribution; `defaultProfile` is
+   left alone. An `--out-dir` other than `.` is recorded as `signing.dir`, so a
+   later `ios build` that provisions a set reuses the key there instead of
+   asking Apple for a second certificate, which it refuses.
+6. Prints the secret names and where their values come from — the
+   `.p12` base64-encoded, the password, the `.mobileprovision` base64-encoded
+   — every time, so the same set can be pasted into Codemagic or Bitrise,
+   following the [secrets guide](docs/provider-secrets.md). Builder cannot
+   check those providers' secrets before a build, so `ios build` only reminds
+   you of this command when the profile signs there.
+
+The upload goes to the repository in `builder.json`, always. When it fails (no
+GitHub login, or a token that cannot write secrets) the error is printed and
+the command carries on: files, values and the build profile are written and
+shown anyway, and it exits non-zero at the end so a script notices. `--json`
+reports the same in `github_upload` (`ok` or the error).
+
+**Extensions.** Every extension target (a widget, a share or notification
+extension, a watch app, an app clip) is signed with a profile of its own.
+`init` and `signing setup` read their bundle IDs from the Xcode project into
+`ios.extensions` in `builder.json`; a managed Expo project has no project to
+read, so list them there by hand. Automatic `setup` then registers each App ID
+and creates `Builder <distribution> <bundle id>` for it, with the same
+certificate and devices as the app; in manual mode pass one `--extension-profile
+<mobileprovision>` per extension. The profiles go into a fourth secret of the
+set, `IOS_EXTENSION_PROFILES_<SET>` (a JSON object of bundle ID to base64
+profile, `{}` when there are none), and the runner signs each extension target
+with the entry covering its bundle ID, failing by name — with the IDs to add to
+`ios.extensions` — when one has none.
+
+The command shows its plan and asks once before creating anything; `--yes`
+skips that (required without a terminal), and then the `.p12` password is
+generated and printed once unless `--password` is given. `--json` prints the
+result as JSON with progress on stderr. Keep the written files out of git.
+Run it again whenever you like: it reports what it found and recreates only
+what is missing, expired, invalid or changed — add a device, re-run, rebuild.
+`--force` issues a fresh certificate and profile regardless.
+
+With `--certificate` and `--profile`, `setup` takes your own files instead — a
+`.p12` (from Keychain Access, or [assembled here](#manual-path-through-the-apple-developer-portal))
+and a `.mobileprovision` — reads the distribution out of the profile
+(development, ad-hoc, store or enterprise; this is the only way in for
+enterprise), uploads that set, prints its names and values, and writes the
+build profile the same way:
+
+```bash
+builder signing setup --certificate ios-signing.p12 --profile MyApp.mobileprovision
+```
+
+### Provisioning from `ios build`
+
+`builder ios build --profile <name>` checks, before dispatching to GitHub,
+that the repository holds the secrets of the profile's set. When any is
+missing and an App Store Connect key is saved, it runs the same provisioning
+as `signing setup` without prompts, uploads the set and builds; a development
+or ad-hoc profile with no registered device stops and points at `builder
+signing setup --distribution development --devices-from-mobai`. Without an
+Apple key it stops before anything is pushed and names both ways out (`builder
+auth apple`, or `signing setup --certificate ... --profile ...`). `--unsigned`
+skips the check, and so do Codemagic/Bitrise builds (no secrets API).
+
+### Legacy: `ios.signing` without profiles
+
+A project set up before build profiles has `ios.signing: true` and the
+unsuffixed `IOS_CERTIFICATE`, `IOS_CERTIFICATE_PASSWORD` and
+`IOS_PROVISIONING_PROFILE` secrets. Builds that select no profile still sign
+with those, whatever the profile type, exactly as before; `setup` never
+touches them. Profiles ignore `ios.signing` and read their own set.
+
+### Manual path through the Apple Developer portal
+
+The `.p12` certificate is normally created through Keychain Access, but Builder
+does the same thing itself: it generates the private key and certificate
+signing request, and assembles the `.p12` from the certificate Apple issues.
+
+#### 1. Create a certificate signing request
 
 ```bash
 builder signing csr
@@ -353,52 +596,45 @@ directory: `ios-signing.key` (your private key) and `ios-signing.csr`. Keep
 the key wherever suits you — just don't commit it (add it to `.gitignore`;
 gitignored files are also excluded from build snapshots).
 
-### 2. Create the certificate
+#### 2. Create the certificate
 
 1. Go to [Certificates](https://developer.apple.com/account/resources/certificates/add) on the Apple Developer portal
-2. Choose **Apple Development** (installs on registered devices) or **Apple Distribution** (App Store/Ad Hoc)
+2. Choose **Apple Development** (installs on registered devices) or **Apple Distribution** (App Store/Ad Hoc). TestFlight and App Store uploads need **Apple Distribution** together with an App Store profile in step 4
 3. Upload `ios-signing.csr` and download the resulting `.cer` file
 
-### 3. Assemble the .p12
+#### 3. Assemble the .p12
 
 ```bash
 builder signing p12 --certificate development.cer --key ios-signing.key
 ```
 
-This combines the key and certificate into `ios-signing.p12`, protected by a
-password you choose — byte-for-byte the same kind of file Keychain Access
-exports, and usable anywhere one is: `builder signing setup`, Sideloadly,
-AltStore, or importing it on a Mac. Keep it, and don't commit it.
+This combines the key and certificate into `ios-signing.p12` (`--out` to name
+it), protected by a password you choose — byte-for-byte the same kind of file
+Keychain Access exports, and usable anywhere one is: `builder signing setup`,
+Sideloadly, AltStore, or importing it on a Mac. Keep it, and don't commit it.
 
-### 4. Create a provisioning profile
+#### 4. Create a provisioning profile
 
 On the portal:
 
 1. **Identifiers** → register an App ID matching your app's bundle identifier
 2. **Devices** → register your device's UDID (shown in [MobAI](https://mobai.run) when the device is connected; on Windows, iTunes shows it when you click the serial number on the device page)
-3. **Profiles** → create an **iOS App Development** (or Ad Hoc) profile, select your App ID, certificate, and devices, then download the `.mobileprovision` file
+3. **Profiles** → create an **iOS App Development** (or Ad Hoc, App Store) profile, select your App ID, certificate, and devices, then download the `.mobileprovision` file
 
-### 5. Upload the signing secrets
+The profile type decides the distribution the set is written to and the method
+the IPA is exported with: development, ad-hoc, enterprise or store.
+
+#### 5. Upload the signing secrets
 
 ```bash
 builder signing setup --certificate ios-signing.p12 --profile MyApp.mobileprovision
 ```
 
-This uploads the signing material to GitHub Secrets:
-- `IOS_CERTIFICATE` - Base64-encoded .p12 file
-- `IOS_CERTIFICATE_PASSWORD` - Certificate password
-- `IOS_PROVISIONING_PROFILE` - Base64-encoded .mobileprovision file
-
 You can also skip step 3 and hand `setup` the `.cer` together with the key —
 `builder signing setup --certificate development.cer --key ios-signing.key
---profile MyApp.mobileprovision` — and it assembles the `.p12` on the way.
-
-`setup` also sets `ios.signing` to `true` in `builder.json`, which is what
-tells `builder ios build` to sign. From then on builds produce signed IPAs; use
-`--unsigned` to skip signing for one build. For Codemagic and Bitrise, add the
-secrets by hand as described in the
-[signing and MobAI secrets guide](docs/provider-secrets.md), then set
-`ios.signing` to `true` yourself.
+--profile MyApp.mobileprovision` — and it assembles the `.p12` on the way,
+saving it as `ios-signing-<distribution>.p12`. Then `builder ios build
+--profile <name>`; `--unsigned` skips signing for one build.
 
 ## TestFlight and App Store
 
@@ -411,37 +647,47 @@ the IPA in `./dist/`.
 You need:
 
 - A paid [Apple Developer Program](https://developer.apple.com/programs/)
-  membership and an app record in App Store Connect (My Apps → +) with your
-  bundle ID
+  membership and an app record in App Store Connect for your bundle ID (step 2
+  below; the API cannot create it)
 - An IPA signed with an **Apple Distribution** certificate and an **App Store**
-  provisioning profile. `builder signing setup` accepts both, exactly as in the
-  steps above; pick those types on the portal instead of the development ones.
-  An IPA signed for development is rejected at upload.
-- `"configuration": "Release"` under `ios` in `builder.json`: `ios build`
-  defaults to `Debug`, which is what the dev commands expect, not what you want
-  to ship.
-- An App Store Connect API key: App Store Connect → Users and Access →
-  Integrations → App Store Connect API → Team Keys. Give it the **App Manager**
-  role, note the **Issuer ID** and **Key ID**, and download the
-  `AuthKey_<KEYID>.p8` file (Apple offers the download once).
+  provisioning profile: `builder signing setup --distribution store` creates
+  both, stores them as the `STORE` signing set and writes a `store` build
+  profile, or pick those types on the portal in the manual path. An IPA signed
+  for development is rejected at upload.
+- `builder ios build --profile store` (see [Build Profiles](#build-profiles)):
+  a `store` profile builds `Release` and signs with that set; a plain `ios
+  build` is Debug and unsigned, which is what the dev commands expect, not
+  what you want to ship.
+- An App Store Connect API key saved with `builder auth apple`, see
+  [Create an App Store Connect API key](#create-an-app-store-connect-api-key).
 
 ### 1. Save the API key
 
+`builder auth apple` as described in
+[Create an App Store Connect API key](#create-an-app-store-connect-api-key).
+Flags you leave out are prompted for; Builder verifies the key against App
+Store Connect before storing it.
+
+### 2. Create the app record
+
+App Store Connect only accepts uploads for an app it already knows, and the API
+cannot create one. Once, in the browser:
+
+1. Register the bundle ID first: `builder signing setup --distribution store`
+   does it (or **Certificates, Identifiers & Profiles → Identifiers → +** on
+   the developer portal).
+2. Open [App Store Connect → My Apps](https://appstoreconnect.apple.com/apps),
+   press **+ → New App**, pick **iOS**, a name, the primary language, your
+   bundle ID from the list, and any SKU (an internal string, e.g. the bundle
+   ID). Press **Create**.
+
+Nothing else on the record is needed for TestFlight. App Store review needs the
+rest of the metadata (screenshots, description, privacy policy) filled in there.
+
+### 3. Upload the build
+
 ```bash
-builder auth apple --issuer-id 12345678-abcd-... --key-id ABC123DEFG --key AuthKey_ABC123DEFG.p8
-```
-
-Flags you leave out are prompted for. Builder verifies the key against App
-Store Connect and stores it like the other logins (keychain, or a `0600` file on
-Linux/WSL); `builder auth status` shows it and `builder auth logout apple`
-removes it. In CI or for a coding agent, set `ASC_ISSUER_ID`, `ASC_KEY_ID` and
-either `ASC_PRIVATE_KEY` (the .p8 contents; literal `\n` is fine) or
-`ASC_KEY_PATH` instead — they take precedence over the saved login.
-
-### 2. Upload the build
-
-```bash
-builder ios build            # produces a signed dist/*.ipa
+builder ios build --profile store   # produces a signed dist/*.ipa
 builder ios upload --wait
 ```
 
@@ -455,14 +701,14 @@ Two things Apple checks on every upload:
 
 - **Build numbers must increase.** A second upload with the same
   `CFBundleVersion` for the same version is rejected (`ITMS-90189`), so bump
-  it before rebuilding.
+  it before rebuilding — or let `ios release` (below) pick the next one.
 - **Export compliance.** A build shows as *Missing Compliance* in TestFlight
   until you say whether it uses non-exempt encryption. If your Info.plist sets
   `ITSAppUsesNonExemptEncryption` to `false`, `upload --wait` answers that
   automatically; otherwise pass `--no-encryption` (here or to `submit`) when
   your app only uses standard iOS encryption.
 
-### 3. Distribute to TestFlight
+### 4. Distribute to TestFlight
 
 ```bash
 builder ios submit --testflight --group "Beta Testers" --notes "New login flow"
@@ -476,7 +722,7 @@ group triggers Apple's beta review, which Builder submits for you (`--wait`
 follows the decision). Run it without `--group` to see the build and the
 groups the app has.
 
-### 4. Submit to the App Store
+### 5. Submit to the App Store
 
 ```bash
 builder ios submit --app-store --release after-approval
@@ -492,6 +738,43 @@ screenshots or in-app purchases; fill them in App Store Connect, or on a Mac
 with [asc-cli](https://github.com/tddworks/asc-cli), whose production use of
 the `buildUploads` API also proved that the Mac-free upload path works and
 served as the reference for Builder's implementation.
+
+### 6. Or all of it in one command: release
+
+```bash
+builder ios release --profile store --group "Beta Testers" --notes "New login flow"
+builder ios release --profile store --app-store --release after-approval
+builder ios build --profile store --submit     # TestFlight release with no groups
+```
+
+`release` runs steps 3 to 5 back to back: build, download, upload, wait for
+processing, then TestFlight (default) or `--app-store`, with the same flags as
+`submit`. It needs a [build profile](#build-profiles) with
+`"distribution": "store"` built as `Release` (the default for `store`; an
+explicit `Debug` is refused): `--profile`, else `defaultProfile`, else the only
+store profile in `builder.json` (logged; with several, pick one with
+`--profile`). API key and profile are checked before anything is dispatched —
+without a store profile the error names `builder signing setup --distribution
+store`, which writes one — and on GitHub a missing `STORE` signing set is
+provisioned first. `--unsigned` is refused with `--submit`.
+
+It also solves the build-number problem: Builder takes the highest
+`CFBundleVersion` among the app's builds in App Store Connect, across all
+versions, and builds with the next one (`1` for a new app); `--build-number N`
+overrides it and `--version X.Y.Z` sets the marketing version too. The runner
+applies it per project type — `flutter build ios --build-number`,
+`CURRENT_PROJECT_VERSION`/`MARKETING_VERSION` on `xcodebuild archive`, or an
+in-place edit of an Info.plist that hardcodes `CFBundleVersion` — and the log
+says which. Builder then reads the IPA and refuses to upload one whose
+`CFBundleVersion` is not the requested number.
+
+To find the app before the first IPA exists, set `ios.bundleId` in
+`builder.json` or pass `--bundle-id`; afterwards the newest IPA in `./dist/`
+is enough. The workflow file must have the `build_number` input, so repos set
+up before this feature need `builder init` once more and a push to the default
+branch. `--timeout` bounds the build and then the App Store Connect wait
+separately; `--json` prints one object with the build ID, App Store Connect
+build ID, version, build number and groups.
 
 ## Managing TestFlight
 
@@ -524,15 +807,17 @@ Two things about internal groups:
   (the default of `asc groups create`, off with `--no-auto-builds`) receives
   every processed build by itself and Apple refuses to add builds by hand, so
   `asc groups` marks it `internal, all builds` and `ios submit --group` and
-  `asc groups add-build` skip it with a note instead of failing.
+  `asc groups add-build` skip it with a note instead of failing. It only sees
+  builds uploaded after it was created, and that first upload also sends the
+  pending invites, so upload a new build after creating one.
 
 `NOT_INVITED` means no email has gone out — how a team member added to an
-internal group in App Store Connect shows up. `asc testers invite` sends it
-(or resends while `INVITED`) and `asc testers add` does so by itself, unless
-the group has no build yet: Apple refuses to invite anyone into a group with
-nothing to install, so `add` reports "invite goes out once the group has a
-build" and `invite` says to run `asc groups add-build` first (an external
-group's build must also pass Beta App Review).
+internal group in App Store Connect shows up; `asc testers` points it out.
+`asc testers invite` sends it (or resends while `INVITED`) and `asc testers
+add` does so by itself, unless the group has no build yet: Apple refuses to
+invite anyone into a group with nothing to install, so `add` reports "invite
+goes out once the group has a build" and `invite` says to run `asc groups
+add-build` first (an external group's build must also pass Beta App Review).
 
 External groups take anyone by email, reusing a tester the team already has.
 `asc groups delete`, and `asc testers remove` without `--group` (which drops

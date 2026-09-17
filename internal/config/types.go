@@ -18,6 +18,34 @@ type Config struct {
 	ReactNative ReactNativeConfig `json:"reactNative,omitempty"`
 	KMP         KMPConfig         `json:"kmp,omitempty"`
 	MobAI       MobAIConfig       `json:"mobai,omitempty"`
+	// Signing records where `signing setup` put the key, .p12 and profile;
+	// nil when it was the working directory.
+	Signing *SigningConfig `json:"signing,omitempty"`
+	// DefaultProfile is used when a command is run without --profile. Tag-triggered
+	// runs have no flags, so it is also the only way they can select a profile.
+	DefaultProfile string             `json:"defaultProfile,omitempty"`
+	Profiles       map[string]Profile `json:"profiles,omitempty"`
+}
+
+// SigningConfig is where the signing material lives on this machine.
+type SigningConfig struct {
+	// Dir is the --out-dir of the last automatic `signing setup`, as given
+	// (a leading ~ is kept); empty means the working directory. On-demand
+	// provisioning looks there first for the certificate's private key.
+	Dir string `json:"dir,omitempty"`
+}
+
+// Profile is a named set of build settings, selected with --profile. Every
+// field is optional and overrides the matching top-level setting.
+type Profile struct {
+	Configuration string            `json:"configuration,omitempty"` // overrides ios.configuration; derived from distribution when empty
+	Scheme        string            `json:"scheme,omitempty"`        // overrides ios.scheme
+	Provider      string            `json:"provider,omitempty"`      // overrides provider
+	Env           map[string]string `json:"env,omitempty"`           // exported on the runner before dependencies and the build
+	// Distribution is the only signing setting of a profile (development,
+	// ad-hoc or internal, store, enterprise; empty is unsigned): it selects the
+	// signing set and the type the provisioning profile in it must have.
+	Distribution string `json:"distribution,omitempty"`
 }
 
 // CIConfig identifies an app already connected to the project's GitHub repository.
@@ -108,11 +136,19 @@ type KMPConfig struct {
 type IOSConfig struct {
 	// Path to iOS project relative to repo root (e.g., "ios" for React Native, "platforms/ios" for Cordova)
 	// Empty means root directory contains the Xcode project
-	Path          string `json:"path,omitempty"`
-	Scheme        string `json:"scheme,omitempty"`        // Xcode scheme to build (auto-detected if empty)
-	BundleID      string `json:"bundleId,omitempty"`      // App Store Connect app for the asc commands (default: read from dist/*.ipa)
-	Signing       bool   `json:"signing,omitempty"`       // Whether code signing is configured
-	Configuration string `json:"configuration,omitempty"` // Build configuration: Debug (faster) or Release (production)
+	Path   string `json:"path,omitempty"`
+	Scheme string `json:"scheme,omitempty"` // Xcode scheme to build (auto-detected if empty)
+	// BundleID is the app bundle identifier, for signing setup and to find the
+	// App Store Connect app in `ios release` before any IPA exists (detected by
+	// init when unambiguous; otherwise the newest IPA in the output directory).
+	BundleID string `json:"bundleId,omitempty"`
+	// Extensions are the bundle identifiers of the app's extension targets
+	// (widgets, share/notification extensions, watch apps, app clips), each of
+	// which signing setup provisions a profile for. init and signing setup fill
+	// it from the local Xcode project; a managed Expo project lists them by hand.
+	Extensions    []string `json:"extensions,omitempty"`
+	Signing       bool     `json:"signing,omitempty"`       // Legacy: sign builds without a profile with the unsuffixed IOS_* secrets
+	Configuration string   `json:"configuration,omitempty"` // Build configuration: Debug (faster) or Release (production)
 }
 
 // MobAIConfig holds MobAI settings for local development

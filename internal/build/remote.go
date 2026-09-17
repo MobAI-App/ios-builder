@@ -61,10 +61,13 @@ func (c *Coordinator) remote(override string) (ci.Provider, config.CIConfig, err
 	return RemoteProvider(c.config, override)
 }
 
-func (c *Coordinator) inputs(buildID, ref, sha string) map[string]string {
+// inputs are the variables runner.sh reads on Codemagic and Bitrise. The
+// profile's env travels as one JSON object in BUILD_ENV, and DISTRIBUTION
+// selects the signing set; both are only set when the profile provides them.
+func (c *Coordinator) inputs(buildID, ref, sha string, s *config.BuildSettings) map[string]string {
 	v := map[string]string{"BUILD_ID": buildID, "SNAPSHOT_REF": ref, "SNAPSHOT_SHA": sha,
-		"IOS_PATH": c.config.IOS.Path, "SCHEME": c.config.IOS.Scheme,
-		"CONFIGURATION": c.config.IOS.Configuration, "FLUTTER_VERSION": c.config.Flutter.Version,
+		"IOS_PATH": c.config.IOS.Path, "SCHEME": s.Scheme,
+		"CONFIGURATION": s.Configuration, "FLUTTER_VERSION": c.config.Flutter.Version,
 		"JDK_VERSION": c.config.KMP.JDKVersion, "USE_SIGNING": "false",
 		"BUILDER_REPOSITORY": c.config.GitHub.Owner + "/" + c.config.GitHub.Repo}
 	if v["IOS_PATH"] == "" {
@@ -76,11 +79,22 @@ func (c *Coordinator) inputs(buildID, ref, sha string) map[string]string {
 	if v["JDK_VERSION"] == "" {
 		v["JDK_VERSION"] = "17"
 	}
+	if s.Signing {
+		v["USE_SIGNING"] = "true"
+	}
+	if env := s.EnvJSON(); env != "" {
+		v["BUILD_ENV"] = env
+	}
+	if s.Distribution != "" {
+		v["DISTRIBUTION"] = s.Distribution
+	}
 	return v
 }
 
+// pushSnapshot pushes the working tree the run will build. The caller has
+// already started the progress report, since only a build has settings to
+// print under it.
 func (c *Coordinator) pushSnapshot(ctx context.Context, remote, buildID string) (string, string, error) {
-	c.progress.Start(buildID)
 	c.progress.Update(PhaseSnapshot, "Snapshotting working tree...")
 	sha, err := snapshot.Create(ctx, fmt.Sprintf("ios-builder snapshot %s", buildID))
 	if err != nil {
@@ -94,11 +108,14 @@ func (c *Coordinator) pushSnapshot(ctx context.Context, remote, buildID string) 
 	return ref, sha, nil
 }
 
-func (c *Coordinator) buildRemote(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
-	p, cfgCI, err := c.remote(opts.Provider)
+func (c *Coordinator) buildRemote(ctx context.Context, opts *BuildOptions, s *config.BuildSettings) (*BuildResult, error) {
+	p, cfgCI, err := c.remote(s.Provider)
 	if err != nil {
 		return nil, err
 	}
+	// Defaults below are filled in on a copy: opts belongs to the caller.
+	o := *opts
+	opts = &o
 	if opts.Timeout < 0 {
 		return nil, fmt.Errorf("timeout must be positive")
 	}
@@ -115,13 +132,17 @@ func (c *Coordinator) buildRemote(ctx context.Context, opts BuildOptions) (*Buil
 	defer cancel()
 	started := time.Now()
 	buildID := uuid.New().String()[:8]
+	c.progress.Start(buildID)
+	c.progress.Settings(s, p.Name())
 	ref, sha, err := c.pushSnapshot(ctx, opts.Remote, buildID)
 	if err != nil {
 		return nil, err
 	}
-	v := c.inputs(buildID, ref, sha)
-	if c.config.IOS.Signing && !opts.Unsigned {
-		v["USE_SIGNING"] = "true"
+	v := c.inputs(buildID, ref, sha, s)
+	// Not BUILD_NUMBER: Codemagic predefines that as its own build counter,
+	// and runner.sh must see nothing on a plain build.
+	if opts.BuildNumber != "" {
+		v["BUILDER_BUILD_NUMBER"] = opts.BuildNumber
 	}
 	c.progress.Update(PhaseTriggering, "Triggering "+p.Name()+" build...")
 	run, err := p.Start(ctx, ci.Request{Workflow: cfgCI.BuildWorkflow, Variables: v})
@@ -263,8 +284,8 @@ func saveRemoteIPA(ctx context.Context, p ci.Provider, run ci.Run, a ci.Artifact
 	return dest, n, nil
 }
 
-func (c *Coordinator) shareRemote(ctx context.Context, opts ShareOptions) (*ShareResult, error) {
-	p, cfgCI, err := c.remote(opts.Provider)
+func (c *Coordinator) shareRemote(ctx context.Context, opts ShareOptions, s *config.BuildSettings) (*ShareResult, error) {
+	p, cfgCI, err := c.remote(s.Provider)
 	if err != nil {
 		return nil, err
 	}
@@ -286,11 +307,12 @@ func (c *Coordinator) shareRemote(ctx context.Context, opts ShareOptions) (*Shar
 	ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 	buildID := uuid.New().String()[:8]
+	c.progress.Start(buildID)
 	ref, sha, err := c.pushSnapshot(ctx, opts.Remote, buildID)
 	if err != nil {
 		return nil, err
 	}
-	v := c.inputs(buildID, ref, sha)
+	v := c.inputs(buildID, ref, sha, s)
 	v["DURATION"] = opts.Duration.String()
 	run, err := p.Start(ctx, ci.Request{Workflow: cfgCI.ShareWorkflow, Variables: v})
 	if err != nil {

@@ -257,7 +257,7 @@ func (c *Client) once(ctx context.Context, method, path string, query url.Values
 	if err != nil {
 		return fmt.Errorf("read response: %w", err)
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return decodeError(method, path, resp, data)
 	}
 	if out != nil && len(bytes.TrimSpace(data)) > 0 {

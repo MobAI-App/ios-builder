@@ -6,17 +6,25 @@ API login, the provider's GitHub connection, and build secrets are separate:
 
 | What you want to run | Secrets needed |
 | --- | --- |
-| Unsigned IPA build (`ios build --unsigned`) | None of the secrets below |
-| Signed iPhone build (`ios build`) | All three `IOS_*` secrets below |
+| Unsigned IPA build (`ios build`, or a profile without `distribution`) | None of the secrets below |
+| Signed build (`ios build --profile <name>`) | The `IOS_*_<SET>` secrets of the profile's `distribution` |
+| Legacy signed build without a profile (`ios.signing: true`) | The unsuffixed `IOS_CERTIFICATE`, `IOS_CERTIFICATE_PASSWORD`, `IOS_PROVISIONING_PROFILE` |
 | Shared simulator (`ios share`) | `MOBAI_API_KEY`; no Apple signing files needed |
 
-`builder signing setup` uploads secrets to **GitHub Actions only**. For the two
-new providers, use the steps below even if GitHub signing/sharing already works.
-Existing GitHub secret values cannot be downloaded for copying to another service.
+`builder signing setup` uploads secrets to **GitHub Actions only**, but it always
+prints the names and the values to paste, so a run of it is also the source
+for the two new providers; use the steps below even if GitHub signing/sharing
+already works. Existing GitHub secret values cannot be downloaded for copying to
+another service.
 
 ## 1. Prepare your signing files
 
-Builder's generated provider runner exports development-signed IPAs. Prepare:
+A repository holds one signing set per distribution (`development`, `ad-hoc`
+— also spelled `internal` — `store`, `enterprise`), and a build profile's
+`distribution` in `builder.json` chooses which set a build uses; a profile
+without one builds unsigned. Each set is a certificate, its password and a
+matching profile, and the runner refuses a set whose profile is of another
+type. Start with the development set, which is what on-device testing needs:
 
 - An **Apple Development** certificate in a `.p12` file, including its matching
   private key, and the P12 password.
@@ -27,12 +35,30 @@ Builder's generated provider runner exports development-signed IPAs. Prepare:
 Use [Apple Certificates](https://developer.apple.com/account/resources/certificates/list)
 and [Apple Profiles](https://developer.apple.com/account/resources/profiles/list).
 Apple's [development profile guide](https://developer.apple.com/help/account/provisioning-profiles/create-a-development-provisioning-profile)
-explains selecting the App ID, certificate, and devices. App Store/Ad Hoc export
-requires a corresponding change to the generated runner's export settings.
+explains selecting the App ID, certificate, and devices. For an ad-hoc, store
+or enterprise set, pair that profile with an **Apple Distribution** certificate
+and select it from a build profile with the matching `distribution`; such a
+profile builds `Release` by default, since distribution profiles reject the
+`get-task-allow` entitlement a Debug build is signed with.
 
 If you already have the P12 and profile, reuse them. If you have no certificate,
-follow Builder's [certificate creation instructions](../README.md#1-create-a-certificate-signing-request).
-Run the CSR/P12 commands in a private directory outside your source checkout:
+the quickest way is the [automatic setup](../README.md#builder-signing-setup) with
+an App Store Connect API key (`builder auth apple`), pointed at a private
+directory outside your source checkout:
+
+```sh
+builder signing setup --devices-from-mobai --out-dir ~/signing
+```
+
+This creates the certificate, devices and profile through the API, writes
+`ios-signing-development.p12` and the `.mobileprovision` to `~/signing`, tries to
+upload the set to the GitHub repository in `builder.json` (a failure is printed
+and the run continues, ending with a non-zero exit code), prints the secret
+names and file paths to paste below either way, and writes the `development`
+build profile. Run it again with `--distribution
+store` for a second, App Store set: the files are named by distribution, so
+nothing is overwritten. Alternatively follow the
+[manual certificate steps](../README.md#1-create-a-certificate-signing-request):
 
 ```sh
 builder signing csr
@@ -40,44 +66,60 @@ builder signing csr
 builder signing p12 --certificate development.cer --key ios-signing.key
 ```
 
-The second command prompts for the P12 password. Use that exact password below.
-A `.cer` alone is not the value for `IOS_CERTIFICATE`; assemble the P12 first.
+The `p12` command prompts for the P12 password (automatic setup prompts too, or
+generates one with `--yes` and prints it once). Use that exact password below.
+A `.cer` alone is not the value for `IOS_CERTIFICATE_<SET>`; assemble the P12 first.
 Keep private keys, P12 files, and encoded copies out of Git and build snapshots.
 
 ## 2. Prepare the secret values
 
-Use these exact, case-sensitive names:
+The signing secrets come in sets, one per distribution, named with a suffix:
+`DEVELOPMENT`, `AD_HOC` (for `ad-hoc` and `internal`), `STORE` or
+`ENTERPRISE`. A build reads the set named by its `builder.json` profile's
+`distribution`. The runner checks that the profile in the set is that type and
+fails by name when it is not. Use these exact, case-sensitive names, shown
+here for the development set:
 
 | Secret name | Value to paste |
 | --- | --- |
-| `IOS_CERTIFICATE` | Base64 contents of `ios-signing.p12` |
-| `IOS_CERTIFICATE_PASSWORD` | The original P12 password, as plain text |
-| `IOS_PROVISIONING_PROFILE` | Base64 contents of the `.mobileprovision` file |
+| `IOS_CERTIFICATE_DEVELOPMENT` | Base64 contents of `ios-signing-development.p12` |
+| `IOS_CERTIFICATE_PASSWORD_DEVELOPMENT` | The original P12 password, as plain text |
+| `IOS_PROVISIONING_PROFILE_DEVELOPMENT` | Base64 contents of the `.mobileprovision` file |
+| `IOS_EXTENSION_PROFILES_DEVELOPMENT` | Only with extension targets (`ios.extensions`): a JSON object of extension bundle ID to base64 `.mobileprovision`, as `signing setup` prints it |
 | `MOBAI_API_KEY` | The original API key copied from MobAI, as plain text |
+
+For a store set add `IOS_CERTIFICATE_STORE`, `IOS_CERTIFICATE_PASSWORD_STORE`
+and `IOS_PROVISIONING_PROFILE_STORE` with the Apple Distribution `.p12` and the
+App Store profile, and build it with a profile that has `"distribution":
+"store"`. The unsuffixed names `IOS_CERTIFICATE`, `IOS_CERTIFICATE_PASSWORD`
+and `IOS_PROVISIONING_PROFILE` from earlier setups serve only builds that select
+no profile (`ios.signing: true`); a profile never falls back to them.
 
 Base64-encode only the two files. Paste their contents, not their filenames or
 paths. On macOS, copy one encoded file to the clipboard at a time:
 
 ```sh
-openssl base64 -A -in /path/to/ios-signing.p12 | pbcopy
-# Paste into IOS_CERTIFICATE in the provider dashboard before copying the profile.
+openssl base64 -A -in /path/to/ios-signing-development.p12 | pbcopy
+# Paste into IOS_CERTIFICATE_DEVELOPMENT in the provider dashboard before copying the profile.
 openssl base64 -A -in /path/to/Numbra.mobileprovision | pbcopy
-# Paste into IOS_PROVISIONING_PROFILE.
+# Paste into IOS_PROVISIONING_PROFILE_DEVELOPMENT.
 ```
 
 On Linux with `xclip` installed, replace `pbcopy` with
 `xclip -selection clipboard`. On Windows, use PowerShell:
 
 ```powershell
-[Convert]::ToBase64String([IO.File]::ReadAllBytes('C:\signing\ios-signing.p12')) | Set-Clipboard
-# Paste into IOS_CERTIFICATE, then encode and paste the profile.
+[Convert]::ToBase64String([IO.File]::ReadAllBytes('C:\signing\ios-signing-development.p12')) | Set-Clipboard
+# Paste into IOS_CERTIFICATE_DEVELOPMENT, then encode and paste the profile.
 [Convert]::ToBase64String([IO.File]::ReadAllBytes('C:\signing\Numbra.mobileprovision')) | Set-Clipboard
 ```
 
-The password variable must exist, even for a P12 with an empty password. If the
-provider UI does not accept an empty secret, create a password-protected P12 and
-use its password. Do not put quotes around passwords or API keys in the value
-field, and do not base64-encode them.
+A suffixed set needs all three variables, password included: the build fails
+naming whichever is missing. Builder always protects the P12 it makes with a
+password; for one you made yourself without one, create a password-protected
+P12 instead. Only the unsuffixed `IOS_CERTIFICATE_PASSWORD` of an earlier setup
+may be empty or absent. Do not put quotes around passwords or API keys in the
+value field, and do not base64-encode them.
 
 ## 3. Create the MobAI API key
 
@@ -127,19 +169,29 @@ See [Bitrise's Secrets instructions](https://docs.bitrise.io/en/bitrise-ci/confi
 
 ## 6. Verify a signed build
 
-In your existing `builder.json`, set `ios.signing` to `true`, preserving the other
-project and provider settings. Numbra already has this enabled. Then run from
-the app checkout, **without `--unsigned`**:
+In your existing `builder.json`, make sure a profile names the distribution of
+the set you added (`signing setup` writes one; by hand it is
+`"profiles": {"development": {"distribution": "development"}}`), preserving
+the other project and provider settings. Then run from the app checkout,
+**without `--unsigned`**:
 
 ```sh
-builder ios build --provider codemagic
-builder ios build --provider bitrise
+builder ios build --profile development --provider codemagic
+builder ios build --profile development --provider bitrise
 ```
+
+Codemagic and Bitrise have no secrets API, so `ios build` cannot check or
+provision the set the way it does on GitHub; a missing variable fails in the
+runner's signing step by name.
 
 A successful run should archive, export, and download an IPA. Install it on a
 device included in the development profile to verify signing and provisioning.
 If signing fails, check the P12 password, certificate/private-key pair, profile
 expiration, bundle ID, team, and registered devices in the provider's build log.
+The log's `Signing set:` line says which set the run used (`legacy` for the
+unsuffixed names); a "holds a ... provisioning profile, but the build profile
+asks for distribution ..." error means the profile in that set is not the type
+the selected build profile's `distribution` names.
 
 ## 7. Verify simulator sharing
 

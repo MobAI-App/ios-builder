@@ -25,15 +25,22 @@ go install ./cmd/builder
 ./builder auth github       # Authenticate with GitHub (OAuth device flow)
 ./builder init              # Set up workflow in current repo
 ./builder ios build         # Trigger build and download IPA to ./dist/
+./builder ios build --profile production  # Build with a builder.json profile
 ./builder dev flutter       # Flutter hot reload with MobAI
 ./builder dev rn            # React Native hot reload with MobAI
 ./builder dev kmp           # Kotlin Multiplatform install + launch (no hot reload)
 ./builder dev flutter --skip-install --bundle-id <id>  # Use already installed app
 ./builder dev rn --skip-install --bundle-id <id>       # Use already installed app
 ./builder auth apple        # Save an App Store Connect API key
+./builder signing setup --devices-from-mobai   # development: certificate + devices + profile via the ASC API, secrets to GitHub, profile in builder.json
+./builder signing setup --distribution store --yes --json  # Distribution certificate + App Store profile, no prompts
+./builder ios build --profile store            # Signs with the STORE set; provisions it first when the secrets are missing
 ./builder ios upload --wait # Upload dist/*.ipa to App Store Connect, wait for processing
 ./builder ios submit --testflight --group <name> --notes <text>  # TestFlight (creates the group if missing)
 ./builder ios submit --app-store --release after-approval        # App Review
+./builder ios release --profile store --group <name> --notes <text>  # Build with the next build number, upload, wait, TestFlight
+./builder ios release --profile store --app-store --release after-approval  # Same, then App Review
+./builder ios build --profile store --submit                          # Short for: ios release (no groups)
 ./builder asc apps|builds|groups|testers|users                   # App Store Connect listings (--json)
 ./builder asc groups create <name> [--external]                  # also: groups delete, groups add-build
 ./builder asc testers add <email>... --group <name>              # also: testers remove, users invite
@@ -111,6 +118,28 @@ builder dev kmp ─────────► Connects to MobAI
                                 ▼
                           Launches app and streams output (no hot reload)
 
+builder signing setup ───► Bundle ID: --bundle-id → ios.bundleId → dist/*.ipa → prompt
+                                │
+                                ▼
+                          App Store Connect API (signing.Auto)
+                            ├─ bundleIds?filter[identifier] → POST bundleIds
+                            ├─ certificates?filter[certificateType] → reuse if the
+                            │     key matches, else CSR → POST certificates → .p12
+                            ├─ devices?filter[platform]=IOS → POST devices (dev/ad-hoc)
+                            └─ profiles?filter[name] → reuse / DELETE + POST profiles
+                                │
+                                ▼
+                          Writes key/.p12/.mobileprovision named by distribution, uploads the
+                          IOS_*_<SET> trio to GitHub (failure printed, non-zero exit at the end),
+                          prints names + values, writes profiles.<name>.distribution
+
+builder ios build --profile X ─► ResolveProfile: distribution → set, signing, configuration
+                                │
+                                ▼
+                          GitHub: ListSecretNames; all three IOS_*_<SET> present → dispatch
+                            else ASC key → signing.Auto (no prompts) + upload → dispatch
+                            else fail naming `auth apple` / `signing setup --certificate`
+
 builder ios upload ──────► Reads bundle ID / version / build number from dist/*.ipa
                                 │
                                 ▼
@@ -131,6 +160,25 @@ builder ios submit ──────► Picks the newest VALID build (or --buil
                             └─ --app-store: appStoreVersions (find/create, attach
                                   build, releaseType), reviewSubmissions +
                                   reviewSubmissionItems, PATCH submitted=true
+
+builder ios release ─────► Preflight: API key; --profile/defaultProfile has distribution
+                            store and configuration Release; STORE set provisioned on
+                            demand (ensureSigningSecrets, GitHub only)
+                                │
+                                ▼
+                          Bundle ID (--bundle-id, ios.bundleId, newest dist/*.ipa)
+                            └─ ListBuilds (all versions) → max CFBundleVersion + 1
+                                │
+                                ▼
+                          ios build with build_number input (N or X.Y.Z+N)
+                            └─ runner: flutter --build-number / CURRENT_PROJECT_VERSION /
+                               plist rewrite when CFBundleVersion is hardcoded
+                                │
+                                ▼
+                          Reads dist IPA, refuses it unless CFBundleVersion == N
+                                │
+                                ▼
+                          distribute.Upload (wait) → SubmitTestFlight | SubmitAppStore
 ```
 
 ### Module Layout
@@ -140,12 +188,16 @@ cmd/builder/         # CLI entrypoint (Cobra)
 internal/
   auth/              # GitHub OAuth device flow + keyring storage (also CI tokens, ASC API key)
   github/            # GitHub REST API (workflow dispatch, artifacts)
+  asc/               # App Store Connect API client (JWT, JSON:API, builds, uploads, TestFlight, review,
+                     #   bundle IDs, certificates, devices, profiles)
+  distribute/        # Upload / TestFlight / App Store flows on top of asc
+  release/           # ios release / build --submit: next build number, build, verify, upload, submit
   asc/               # App Store Connect API client (JWT, JSON:API, apps, builds, uploads, TestFlight,
                      #   beta groups, beta testers, team users/invitations, review)
   distribute/        # Upload / TestFlight / App Store / tester flows on top of asc
   ipa/               # Info.plist reading from .ipa archives
   build/             # Build coordination (snapshot + trigger + poll + download)
-  signing/           # CSR generation and .p12 assembly (signing without a Mac)
+  signing/           # CSR generation, .p12 assembly, and Auto (portal-free provisioning on top of asc)
   snapshot/          # Working-tree snapshot as a throwaway commit on a remote ref
   workflow/          # Workflow template (embedded)
   config/            # builder.json management
@@ -169,6 +221,30 @@ internal/
   submodule commit that only exists locally fails checkout on the runner.
 - **Run Correlation**: `run-name` carries the build ID so concurrent builds cannot adopt each
   other's runs
+- **Run Failures**: a run that completes without success is a `github.RunFailedError`: conclusion,
+  first failed job/step, and that job's `failure` annotations (`/check-runs/{job_id}/annotations`; a
+  job ID is its check run ID). The details are best-effort, so the conclusion is always reported
+- **Build Profiles**: `profiles.<name>` overrides `ios.configuration`/`ios.scheme`/`provider` and adds
+  `env` and `distribution` (`config.ResolveProfile`: `--profile`, else `defaultProfile`, else top level
+  unchanged). A profile signs iff it has a `distribution`; `ios.signing` is only the no-profile path
+- **Profile Transport**: the `profile` dispatch input is one JSON object (`{"name","env","distribution"}`)
+  to stay under the ten-input limit and is sent only when a profile is selected, since an older
+  workflow rejects unknown inputs (`triggerError`). `runner.sh` reads `BUILD_ENV` and `DISTRIBUTION`
+- **Profile Env**: entries are base64 per key/value on the runner and the `$GITHUB_ENV` heredoc uses a
+  random delimiter; names must match `^[A-Za-z_][A-Za-z0-9_]*$` and not hit `reservedEnv`/
+  `reservedEnvPrefixes` (`internal/config/profile.go`), which must track what the runners read
+- **Signing Sets**: one trio per distribution, `IOS_{CERTIFICATE,CERTIFICATE_PASSWORD,PROVISIONING_PROFILE}_<SET>`
+  (DEVELOPMENT, AD_HOC, STORE, ENTERPRISE); the unsuffixed names serve only the legacy no-profile path.
+  The table lives in `config.SigningSet` and the shell `signing_set` (both templates) and must agree
+- **Signing Step**: `select_signing_set` (indirect expansion; a suffixed set needs all three, only the
+  legacy password may be empty) then `check_signing_set` compares `detect_export_method` with the
+  distribution before any keychain exists. Shared functions are verbatim in both templates; tests diff them
+- **Signing Setup**: writes only its distribution's set and `profiles.<name>.distribution` (other fields
+  and an equal spelling kept), never `ios.signing` or `defaultProfile`. Upload always targets the `github`
+  repo in builder.json; a failure is printed, values still shown, exit non-zero (`github_upload` in `--json`)
+- **On-Demand Provisioning**: `ensureSigningSecrets` (GitHub only, before any push) lists secret names
+  (403/404 = missing scope/admin, never "no secrets") and provisions a missing set via `signing.Auto` with
+  no prompts, key from `signing.dir` then `.`; a certificate 409 with no local key names the dirs searched
 - **Flutter Detection**: Auto-detects Flutter projects, runs `flutter pub get`, uses `Runner` scheme
 - **Expo Detection**: an `expo` dependency in `package.json` (the CLI parses the dependency maps;
   the runners grep `'"expo"'`) with no `.xcodeproj`/`.xcworkspace` anywhere and no `pubspec.yaml` is
@@ -231,7 +307,8 @@ internal/
   `links.next`). 429 retries on any method, 5xx only off POST; every wait goes through `Client.sleep`.
 - **ASC Credentials**: one JSON secret (`apple-asc-key`) in the keyring/file store, via the shared
   `readSecret`/`writeSecret`/`deleteSecret` helpers. `ASC_ISSUER_ID`, `ASC_KEY_ID` +
-  `ASC_PRIVATE_KEY`|`ASC_KEY_PATH` win; a partial environment is an error. Only `auth apple` prompts.
+  `ASC_PRIVATE_KEY`|`ASC_KEY_PATH` win; a partial environment is an error. Only `auth apple` prompts,
+  and it verifies with `GET /v1/certificates?limit=1`, which needs the access signing needs.
 - **Build Upload**: `buildUploads` → `buildUploadFiles` (returns `uploadOperations`) → PUT each byte
   range with its `requestHeaders`, no bearer token → PATCH `uploaded=true` → poll the upload `state`,
   then `builds` until VALID. The IPA must be App Store signed with an ever-higher `CFBundleVersion`.
@@ -241,6 +318,24 @@ internal/
 - **Submit Order**: TestFlight is compliance → notes → `betaAppReviewSubmissions` (only for a new
   external group) → add groups. App Store reuses an open `reviewSubmission`, skips an item the
   version is already in, and rewrites ASC 409/422 with a "complete the metadata" hint.
+- **Automatic Signing** (`signing.Auto`): idempotent, never revokes. A certificate is reused only when
+  its key is local (`--key`, `ios-signing-<distribution>.key`, legacy `ios-signing.key`; PKCS#8 written,
+  PKCS#1 still read). Profile `Builder <d> <bundle id>` is recreated on INVALID/expired/`--force`/changes
+- **ASC Signing Gotchas**: `filter[identifier]` on bundleIds is a prefix match (exact checked client-side);
+  membership comes from `/relationships/{certificates,devices}` (`include=` caps arrays); store profiles
+  send no `devices` relationship; enterprise is refused; `signingtest` must not import `signing`
+- **Export Method Follows The Profile**: `detect_export_method` (both templates) reads the type from the
+  set's profile into ExportOptions.plist `method` (legacy names: older Xcodes reject the 15.3+ ones);
+  `check_signing_set` maps `app-store` → `store` when comparing with the distribution
+- **Release Flow** (`internal/release`): `ios release` and `ios build --submit` share `release.Run`; `Preflight`
+  wants a `store` profile built Release (`--profile`, else `defaultProfile`, else the only store profile) and runs
+  before the snapshot push, with `ensureSigningSecrets`. `--timeout` bounds the build and the ASC wait separately.
+- **Automatic Build Numbers**: `release` sends the largest `CFBundleVersion` among the app's builds + 1 as the
+  single `build_number` input (`BUILDER_BUILD_NUMBER` for `runner.sh`, since Codemagic owns `BUILD_NUMBER`) and
+  refuses an IPA that lacks it. `apply_build_number` must stay byte-identical in both templates (`TestApplyBuildNumber`).
+- **Signing Identity Follows The Profile Type**: `signing_identity` picks `CODE_SIGN_IDENTITY` from
+  `security find-identity` right after import: `Apple Development`/`iPhone Developer` for development,
+  `Apple Distribution`/`iPhone Distribution` otherwise; without it Xcode keeps the project's default
 - **Group Auto-Create**: `SubmitTestFlight` creates any `--group` name the app lacks (internal, or
   external with `External`/`--external`) and marks it `GroupRef.Created`; existing groups keep
   their type. `asc groups add-build` reuses it, so it inherits the beta-review step too.
@@ -271,9 +366,23 @@ internal/
 - **asc Command Tests**: `getASCClient` is a package var so tests can point it at an httptest
   server, and their `run` helper resets every flag first, since cobra keeps flag values on the
   shared command tree.
-- **Extension Points**: a future `ios release` composes `distribute.Upload` and
-  `distribute.SubmitTestFlight`, reading `asc.Client.ListBuilds` for the latest build number; the
-  `pkg/` wrappers do not expose `asc` yet.
+- **Signing Settings Live In The pbxproj**: `apply_signing_to_app_target` (both templates, right before
+  each signed archive, after `pod install`/`expo prebuild`/`flutter build ios`) writes the four manual
+  settings into app targets only via `plutil`; on the command line every Pods target would inherit them
+- **App Target Selection**: one app target is signed whatever its bundle id (the export reports a
+  mismatch); with several, those whose `PRODUCT_BUNDLE_IDENTIFIER` `PROFILE_BUNDLE_ID` covers (`*`
+  wildcards), else `::error::` naming the ids found; conditional `NAME[sdk=…]` variants are dropped
+- **Extension Targets**: `ios.extensions` lists their bundle ids (`init`/`signing setup` append what
+  `xcodeproj.ExtensionBundleIDs` finds; managed Expo lists by hand). `signing.Auto` makes an App ID and
+  `Builder <d> <id>` profile per entry, uploaded as `IOS_EXTENSION_PROFILES_<SET>` (JSON of id → base64).
+- **Extension Secrets**: always written, `{}` for none; required by `missingSigningSecrets` only when
+  the list is non-empty. Manual mode: one `--extension-profile` each, matched by the profile's app id.
+  Secrets are unreadable, so a build re-provisions when the project has extensions not in builder.json
+- **Extension Signing On The Runner**: `install_extension_profiles` hands `EXTENSION_PROFILES` (id →
+  name) to `apply_signing_to_app_target`, which signs each extension-type target (`xcodeproj.ExtensionProductTypes`)
+  with the longest covering entry or fails naming the ids to add; `write_export_options` exports them
+- **Extension Points**: `ios release` composes `distribute.Upload` and
+  `distribute.SubmitTestFlight`; the `pkg/` wrappers do not expose `asc`.
 
 ## Configuration
 
@@ -283,24 +392,44 @@ internal/
   "project": "MyApp",
   "platform": "ios",
   "github": { "owner": "username", "repo": "my-ios-app" },
-  "ios": { "path": "ios", "scheme": "", "bundleId": "com.example.myapp" }
+  "ios": { "path": "ios", "scheme": "", "bundleId": "com.example.app" },
+  "defaultProfile": "development",
+  "profiles": {
+    "development": { "distribution": "development" },
+    "preview":     { "distribution": "internal", "env": { "API_URL": "https://staging.example.com" } },
+    "production":  { "distribution": "store", "scheme": "MyApp", "provider": "codemagic" }
+  }
 }
 ```
 
-`ios.bundleId` is optional; the `asc` commands fall back to the newest IPA in `./dist/`.
+`ios.bundleId` is optional: `init` fills it when the project has exactly one app target, `signing
+setup` saves what it resolved, and `ios release` uses it to find the App Store Connect app before
+the first IPA exists. `signing.dir` is the last automatic `signing setup`'s `--out-dir` as given
+(`~` kept, omitted for `.`); on-demand provisioning looks there for the key first.
+
+A profile's fields are `distribution` (`development`, `ad-hoc`/`internal`, `store`, `enterprise`; the
+only signing field, omitted = unsigned), `configuration` (else Debug for development, Release
+otherwise), `scheme`, `provider`, `env`. `runner`/`submit` are planned on `config.Profile`, not read.
 
 ## Workflow Features
 
 The embedded workflow template (`internal/workflow/templates/ios-build.yml`):
-- Triggered via `workflow_dispatch` with `build_id`, `snapshot_ref`, `ios_path`, `scheme`
+- Triggered via `workflow_dispatch` with `build_id`, `snapshot_ref`, `ios_path`, `scheme`,
+  `use_signing`, `configuration`, `flutter_version`, `jdk_version`, `profile` and `build_number`:
+  all ten inputs GitHub allows, so combine before adding one (`TestGitHubInputsMapping` counts them)
 - Dispatch runs the workflow from the **default branch**, so edits to the workflow file itself
-  only take effect once pushed there — unlike app sources, which come from the snapshot ref
+  only take effect once pushed there — unlike app sources, which come from the snapshot ref.
+  A dispatch naming an input the file lacks fails with 422 "Unexpected inputs"; `triggerError`
+  turns that into a hint to rerun `builder init` when `profile` or `build_number` was sent
 - Checks out `snapshot_ref` over the default-branch checkout when set
 - Also triggered by pushing a tag `ios-build/<build-id>` (`ios-share/<build-id>` for the share
   workflow) for environments without GitHub API access. Push events run the workflow file from
   the tagged commit, `inputs` are empty, so a `Resolve parameters` step reads `ios_path`, `scheme`,
   `use_signing`, `configuration`, `flutter_version` and `jdk_version` from `builder.json` in the
-  tagged tree; every later step reads `steps.params.outputs.*`, never `inputs.*`. The job deletes
+  tagged tree, applying `defaultProfile` (a tag cannot pick a profile per run; `build_number` is
+  always empty there); every later step reads `steps.params.outputs.*`, never `inputs.*`. The same
+  step exports the profile's `env` to `$GITHUB_ENV` and outputs `profile`, `distribution` and
+  `signing_set`. The job deletes
   the tag when it ends (`permissions: contents: write`). Any other workflow in the repo with an
   unfiltered `on: push` also fires on these tags.
 - Runs on `macos-latest`
@@ -310,6 +439,9 @@ The embedded workflow template (`internal/workflow/templates/ios-build.yml`):
 - Flutter: uses `Runner` scheme, runs `flutter pub get`
 - Installs CocoaPods if Podfile exists
 - Builds unsigned IPA with `CODE_SIGNING_ALLOWED=NO`
+- **Export Method**: `detect_export_method` maps `ProvisionsAllDevices` → `enterprise`, `ProvisionedDevices`
+  + `get-task-allow` → `development`, without → `ad-hoc`, neither → `app-store`; non-development exports
+  set `manageAppVersionAndBuildNumber = false`, and a distribution profile with `Debug` fails before the build
 - Uploads IPA as GitHub artifact with 7-day retention
 
 ## Flutter Dev Requirements
