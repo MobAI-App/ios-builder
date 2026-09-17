@@ -45,8 +45,6 @@ func init() {
 	iosCmd.AddCommand(iosUploadCmd)
 }
 
-// getASCClient builds an App Store Connect client from the saved Apple login
-// or the ASC_* environment variables.
 func getASCClient() (*asc.Client, error) {
 	creds, _, err := auth.GetAppleCredentials()
 	if err != nil {
@@ -58,7 +56,6 @@ func getASCClient() (*asc.Client, error) {
 	return asc.NewClient(asc.Credentials{IssuerID: creds.IssuerID, KeyID: creds.KeyID, PrivateKey: creds.PrivateKey})
 }
 
-// resolveIPA returns the given path, or the newest IPA in ./dist.
 func resolveIPA(path string) (string, error) {
 	if path != "" {
 		return path, nil

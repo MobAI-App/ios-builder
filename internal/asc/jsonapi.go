@@ -87,7 +87,6 @@ func (r Relationships) One(name string) (Linkage, bool) {
 // pageLimit is the largest page App Store Connect serves.
 const pageLimit = 200
 
-// getOne fetches a single resource.
 func getOne[A any](ctx context.Context, c *Client, path string, query url.Values) (*Resource[A], error) {
 	var doc Document[Resource[A]]
 	if err := c.Get(ctx, path, query, &doc); err != nil {
@@ -129,7 +128,6 @@ func getPage[A any](ctx context.Context, c *Client, path string, query url.Value
 	return doc.Data, nil
 }
 
-// post creates a resource and decodes the created one.
 func post[Req, Resp any](ctx context.Context, c *Client, path string, req Resource[Req]) (*Resource[Resp], error) {
 	var doc Document[Resource[Resp]]
 	if err := c.Post(ctx, path, Document[Resource[Req]]{Data: req}, &doc); err != nil {
@@ -138,7 +136,6 @@ func post[Req, Resp any](ctx context.Context, c *Client, path string, req Resour
 	return &doc.Data, nil
 }
 
-// patch updates a resource and decodes the updated one.
 func patch[Req, Resp any](ctx context.Context, c *Client, path string, req Resource[Req]) (*Resource[Resp], error) {
 	var doc Document[Resource[Resp]]
 	if err := c.Patch(ctx, path, Document[Resource[Req]]{Data: req}, &doc); err != nil {
