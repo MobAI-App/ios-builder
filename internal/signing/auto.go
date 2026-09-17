@@ -334,7 +334,7 @@ func ensureCertificate(ctx context.Context, client *asc.Client, opts *AutoOption
 	logf(opts.Log, "Requesting a new %s certificate...", certType)
 	cert, err := client.CreateCertificate(ctx, certType, csr)
 	if err != nil {
-		return nil, withLimitHint(err, "Apple limits a team to 2 Apple Development and 3 Apple Distribution certificates. Revoke one you no longer use at https://developer.apple.com/account/resources/certificates/list (Builder never revokes anything), or pass --key with the private key of an existing certificate to reuse it.")
+		return nil, withLimitHint(err, "Apple caps how many certificates of each type a team can hold. Revoke one you no longer use at https://developer.apple.com/account/resources/certificates/list (Builder never revokes anything), or pass --key with the private key of an existing certificate to reuse it.")
 	}
 	if !KeyMatchesCertificate(keyPEM, cert.Content) {
 		return nil, fmt.Errorf("certificate %s from App Store Connect was not issued for the private key", cert.ID)

@@ -382,6 +382,35 @@ anything, and a distribution profile refuses a `Debug` configuration. On
 Codemagic and Bitrise the same names are variables you add in the dashboard,
 see the [secrets guide](docs/provider-secrets.md).
 
+### Create an App Store Connect API key
+
+Automatic signing, `ios upload`, `ios submit` and `ios release` all use one
+App Store Connect API key. You create it once, in the browser:
+
+1. Sign in to [App Store Connect](https://appstoreconnect.apple.com) as the
+   Account Holder or an Admin (only they can create team keys).
+2. Go to **Users and Access → Integrations → App Store Connect API**, tab
+   **Team Keys**, and press **+** (or **Generate API Key**).
+3. Name it (for example `Builder`) and choose the role **Admin**. **App
+   Manager** works too if you also tick *Access to Certificates, Identifiers &
+   Profiles*; a **Developer** key can upload builds but cannot create
+   certificates.
+4. Press **Generate**, then **Download API Key**. The `AuthKey_<KEYID>.p8`
+   file downloads once; keep it somewhere private, never in the repo.
+5. Note the **Issuer ID** at the top of the page and the **Key ID** in the
+   row of your key.
+
+Then save it in your keychain:
+
+```bash
+builder auth apple --issuer-id 12345678-abcd-... --key-id ABC123DEFG --key ~/Downloads/AuthKey_ABC123DEFG.p8
+```
+
+`builder auth status` shows it, `builder auth logout apple` removes it. On a
+machine without a keychain (CI, a coding agent), set `ASC_ISSUER_ID`,
+`ASC_KEY_ID` and `ASC_KEY_PATH` (or `ASC_PRIVATE_KEY` with the file's contents)
+instead.
+
 ### `builder signing setup`
 
 ```bash
@@ -563,23 +592,15 @@ You need:
   a `store` profile builds `Release` and signs with that set; a plain `ios
   build` is Debug and unsigned, which is what the dev commands expect, not
   what you want to ship.
-- An App Store Connect API key: App Store Connect → Users and Access →
-  Integrations → App Store Connect API → Team Keys. Give it the **App Manager**
-  role, note the **Issuer ID** and **Key ID**, and download the
-  `AuthKey_<KEYID>.p8` file (Apple offers the download once).
+- An App Store Connect API key saved with `builder auth apple`, see
+  [Create an App Store Connect API key](#create-an-app-store-connect-api-key).
 
 ### 1. Save the API key
 
-```bash
-builder auth apple --issuer-id 12345678-abcd-... --key-id ABC123DEFG --key AuthKey_ABC123DEFG.p8
-```
-
-Flags you leave out are prompted for. Builder verifies the key against App
-Store Connect and stores it like the other logins (keychain, or a `0600` file on
-Linux/WSL); `builder auth status` shows it and `builder auth logout apple`
-removes it. In CI or for a coding agent, set `ASC_ISSUER_ID`, `ASC_KEY_ID` and
-either `ASC_PRIVATE_KEY` (the .p8 contents; literal `\n` is fine) or
-`ASC_KEY_PATH` instead — they take precedence over the saved login.
+`builder auth apple` as described in
+[Create an App Store Connect API key](#create-an-app-store-connect-api-key).
+Flags you leave out are prompted for; Builder verifies the key against App
+Store Connect before storing it.
 
 ### 2. Upload the build
 
