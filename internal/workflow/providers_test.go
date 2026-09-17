@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -327,6 +328,112 @@ func TestExportMethodFollowsProfile(t *testing.T) {
 			}
 			if got := strings.TrimSpace(string(out)); got != tc.want {
 				t.Fatalf("method = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSigningIdentityFollowsProfileType holds both templates to the identity
+// the profile's type needs. An archive without an explicit CODE_SIGN_IDENTITY
+// keeps the project's default ("Apple Development"), which Xcode refuses to
+// pair with a distribution profile: "No signing certificate iOS Development
+// found".
+func TestSigningIdentityFollowsProfileType(t *testing.T) {
+	workflowTemplate, err := GetWorkflowTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := GetTemplate("runner.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shared string
+	for _, fn := range []string{"signing_identities", "signing_identity"} {
+		fromWorkflow := shellFunc(t, string(workflowTemplate), fn)
+		fromRunner := shellFunc(t, string(runner), fn)
+		if fromWorkflow != fromRunner {
+			t.Fatalf("templates disagree on %s:\n%s\n---\n%s", fn, fromWorkflow, fromRunner)
+		}
+		shared += fromRunner + "\n"
+	}
+
+	wiring := map[string][]string{
+		"ios-build.yml": {
+			`CODE_SIGN_IDENTITY=$(signing_identity "$EXPORT_METHOD" "$IDENTITIES")`,
+			`echo "CODE_SIGN_IDENTITY=$CODE_SIGN_IDENTITY" >> $GITHUB_ENV`,
+		},
+		"runner.sh": {
+			`CODE_SIGN_IDENTITY=$(signing_identity "$EXPORT_METHOD" "$identities")`,
+			"export CODE_SIGN_IDENTITY",
+		},
+	}
+	for name, data := range map[string]string{"ios-build.yml": string(workflowTemplate), "runner.sh": string(runner)} {
+		data = strings.ReplaceAll(data, "\r\n", "\n") // Windows checkouts
+		for _, want := range wiring[name] {
+			if !strings.Contains(data, want) {
+				t.Errorf("%s: the identity is not derived from the profile, missing %q", name, want)
+			}
+		}
+		// Every manually signed command must name the identity: one that sets
+		// CODE_SIGN_STYLE=Manual without it signs with the project's default.
+		manual := strings.Count(data, "CODE_SIGN_STYLE=Manual")
+		identity := strings.Count(data, `CODE_SIGN_IDENTITY='$CODE_SIGN_IDENTITY'`) + strings.Count(data, `CODE_SIGN_IDENTITY="$CODE_SIGN_IDENTITY"`)
+		if manual == 0 || manual != identity {
+			t.Errorf("%s: %d manual signing commands but %d pass CODE_SIGN_IDENTITY", name, manual, identity)
+		}
+		// The imported certificate is checked against that identity, after the
+		// import and before the archive, so a distribution set holding a
+		// development certificate fails in seconds instead of minutes.
+		imported, checked := strings.Index(data, "security import "), strings.Index(data, "security find-identity -v -p codesigning")
+		if imported < 0 || checked < 0 {
+			t.Errorf("%s: import %d, identity check %d", name, imported, checked)
+		} else if checked < imported {
+			t.Errorf("%s: the identity check must run after security import (offsets %d, %d)", name, imported, checked)
+		}
+	}
+
+	if runtime.GOOS == "windows" {
+		t.Skip("shell test")
+	}
+	// security find-identity prints one line per identity; certificates issued
+	// before Apple's 2021 rename still say iPhone Developer / iPhone
+	// Distribution and sign the same profiles, so they must be accepted.
+	line := func(names ...string) string {
+		out := ""
+		for i, n := range names {
+			out += fmt.Sprintf("  %d) DEADBEEF \"%s: Some One (2638BTZ9X7)\"\n", i+1, n)
+		}
+		return out + fmt.Sprintf("     %d valid identities found", len(names))
+	}
+	for _, tc := range []struct{ name, method, identities, want string }{
+		{"development", "development", line("Apple Development"), "Apple Development"},
+		{"legacy development", "development", line("iPhone Developer"), "iPhone Developer"},
+		{"both development names", "development", line("iPhone Developer", "Apple Development"), "Apple Development"},
+		{"ad-hoc", "ad-hoc", line("Apple Distribution"), "Apple Distribution"},
+		{"app-store", "app-store", line("Apple Distribution"), "Apple Distribution"},
+		{"enterprise", "enterprise", line("Apple Distribution"), "Apple Distribution"},
+		{"legacy distribution", "app-store", line("iPhone Distribution"), "iPhone Distribution"},
+		{"both distribution names", "app-store", line("iPhone Distribution", "Apple Distribution"), "Apple Distribution"},
+		// A development certificate cannot sign a distribution profile, and
+		// an unknown method must never sign with a guess.
+		{"development certificate in a store set", "app-store", line("Apple Development", "iPhone Developer"), ""},
+		{"distribution certificate in a development set", "development", line("Apple Distribution"), ""},
+		{"empty keychain", "app-store", line(), ""},
+		{"unknown method", "nonsense", line("Apple Distribution"), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := exec.Command("bash", "-c", shared+"\nsigning_identity \"$1\" \"$2\"", "bash", tc.method, tc.identities).CombinedOutput()
+			if tc.want == "" {
+				if err == nil {
+					t.Fatalf("accepted %q for %s: %s", tc.identities, tc.method, out)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("%s %v", out, err)
+			}
+			if got := strings.TrimSpace(string(out)); got != tc.want {
+				t.Fatalf("identity = %q, want %q", got, tc.want)
 			}
 		})
 	}

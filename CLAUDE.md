@@ -405,6 +405,16 @@ internal/
   and fails if `CFBundleVersion` differs from the request, so a missed case never reaches ASC as
   an opaque duplicate. Plain `ios build` sends no input and behaves as before; the runner also
   ignores an empty `BUILD_NUMBER`.
+- **Signing Identity Follows The Profile Type**: `signing_identities` and `signing_identity`
+  (verbatim in both templates) pick `CODE_SIGN_IDENTITY` out of `security find-identity`, run right
+  after `security import`: `Apple Development`, else the pre-2021 `iPhone Developer`, for a
+  development profile; `Apple Distribution`, else `iPhone Distribution`, for the rest; a named
+  `::error::` when the set holds neither. Every manually signed archive command passes it, since
+  without it Xcode keeps the project's default identity and refuses a distribution profile ("No
+  signing certificate iOS Development found").
+- **Extension Points**: a future `ios release` (upload + TestFlight, automatic build numbers)
+  composes `distribute.Upload` and `distribute.SubmitTestFlight` and reads `asc.Client.ListBuilds`
+  for the latest build number; the `pkg/` wrappers do not expose `asc` yet.
 
 ## Configuration
 
