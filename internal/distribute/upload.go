@@ -24,6 +24,16 @@ type UploadOptions struct {
 	Log io.Writer
 }
 
+// progressSize renders "sent/total" in MB with one decimal, or in KB while
+// the whole upload is under a megabyte, so a small IPA never reads 0/0.
+func progressSize(sent, total int64) string {
+	if total < 1<<20 {
+		return fmt.Sprintf("%d/%d KB", sent>>10, total>>10)
+	}
+	const mb = float64(1 << 20)
+	return fmt.Sprintf("%.1f/%.1f MB", float64(sent)/mb, float64(total)/mb)
+}
+
 // IPARef describes the uploaded archive.
 type IPARef struct {
 	Path                    string `json:"path"`
@@ -84,7 +94,7 @@ func Upload(ctx context.Context, client *asc.Client, opts *UploadOptions) (*Uplo
 			}
 			if pct := sent * 100 / total; pct/10 > lastPercent/10 || pct == 100 {
 				lastPercent = pct
-				logf(opts.Log, "  %d%% (%d/%d MB)", pct, sent>>20, total>>20)
+				logf(opts.Log, "  %d%% (%s)", pct, progressSize(sent, total))
 			}
 		},
 	})
