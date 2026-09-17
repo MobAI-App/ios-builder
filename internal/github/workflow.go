@@ -163,6 +163,91 @@ func (c *Client) RunningStep(ctx context.Context, owner, repo string, runID int6
 	return nil, 0, nil
 }
 
+// ListCheckRunAnnotations lists the annotations of a check run. A job's ID is
+// its check run ID.
+func (c *Client) ListCheckRunAnnotations(ctx context.Context, owner, repo string, checkRunID int64) ([]Annotation, error) {
+	path := fmt.Sprintf("/repos/%s/%s/check-runs/%d/annotations?per_page=100", owner, repo, checkRunID)
+
+	var annotations []Annotation
+	if err := c.do(ctx, path, &annotations); err != nil {
+		return nil, fmt.Errorf("failed to list annotations: %w", err)
+	}
+
+	return annotations, nil
+}
+
+// RunFailure is why a run failed: its first failed job and step, and the
+// failure-level annotations of that job (the runner's ::error:: lines).
+type RunFailure struct {
+	Job      string
+	Step     string
+	Messages []string
+}
+
+// RunFailure reads the failed job, its failed step and its error annotations.
+// It returns nil when no job failed.
+func (c *Client) RunFailure(ctx context.Context, owner, repo string, runID int64) (*RunFailure, error) {
+	jobs, err := c.ListRunJobs(ctx, owner, repo, runID)
+	if err != nil {
+		return nil, err
+	}
+	for _, job := range jobs {
+		var step string
+		for _, s := range job.Steps {
+			if s.Conclusion == "failure" {
+				step = s.Name
+				break
+			}
+		}
+		if step == "" && job.Conclusion != "failure" {
+			continue
+		}
+		failure := &RunFailure{Job: job.Name, Step: step}
+		annotations, err := c.ListCheckRunAnnotations(ctx, owner, repo, job.ID)
+		if err != nil {
+			return failure, err
+		}
+		for _, a := range annotations {
+			if a.Level == "failure" && strings.TrimSpace(a.Message) != "" {
+				failure.Messages = append(failure.Messages, strings.TrimSpace(a.Message))
+			}
+		}
+		return failure, nil
+	}
+	return nil, nil
+}
+
+// RunFailedError is a run that completed without success, with what the
+// failed job reported when it could be read.
+type RunFailedError struct {
+	Conclusion string
+	Failure    *RunFailure
+}
+
+func (e *RunFailedError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "workflow failed with conclusion: %s", e.Conclusion)
+	if e.Failure == nil {
+		return b.String()
+	}
+	if e.Failure.Step != "" {
+		fmt.Fprintf(&b, "\n   Failed step: %s (job %s)", e.Failure.Step, e.Failure.Job)
+	} else {
+		fmt.Fprintf(&b, "\n   Failed job: %s", e.Failure.Job)
+	}
+	for _, m := range e.Failure.Messages {
+		fmt.Fprintf(&b, "\n   %s", strings.ReplaceAll(m, "\n", "\n   "))
+	}
+	return b.String()
+}
+
+// runFailed builds the error for a run that ended without success. Reading
+// the failure details is best-effort: the conclusion is reported either way.
+func (c *Client) runFailed(ctx context.Context, owner, repo string, runID int64, conclusion string) error {
+	failure, _ := c.RunFailure(ctx, owner, repo, runID)
+	return &RunFailedError{Conclusion: conclusion, Failure: failure}
+}
+
 // ListRunArtifacts lists all artifacts for a workflow run
 func (c *Client) ListRunArtifacts(ctx context.Context, owner, repo string, runID int64) ([]Artifact, error) {
 	path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d/artifacts", owner, repo, runID)
@@ -285,7 +370,7 @@ func (c *Client) PollForArtifact(ctx context.Context, owner, repo string, runID 
 			return nil, fmt.Errorf("failed to check workflow status: %w", err)
 		}
 		if run.Status == "completed" && run.Conclusion != "success" {
-			return nil, fmt.Errorf("workflow failed with conclusion: %s", run.Conclusion)
+			return nil, c.runFailed(ctx, owner, repo, runID, run.Conclusion)
 		}
 
 		if onPoll != nil {

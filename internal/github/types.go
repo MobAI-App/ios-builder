@@ -38,10 +38,11 @@ type WorkflowRunsResponse struct {
 
 // Job represents a job within a workflow run
 type Job struct {
-	ID     int64     `json:"id"`
-	Name   string    `json:"name"`
-	Status string    `json:"status"`
-	Steps  []JobStep `json:"steps"`
+	ID         int64     `json:"id"` // also the job's check run ID
+	Name       string    `json:"name"`
+	Status     string    `json:"status"`
+	Conclusion string    `json:"conclusion"` // success, failure, cancelled, skipped
+	Steps      []JobStep `json:"steps"`
 }
 
 // JobStep represents a single step within a job
@@ -57,6 +58,16 @@ type JobStep struct {
 type JobsResponse struct {
 	TotalCount int   `json:"total_count"`
 	Jobs       []Job `json:"jobs"`
+}
+
+// Annotation is a check-run annotation. The runner turns a job's ::error::
+// and ::warning:: lines into failure- and warning-level ones.
+type Annotation struct {
+	Path      string `json:"path"`
+	StartLine int    `json:"start_line"`
+	Level     string `json:"annotation_level"` // notice, warning, failure
+	Title     string `json:"title"`
+	Message   string `json:"message"`
 }
 
 // WorkflowDispatchRequest is the request body for triggering a workflow

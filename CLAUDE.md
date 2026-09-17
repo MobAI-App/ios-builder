@@ -223,6 +223,12 @@ internal/
   submodule commit that only exists locally fails checkout on the runner.
 - **Run Correlation**: `run-name` carries the build ID so concurrent builds cannot adopt each
   other's runs
+- **Run Failures**: when the run completes without success while `PollForArtifact` waits, the
+  error is a `github.RunFailedError`: the conclusion, the first failed job and step
+  (`ListRunJobs`) and that job's `failure`-level annotations (`GET
+  /repos/{o}/{r}/check-runs/{job_id}/annotations`; a job ID is its check run ID), which are the
+  runner's `::error::` lines. Reading the details is best-effort, so the conclusion is reported
+  even when the annotations endpoint fails
 - **Build Profiles**: `profiles.<name>` in `builder.json` overrides `ios.configuration`, `ios.scheme`
   and `provider`, and adds `env` and `distribution`. `ios build` takes `--profile`; without it
   `defaultProfile` applies, and without that the top-level settings are used unchanged. `ios share`
@@ -295,9 +301,14 @@ internal/
   present → dispatch. Otherwise, with an ASC key (`getASCClient` passed as a
   factory so tests inject the `signingtest` portal), `signing.Auto` plus `uploadSigningSet` (shared
   with `signing setup`, but fatal here) runs with no prompts: bundle ID from `ios.bundleId` or `dist/*.ipa`,
-  key from `.`, generated password (printed once), no devices given (Auto covers the enabled ones
+  key from `signing.dir` in builder.json (the `--out-dir` the last automatic `signing setup`
+  recorded, tilde kept, unset for `.`; `signingKeyDirs`) then `.`, material written to the first
+  of those, generated password (printed once), no devices given (Auto covers the enabled ones
   and fails naming `signing setup --distribution development --devices-from-mobai` when there are
-  none). Without an ASC key the error names `builder auth apple` and `signing setup --certificate
+  none). Apple issues one certificate per type, so a 409 from `POST /v1/certificates`
+  (`certificateRefused`) with no key found is reported with the directories searched for
+  `ios-signing-<distribution>.key` and `signing setup --distribution <d> --key <path>` /
+  `--out-dir`. Without an ASC key the error names `builder auth apple` and `signing setup --certificate
   ... --profile ...`, before anything is pushed. Codemagic/Bitrise skip the check (no secrets API).
 - **Flutter Detection**: Auto-detects Flutter projects, runs `flutter pub get`, uses `Runner` scheme
 - **DerivedData Caching**: `restore` keys on `github.run_id` and only the prefix in `restore-keys`
@@ -485,6 +496,10 @@ internal/
 project has exactly one app target (test targets and `$(…)` values are skipped), and
 `signing setup` saves whatever it resolved. `ios release` uses it to find the App Store Connect
 app before the first IPA exists (otherwise the newest `dist/*.ipa`).
+`signing setup` saves whatever it resolved. `signing.dir` (`"signing": {"dir": "~/signing/app"}`)
+is the `--out-dir` of the last automatic `signing setup`, written as given and only when it is
+not `.`; on-demand provisioning reads the certificate's key from there before the working
+directory.
 
 `profiles` and `defaultProfile` are optional. A profile's fields are `distribution`
 (`development`, `ad-hoc`/`internal`, `store`, `enterprise`; the only signing field: selects the

@@ -477,7 +477,11 @@ create certificates. It then:
    "<distribution>"`. Other fields of an existing profile are kept; a
    different `distribution` in it is replaced, and the command says so.
    `defaultProfile` is not touched: point it at the profile for a plain
-   `ios build` to use it, or pass `--profile`.
+   `ios build` to use it, or pass `--profile`. An `--out-dir` other than `.`
+   is recorded as `signing.dir` (as typed, `~` included), so a later
+   `ios build --profile` that has to provision a set finds the certificate's
+   key there instead of asking Apple for a second certificate, which it
+   refuses.
 6. Prints the three secret names and where their values come from — the
    `.p12` base64-encoded, the password, the `.mobileprovision` base64-encoded
    — every time, so the same set can be pasted into Codemagic or Bitrise,
