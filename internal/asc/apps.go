@@ -42,6 +42,19 @@ func (c *Client) AppByBundleID(ctx context.Context, bundleID string) (*App, erro
 	return nil, fmt.Errorf("no App Store Connect app has bundle ID %s; create the app record in App Store Connect (My Apps → +) with that bundle ID first, and check the API key can see it", bundleID)
 }
 
+// ListApps lists every app the API key can see, by name.
+func (c *Client) ListApps(ctx context.Context) ([]App, error) {
+	rs, err := getAll[appAttributes](ctx, c, "/v1/apps", url.Values{"sort": {"name"}})
+	if err != nil {
+		return nil, err
+	}
+	apps := make([]App, 0, len(rs))
+	for _, r := range rs {
+		apps = append(apps, toApp(r))
+	}
+	return apps, nil
+}
+
 // CheckAccess makes the cheapest authenticated call to verify the key works.
 func (c *Client) CheckAccess(ctx context.Context) error {
 	_, err := getPage[appAttributes](ctx, c, "/v1/apps", url.Values{"limit": {"1"}})
