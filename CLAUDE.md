@@ -264,9 +264,14 @@ internal/
   present → dispatch. Otherwise, with an ASC key (`getASCClient` passed as a
   factory so tests inject the `signingtest` portal), `signing.Auto` plus `uploadSigningSet` (shared
   with `signing setup`, but fatal here) runs with no prompts: bundle ID from `ios.bundleId` or `dist/*.ipa`,
-  key from `.`, generated password (printed once), no devices given (Auto covers the enabled ones
+  key from `signing.dir` in builder.json (the `--out-dir` the last automatic `signing setup`
+  recorded, tilde kept, unset for `.`; `signingKeyDirs`) then `.`, material written to the first
+  of those, generated password (printed once), no devices given (Auto covers the enabled ones
   and fails naming `signing setup --distribution development --devices-from-mobai` when there are
-  none). Without an ASC key the error names `builder auth apple` and `signing setup --certificate
+  none). Apple issues one certificate per type, so a 409 from `POST /v1/certificates`
+  (`certificateRefused`) with no key found is reported with the directories searched for
+  `ios-signing-<distribution>.key` and `signing setup --distribution <d> --key <path>` /
+  `--out-dir`. Without an ASC key the error names `builder auth apple` and `signing setup --certificate
   ... --profile ...`, before anything is pushed. Codemagic/Bitrise skip the check (no secrets API).
 - **Flutter Detection**: Auto-detects Flutter projects, runs `flutter pub get`, uses `Runner` scheme
 - **DerivedData Caching**: `restore` keys on `github.run_id` and only the prefix in `restore-keys`
@@ -384,7 +389,10 @@ internal/
 
 `ios.bundleId` is optional: `init` fills it from `PRODUCT_BUNDLE_IDENTIFIER` when the Xcode
 project has exactly one app target (test targets and `$(…)` values are skipped), and
-`signing setup` saves whatever it resolved.
+`signing setup` saves whatever it resolved. `signing.dir` (`"signing": {"dir": "~/signing/app"}`)
+is the `--out-dir` of the last automatic `signing setup`, written as given and only when it is
+not `.`; on-demand provisioning reads the certificate's key from there before the working
+directory.
 
 `profiles` and `defaultProfile` are optional. A profile's fields are `distribution`
 (`development`, `ad-hoc`/`internal`, `store`, `enterprise`; the only signing field: selects the

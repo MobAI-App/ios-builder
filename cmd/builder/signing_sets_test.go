@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"os"
@@ -177,7 +180,7 @@ func TestSigningKeyPrefersTheTypeThenLegacy(t *testing.T) {
 	dir := t.TempDir()
 
 	// Nothing on disk: generate.
-	if pem, path, err := signingKey("", dir, signing.TypeStore); err != nil || pem != nil || path != "" {
+	if pem, path, err := signingKey("", signing.TypeStore, dir); err != nil || pem != nil || path != "" {
 		t.Fatalf("empty dir: %q %q %v", pem, path, err)
 	}
 	// A key from before signing sets is reused by every type.
@@ -185,7 +188,7 @@ func TestSigningKeyPrefersTheTypeThenLegacy(t *testing.T) {
 	if err := os.WriteFile(legacy, []byte("legacy"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if pem, path, err := signingKey("", dir, signing.TypeStore); err != nil || string(pem) != "legacy" || path != legacy {
+	if pem, path, err := signingKey("", signing.TypeStore, dir); err != nil || string(pem) != "legacy" || path != legacy {
 		t.Fatalf("legacy key: %q %q %v", pem, path, err)
 	}
 	// The type's own key wins over it.
@@ -193,10 +196,10 @@ func TestSigningKeyPrefersTheTypeThenLegacy(t *testing.T) {
 	if err := os.WriteFile(typed, []byte("typed"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if pem, path, err := signingKey("", dir, signing.TypeStore); err != nil || string(pem) != "typed" || path != typed {
+	if pem, path, err := signingKey("", signing.TypeStore, dir); err != nil || string(pem) != "typed" || path != typed {
 		t.Fatalf("typed key: %q %q %v", pem, path, err)
 	}
-	if pem, path, err := signingKey("", dir, signing.TypeDevelopment); err != nil || string(pem) != "legacy" || path != legacy {
+	if pem, path, err := signingKey("", signing.TypeDevelopment, dir); err != nil || string(pem) != "legacy" || path != legacy {
 		t.Fatalf("other type falls back to legacy: %q %q %v", pem, path, err)
 	}
 	// --key beats both.
@@ -204,7 +207,7 @@ func TestSigningKeyPrefersTheTypeThenLegacy(t *testing.T) {
 	if err := os.WriteFile(explicit, []byte("mine"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if pem, path, err := signingKey(explicit, dir, signing.TypeStore); err != nil || string(pem) != "mine" || path != explicit {
+	if pem, path, err := signingKey(explicit, signing.TypeStore, dir); err != nil || string(pem) != "mine" || path != explicit {
 		t.Fatalf("--key: %q %q %v", pem, path, err)
 	}
 }
@@ -412,6 +415,119 @@ func TestEnsureSigningSecretsProvisionsOnDemand(t *testing.T) {
 	err = ensureSigningSecrets(ctx, cfg, store, withPortal, "development", "", io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "ios.bundleId") || len(portal.Calls()) != 0 {
 		t.Fatalf("no bundle ID: %v, calls %v", err, portal.Calls())
+	}
+}
+
+// writeSigningKey generates a private key, writes it to path and issues a
+// certificate of certType for it on the portal, as a `signing setup` run
+// with --out-dir filepath.Dir(path) would have.
+func writeSigningKey(t *testing.T, portal *signingtest.Portal, path, certType string) {
+	t.Helper()
+	keyPEM, _, err := signing.GenerateKeyAndCSR("Jane", "jane@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(keyPEM)
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	portal.Issue(certType, &key.(*rsa.PrivateKey).PublicKey, signingtest.Now.AddDate(0, 6, 0))
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, keyPEM, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestEnsureSigningSecretsReusesTheKeyInTheRecordedDir: the key of a
+// `signing setup --out-dir ~/signing/app` run is found through signing.dir in
+// builder.json, so the certificate is reused instead of requested again (and
+// refused by Apple, which allows one per type).
+func TestEnsureSigningSecretsReusesTheKeyInTheRecordedDir(t *testing.T) {
+	t.Chdir(t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ctx := context.Background()
+	cfg := signedConfig()
+	cfg.Signing = &config.SigningConfig{Dir: "~/signing/app"}
+	store := newFakeSecrets(t)
+	portal := signingtest.New(t)
+	withPortal := func() (*asc.Client, error) { return portal.Client(t), nil }
+	keyDir := filepath.Join(home, "signing", "app")
+	writeSigningKey(t, portal, filepath.Join(keyDir, "ios-signing-store.key"), asc.CertificateTypeDistribution)
+
+	var log strings.Builder
+	if err := ensureSigningSecrets(ctx, cfg, store, withPortal, "store", "", &log); err != nil {
+		t.Fatalf("on-demand provisioning: %v\n%s", err, log.String())
+	}
+	if portal.Count("POST /v1/certificates") != 0 || len(store.names) != 3 {
+		t.Errorf("the certificate must be reused, not requested: %v, uploads %v", portal.Calls(), store.names)
+	}
+	// The material lands next to the key, not in the working directory.
+	if _, err := os.Stat(filepath.Join(keyDir, "ios-signing-store.p12")); err != nil {
+		t.Errorf(".p12 not written to the recorded dir: %v", err)
+	}
+	if _, err := os.Stat("ios-signing-store.p12"); err == nil {
+		t.Error(".p12 written to the working directory")
+	}
+
+	// A recorded dir without the key, and Apple refusing another
+	// certificate: the error says where the key was looked for and how to
+	// pass it.
+	cfg.Signing.Dir = "~/signing/other"
+	store = newFakeSecrets(t)
+	portal.RefuseCertificates = true
+	err := ensureSigningSecrets(ctx, cfg, store, withPortal, "store", "", io.Discard)
+	if err == nil {
+		t.Fatal("a refused certificate must fail the build")
+	}
+	for _, want := range []string{"ios-signing-store.key", filepath.Join(home, "signing", "other") + ", .", "builder signing setup --distribution store --key <path>", "--out-dir"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("%q missing from:\n%v", want, err)
+		}
+	}
+}
+
+// TestSigningSetupRecordsTheOutDir: --out-dir goes into builder.json as
+// given, tilde included, so the next build finds the key; the default
+// working directory is not written.
+func TestSigningSetupRecordsTheOutDir(t *testing.T) {
+	t.Chdir(t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := &config.Config{Project: "App", Platform: "ios", GitHub: config.GitHubConfig{Owner: "o", Repo: "r"},
+		IOS: config.IOSConfig{BundleID: "com.example.app"}}
+	if err := config.NewManager().Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	portal := signingtest.New(t)
+	prev := signingASCClient
+	signingASCClient = func() (*asc.Client, error) { return portal.Client(t), nil }
+	t.Cleanup(func() { signingASCClient = prev })
+
+	cmd, _, stderr := signingSetupCommand(t, newFakeSecrets(t), nil, "--distribution", "store", "--yes", "--out-dir", "~/signing/app")
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("%v\n%s", err, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, "signing", "app", "ios-signing-store.key")); err != nil {
+		t.Errorf("key not written under --out-dir: %v", err)
+	}
+	saved, err := config.NewManager().Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Signing == nil || saved.Signing.Dir != "~/signing/app" {
+		t.Errorf("signing = %+v, want the flag as given", saved.Signing)
+	}
+
+	cmd, _, stderr = signingSetupCommand(t, newFakeSecrets(t), nil, "--distribution", "store", "--yes")
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("%v\n%s", err, stderr.String())
+	}
+	if saved, err = config.NewManager().Load(); err != nil || saved.Signing != nil {
+		t.Errorf("signing = %+v after the default --out-dir, %v", saved.Signing, err)
 	}
 }
 

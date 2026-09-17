@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -81,8 +82,8 @@ func runSigningAuto(cmd *cobra.Command) error {
 	out := newOutput(cmd)
 	yes, _ := cmd.Flags().GetBool("yes")
 	force, _ := cmd.Flags().GetBool("force")
-	outDir, _ := cmd.Flags().GetString("out-dir")
-	outDir = expandPath(outDir)
+	outDirFlag, _ := cmd.Flags().GetString("out-dir")
+	outDir := expandPath(outDirFlag)
 	ctx, cancel := commandContext(cmd, false)
 	defer cancel()
 
@@ -95,7 +96,7 @@ func runSigningAuto(cmd *cobra.Command) error {
 		return err
 	}
 	keyFlag, _ := cmd.Flags().GetString("key")
-	keyPEM, keyPath, err := signingKey(keyFlag, outDir, typ)
+	keyPEM, keyPath, err := signingKey(keyFlag, typ, outDir)
 	if err != nil {
 		return err
 	}
@@ -161,6 +162,7 @@ func runSigningAuto(cmd *cobra.Command) error {
 	// The profile is written whatever the upload did: the material exists and
 	// the build that uses it is the same either way.
 	replaced := writeSigningProfile(cfg, profileName, typ)
+	recordSigningDir(cfg, outDirFlag)
 	if cfg.IOS.BundleID == "" {
 		cfg.IOS.BundleID = bundleID
 	}
@@ -328,17 +330,12 @@ func mobaiSigningDevices(connected []mobai.Device) []signing.Device {
 }
 
 // signingKey returns the key at keyPath (--key), else the key a previous run
-// of this type left in outDir (ios-signing-<type>.key, or the ios-signing.key
-// of runs before signing sets), else nil so a key is generated. The returned
-// path is "" when generating.
-func signingKey(keyPath, outDir string, typ signing.Type) (keyPEM []byte, path string, err error) {
+// of this type left in the first of dirs that has one (ios-signing-<type>.key,
+// or the ios-signing.key of runs before signing sets), else nil so a key is
+// generated. The returned path is "" when generating.
+func signingKey(keyPath string, typ signing.Type, dirs ...string) (keyPEM []byte, path string, err error) {
 	if keyPath == "" {
-		for _, name := range []string{signing.KeyFileName(typ), signing.LegacyKeyFileName} {
-			if candidate := filepath.Join(outDir, name); fileExists(candidate) {
-				keyPath = candidate
-				break
-			}
-		}
+		keyPath = findSigningKey(typ, dirs)
 		if keyPath == "" {
 			return nil, "", nil
 		}
@@ -349,6 +346,44 @@ func signingKey(keyPath, outDir string, typ signing.Type) (keyPEM []byte, path s
 		return nil, "", fmt.Errorf("failed to read private key %s: %w", keyPath, err)
 	}
 	return keyPEM, keyPath, nil
+}
+
+// findSigningKey is the first key file of the type in dirs, or "".
+func findSigningKey(typ signing.Type, dirs []string) string {
+	for _, dir := range dirs {
+		for _, name := range []string{signing.KeyFileName(typ), signing.LegacyKeyFileName} {
+			if candidate := filepath.Join(dir, name); fileExists(candidate) {
+				return candidate
+			}
+		}
+	}
+	return ""
+}
+
+// recordSigningDir keeps `signing setup`'s --out-dir in builder.json as it
+// was given (a ~ stays a ~, so the file works for every user of the repo),
+// where on-demand provisioning looks for the key first. The default working
+// directory is not written.
+func recordSigningDir(cfg *config.Config, outDir string) {
+	outDir = strings.TrimSpace(outDir)
+	if filepath.Clean(outDir) == "." {
+		cfg.Signing = nil
+		return
+	}
+	cfg.Signing = &config.SigningConfig{Dir: outDir}
+}
+
+// signingKeyDirs is where on-demand provisioning looks for the private key
+// and writes the material: the directory `signing setup` recorded, then the
+// working directory.
+func signingKeyDirs(cfg *config.Config) []string {
+	if cfg.Signing == nil {
+		return []string{"."}
+	}
+	if dir := expandPath(cfg.Signing.Dir); dir != "" && filepath.Clean(dir) != "." {
+		return []string{dir, "."}
+	}
+	return []string{"."}
 }
 
 func describeDevices(devices []signing.Device) string {
@@ -496,7 +531,8 @@ func ensureSigningSecrets(ctx context.Context, cfg *config.Config, store secretS
 	if bundleID == "" {
 		return fmt.Errorf("bundle ID unknown: set ios.bundleId in builder.json, or run builder signing setup --distribution %s --bundle-id <id>", typ)
 	}
-	keyPEM, _, err := signingKey("", ".", typ)
+	dirs := signingKeyDirs(cfg)
+	keyPEM, keyPath, err := signingKey("", typ, dirs...)
 	if err != nil {
 		return err
 	}
@@ -506,9 +542,14 @@ func ensureSigningSecrets(ctx context.Context, cfg *config.Config, store secretS
 	}
 	fmt.Fprintf(log, "Provisioning %s signing for %s through App Store Connect...\n", typ, bundleID)
 	res, err := signing.Auto(ctx, client, &signing.AutoOptions{
-		BundleID: bundleID, Type: typ, KeyPEM: keyPEM, CommonName: cfg.Project, Password: password, OutDir: ".", Log: log,
+		BundleID: bundleID, Type: typ, KeyPEM: keyPEM, CommonName: cfg.Project, Password: password, OutDir: dirs[0], Log: log,
 	})
 	if err != nil {
+		if keyPath == "" && certificateRefused(err) {
+			// Apple has a certificate of this type already, and without its
+			// key Builder asked for another: say where the key was looked for.
+			return fmt.Errorf("%w\nNo private key of an existing %s certificate was found: looked for %s in %s. Pass the key of the certificate Apple already issued with builder signing setup --distribution %s --key <path>, or --out-dir <dir> with the directory that holds it", err, typ, signing.KeyFileName(typ), strings.Join(dirs, ", "), typ)
+		}
 		return err
 	}
 	// A build cannot go on without the set in the repository, so here the
@@ -527,6 +568,13 @@ func ensureSigningSecrets(ctx context.Context, cfg *config.Config, store secretS
 	}
 	fmt.Fprintln(log)
 	return nil
+}
+
+// certificateRefused reports App Store Connect's 409 on a certificate request:
+// the team already holds one of that type (or is at its quota).
+func certificateRefused(err error) bool {
+	var apiErr *asc.Error
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict && apiErr.Path == "/v1/certificates"
 }
 
 // printSigningFiles lists what was written and, when Builder made it up, the

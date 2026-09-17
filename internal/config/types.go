@@ -18,10 +18,21 @@ type Config struct {
 	ReactNative ReactNativeConfig `json:"reactNative,omitempty"`
 	KMP         KMPConfig         `json:"kmp,omitempty"`
 	MobAI       MobAIConfig       `json:"mobai,omitempty"`
+	// Signing records where `signing setup` put the key, .p12 and profile;
+	// nil when it was the working directory.
+	Signing *SigningConfig `json:"signing,omitempty"`
 	// DefaultProfile is used when a command is run without --profile. Tag-triggered
 	// runs have no flags, so it is also the only way they can select a profile.
 	DefaultProfile string             `json:"defaultProfile,omitempty"`
 	Profiles       map[string]Profile `json:"profiles,omitempty"`
+}
+
+// SigningConfig is where the signing material lives on this machine.
+type SigningConfig struct {
+	// Dir is the --out-dir of the last automatic `signing setup`, as given
+	// (a leading ~ is kept); empty means the working directory. On-demand
+	// provisioning looks there first for the certificate's private key.
+	Dir string `json:"dir,omitempty"`
 }
 
 // Profile is a named set of build settings, selected with --profile. Every
