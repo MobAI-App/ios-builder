@@ -462,11 +462,11 @@ served as the reference for Builder's implementation.
 
 ## Managing TestFlight
 
-`builder asc` covers the App Store Connect housekeeping around TestFlight, so
-nothing needs the website: apps, builds, groups, testers and team members.
-Every command takes `--json` (the result on stdout, progress on stderr),
-never prompts, and finds the app through `--bundle-id`, then `ios.bundleId`
-in `builder.json`, then the newest IPA in `./dist/`.
+`builder asc` covers the App Store Connect housekeeping around TestFlight
+without the website: apps, builds, groups, testers and team members. Every
+command takes `--json` (result on stdout, progress on stderr), never prompts,
+and finds the app through `--bundle-id`, then `ios.bundleId` in
+`builder.json`, then the newest IPA in `./dist/`.
 
 ```bash
 builder asc builds                       # newest version's builds and their groups
@@ -481,37 +481,31 @@ builder asc builds expire --build-number 42 --yes
 
 Two things about internal groups:
 
-- **Internal groups take team members only.** `asc testers add` on an internal
-  group adds a member's tester record to the group; a stranger is invited to
-  the App Store Connect team first (`--role`, default `CUSTOMER_SUPPORT`, with
-  only this app visible; `--first` and `--last` are required). They must accept
-  that email before a build can reach them, so rerun the command afterwards.
-  `asc users` shows who is on the team and who already has TestFlight access;
-  `asc users invite` sends a team invitation on its own.
-- **Automatic distribution.** An internal group created in App Store Connect
-  with "automatic distribution" (or by `asc groups create` without
-  `--no-auto-builds`) receives every processed build by itself, and Apple
-  refuses to add builds to it by hand. `asc groups` marks such groups
-  `internal, all builds`; `ios submit --group` and `asc groups add-build` skip
-  them with a note instead of failing.
+- **They take team members only.** `asc testers add` puts a member's tester
+  record into the group and invites a stranger to the App Store Connect team
+  first (`--role`, default `CUSTOMER_SUPPORT`, only this app visible;
+  `--first` and `--last` required). They must accept that email before a build
+  reaches them, so rerun the command afterwards. `asc users` shows the team and
+  who already has TestFlight access; `asc users invite` invites on its own.
+- **Automatic distribution.** An internal group with "automatic distribution"
+  (the default of `asc groups create`, off with `--no-auto-builds`) receives
+  every processed build by itself and Apple refuses to add builds by hand, so
+  `asc groups` marks it `internal, all builds` and `ios submit --group` and
+  `asc groups add-build` skip it with a note instead of failing.
 
-A tester whose state is `NOT_INVITED` has never received an email: that is
-how a team member added to an internal group in App Store Connect shows up.
-`asc testers` points this out, `asc testers invite` sends the invitation (or
-resends it while `INVITED`), and `asc testers add` does so by itself when the
-record it added is still `NOT_INVITED`, so adding someone always ends in an
-email — unless the group has no build yet: App Store Connect refuses to invite
-anyone into a group with nothing to install, so `asc testers add` reports
-"Added ... (invite goes out once the group has a build)" and `asc testers
-invite` says to run `asc groups add-build` first (an external group's build
-must also pass Beta App Review).
+`NOT_INVITED` means no email has gone out — how a team member added to an
+internal group in App Store Connect shows up. `asc testers invite` sends it
+(or resends while `INVITED`) and `asc testers add` does so by itself, unless
+the group has no build yet: Apple refuses to invite anyone into a group with
+nothing to install, so `add` reports "invite goes out once the group has a
+build" and `invite` says to run `asc groups add-build` first (an external
+group's build must also pass Beta App Review).
 
-External groups take anyone by email; a tester the team already has is added
-to the group rather than created again. The destructive commands print what
-they are about to remove and need `--yes`: `asc groups delete` always, and
-`asc testers remove` without `--group`, which deletes the tester from
-TestFlight for the whole team. Group names match case-insensitively; when
-two groups differ only by case, the command refuses and lists both.
+External groups take anyone by email, reusing a tester the team already has.
+`asc groups delete`, and `asc testers remove` without `--group` (which drops
+the tester from TestFlight team-wide), print what goes and then need `--yes`.
+Group names match case-insensitively; when two differ only by case, the
+command refuses and lists both.
 
 ## Installing the IPA
 

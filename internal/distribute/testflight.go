@@ -16,9 +16,9 @@ type TestFlightOptions struct {
 	// Version and BuildNumber narrow the build; empty picks the newest VALID build.
 	Version     string
 	BuildNumber string
-	// Groups are TestFlight group names (case-insensitive). Empty adds the
-	// build nowhere and reports the available groups instead. A name the app
-	// has no group for is created: internal, or external with External.
+	// Groups are TestFlight group names (case-insensitive); an unknown name is
+	// created, internal or external with External. Empty adds the build
+	// nowhere and reports the available groups instead.
 	Groups   []string
 	External bool
 	// Notes is the "What to Test" text; Locale defaults to the app's primary locale.

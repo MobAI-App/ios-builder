@@ -44,11 +44,10 @@ type TesterResult struct {
 	State string `json:"state,omitempty"`
 }
 
-// AddTester puts a person into a TestFlight group. External groups take
-// anyone: a tester record is created (invitation sent) or the existing one
-// added. Internal groups take team members only: a member's tester record is
-// added to the group, and a stranger is invited to the team first; the build
-// shows up once they accept and AddTester runs again.
+// AddTester puts a person into a TestFlight group, creating or reusing their
+// tester record. Internal groups take team members only, so a stranger is
+// invited to the team first and reaches the build once they accept and
+// AddTester runs again.
 func AddTester(ctx context.Context, client *asc.Client, opts *TesterOptions) (*TesterResult, error) {
 	g := opts.Group
 	res := &TesterResult{Email: opts.Email, Group: g.Name}
