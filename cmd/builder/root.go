@@ -603,7 +603,6 @@ func init() {
 	iosShareCmd.Flags().Duration("duration", 30*time.Minute, "How long the simulator stays available while unused")
 	iosShareCmd.Flags().StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
 	iosShareCmd.Flags().String("provider", "", "Override CI provider (default github or builder.json provider)")
-	iosShareCmd.Flags().String("profile", "", "Build profile from builder.json; its scheme, provider and env apply to the simulator build")
 	iosCmd.AddCommand(iosShareCmd)
 }
 
@@ -672,8 +671,9 @@ func runIOSShare(cmd *cobra.Command, args []string) error {
 
 	duration, _ := cmd.Flags().GetDuration("duration")
 	remote, _ := cmd.Flags().GetString("remote")
-	providerFlag, _ := cmd.Flags().GetString("provider")
-	profile, _ := cmd.Flags().GetString("profile")
+	// A simulator build takes no profile, so the provider is the flag, else
+	// builder.json's.
+	provider, _ := cmd.Flags().GetString("provider")
 
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -685,17 +685,12 @@ func runIOSShare(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	provider, err := effectiveProvider(cfg, profile, providerFlag)
-	if err != nil {
-		return err
-	}
 	ghClient, err := clientForProvider(cfg, provider)
 	if err != nil {
 		return err
 	}
 	result, err := build.NewCoordinator(cfg, ghClient).Share(ctx, build.ShareOptions{
 		Provider: provider,
-		Profile:  profile,
 		Duration: duration,
 		Remote:   remote,
 	})
