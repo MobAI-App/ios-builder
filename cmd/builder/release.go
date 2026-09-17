@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -90,6 +92,15 @@ func runIOSRelease(cmd *cobra.Command, _ []string) error {
 	return runRelease(cmd, cfg, opts)
 }
 
+// releaseError keeps a build deadline out of finish, which reads every
+// DeadlineExceeded as the App Store Connect wait and claims processing continues.
+func releaseError(res *release.Result, err error, timeout time.Duration) error {
+	if errors.Is(err, context.DeadlineExceeded) && (res == nil || res.IPAPath == "") {
+		return fmt.Errorf("the build did not finish within %s; raise --timeout (%v)", timeout, err)
+	}
+	return err
+}
+
 // buildOptionsFromFlags reads the flags `ios build` and `ios release` share;
 // Provider is resolved as the coordinator will, so the GitHub client agrees.
 func buildOptionsFromFlags(cmd *cobra.Command, cfg *config.Config) (build.BuildOptions, error) {
@@ -142,6 +153,7 @@ func runRelease(cmd *cobra.Command, cfg *config.Config, opts *release.Options) e
 	}
 	coordinator := build.NewCoordinatorWithOutput(cfg, ghClient, out.log)
 	res, err := release.Run(ctx, cfg, coordinator, client, opts)
+	err = releaseError(res, err, opts.Build.Timeout)
 	return finish(out, cmd, res, err, func() {
 		fmt.Println()
 		fmt.Printf("IPA:          %s\n", res.IPAPath)
