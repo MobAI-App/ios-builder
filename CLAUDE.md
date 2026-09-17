@@ -192,6 +192,12 @@ internal/
   submodule commit that only exists locally fails checkout on the runner.
 - **Run Correlation**: `run-name` carries the build ID so concurrent builds cannot adopt each
   other's runs
+- **Run Failures**: when the run completes without success while `PollForArtifact` waits, the
+  error is a `github.RunFailedError`: the conclusion, the first failed job and step
+  (`ListRunJobs`) and that job's `failure`-level annotations (`GET
+  /repos/{o}/{r}/check-runs/{job_id}/annotations`; a job ID is its check run ID), which are the
+  runner's `::error::` lines. Reading the details is best-effort, so the conclusion is reported
+  even when the annotations endpoint fails
 - **Build Profiles**: `profiles.<name>` in `builder.json` overrides `ios.configuration`, `ios.scheme`
   and `provider`, and adds `env` and `distribution`. `ios build` takes `--profile`; without it
   `defaultProfile` applies, and without that the top-level settings are used unchanged. `ios share`
