@@ -125,7 +125,7 @@ func (a apiClient) requestOnce(ctx context.Context, method, endpoint string, bod
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &APIError{StatusCode: resp.StatusCode, retryAfter: retryAfter(resp.Header.Get("Retry-After"))}
+		return &APIError{StatusCode: resp.StatusCode, retryAfter: retryAfter(resp.Header.Get("Retry-After")), message: providerMessage(resp)}
 	}
 	if dest == nil {
 		return nil
@@ -144,6 +144,29 @@ func (a apiClient) requestOnce(ctx context.Context, method, endpoint string, bod
 		return fmt.Errorf("invalid CI API response")
 	}
 	return nil
+}
+
+// providerMessage is the reason Codemagic or Bitrise put in an error response
+// ("message", "error" or "error_msg"), so a rejected dispatch says why. Only
+// that one field is kept, capped, never the whole body.
+func providerMessage(resp *http.Response) string {
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+	if err != nil || !json.Valid(data) {
+		return ""
+	}
+	var body map[string]any
+	if json.Unmarshal(data, &body) != nil {
+		return ""
+	}
+	for _, key := range []string{"message", "error", "error_msg"} {
+		if s, ok := body[key].(string); ok && s != "" {
+			if len(s) > 300 {
+				s = s[:300] + "…"
+			}
+			return fmt.Sprintf("CI API returned HTTP %d: %s", resp.StatusCode, s)
+		}
+	}
+	return ""
 }
 
 // downloadURL uses an unauthenticated client, including every redirect hop.
