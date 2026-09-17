@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/MobAI-App/ios-builder/internal/config"
@@ -45,14 +47,21 @@ With --certificate and --profile the files are taken as they are:
 The distribution is read from the .mobileprovision (development, ad-hoc,
 store or enterprise).
 
-Either way the command uploads the three GitHub repository secrets of the
-distribution's signing set — IOS_CERTIFICATE_<SET>, IOS_CERTIFICATE_PASSWORD_<SET>,
-IOS_PROVISIONING_PROFILE_<SET>, with SET one of DEVELOPMENT, AD_HOC, STORE,
-ENTERPRISE — and writes a profile in builder.json (--name, default the
-distribution name) with that distribution. 'builder ios build --profile <name>'
-then signs with the set, and provisions it the same way when it is missing.
+Extension targets (widgets, share/notification extensions, watch apps, app
+clips) need a profile each. Their bundle IDs are ios.extensions in
+builder.json, filled in from the local Xcode project; automatic mode creates
+"Builder <distribution> <bundle id>" for each, manual mode takes one
+--extension-profile per extension.
 
-The three names and the values to put in them are always printed too, for
+Either way the command uploads the GitHub repository secrets of the
+distribution's signing set — IOS_CERTIFICATE_<SET>, IOS_CERTIFICATE_PASSWORD_<SET>,
+IOS_PROVISIONING_PROFILE_<SET> and IOS_EXTENSION_PROFILES_<SET>, with SET one of
+DEVELOPMENT, AD_HOC, STORE, ENTERPRISE — and writes a profile in builder.json
+(--name, default the distribution name) with that distribution. 'builder ios
+build --profile <name>' then signs with the set, and provisions it the same
+way when it is missing.
+
+The names and the values to put in them are always printed too, for
 Codemagic, Bitrise or a repository this login cannot write to. A failed upload
 is reported and the command carries on — the files and the build profile are
 written regardless — and it exits non-zero at the end.`,
@@ -105,6 +114,7 @@ func init() {
 func addSigningSetupFlags(cmd *cobra.Command) {
 	cmd.Flags().StringP("certificate", "c", "", "Path to certificate file (.p12, or .cer from the Apple Developer portal)")
 	cmd.Flags().StringP("profile", "p", "", "Path to .mobileprovision file")
+	cmd.Flags().StringArray("extension-profile", nil, "Path to the .mobileprovision of an extension target listed in ios.extensions (repeatable; with --profile)")
 	cmd.Flags().StringP("key", "k", "", "Path to the private key from 'builder signing csr' (required with a .cer; automatic mode reuses it and its certificate)")
 	cmd.Flags().String("bundle-id", "", "App bundle ID (default: ios.bundleId in builder.json, else the newest IPA in ./dist)")
 	cmd.Flags().String("distribution", "", "Distribution to sign for: development, ad-hoc (internal), store or enterprise (default: the --name profile's, else development; with --profile: read from the file)")
@@ -331,6 +341,27 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(out, "Distribution: %s (read from the profile), signing set %s, build profile %q\n", typ, set, profileName)
 
+	syncExtensions(cfg, out)
+	extensionPaths, _ := cmd.Flags().GetStringArray("extension-profile")
+	extensionFiles := make(map[string][]byte, len(extensionPaths))
+	for _, path := range extensionPaths {
+		path = expandPath(path)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to read provisioning profile %s: %w", path, err)
+		}
+		extensionFiles[path] = data
+	}
+	extensionPathByID, err := matchExtensionProfiles(cfg.IOS.Extensions, extensionFiles, typ)
+	if err != nil {
+		return err
+	}
+	extensionProfiles := make(map[string][]byte, len(extensionPathByID))
+	for _, id := range cfg.IOS.Extensions {
+		extensionProfiles[id] = extensionFiles[extensionPathByID[id]]
+		fmt.Fprintf(out, "Extension: %s (%s)\n", id, extensionPathByID[id])
+	}
+
 	password, _ := cmd.Flags().GetString("password")
 	p12Path := certPath
 	if isPortalCertificate(certPath) {
@@ -374,7 +405,7 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 		ctx = context.Background()
 	}
 	fmt.Fprintln(out)
-	uploadErr := uploadSigningSet(ctx, store, storeErr, cfg, out, set, certData, password, profileData)
+	uploadErr := uploadSigningSet(ctx, store, storeErr, cfg, out, set, certData, password, profileData, extensionProfiles)
 	if uploadErr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", uploadErr)
 	}
@@ -391,7 +422,7 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, signingUploadLine(cfg, names, uploadErr))
 	fmt.Fprintln(out)
-	printSigningSecretValues(out, names, p12Path, profilePath)
+	printSigningSecretValues(out, names, p12Path, profilePath, extensionPathByID)
 	fmt.Fprintln(out)
 	printSigningNext(out, profileName, typ)
 	fmt.Fprintln(out, "To build unsigned, use:")
@@ -401,6 +432,56 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 		return signingUploadFailed(cfg)
 	}
 	return nil
+}
+
+// matchExtensionProfiles pairs every extension in ios.extensions with the
+// path of the --extension-profile (path → contents) whose app id covers it.
+// Each must be of the app profile's type; an extension without a profile, or
+// a profile for no listed extension, is an error naming it.
+func matchExtensionProfiles(extensions []string, files map[string][]byte, typ signing.Type) (map[string]string, error) {
+	appIDs := make(map[string]string, len(files))
+	for _, path := range slices.Sorted(maps.Keys(files)) {
+		fileType, err := signing.ProfileType(files[path])
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		if fileType != typ {
+			return nil, fmt.Errorf("%s is a %s profile, but the app profile is %s; every extension profile must be of the same type", path, fileType, typ)
+		}
+		if appIDs[path], err = signing.ProfileBundleID(files[path]); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	}
+	// The longest app id is the most specific, so an exact profile wins over
+	// a wildcard one covering the same extension.
+	paths := slices.SortedFunc(maps.Keys(appIDs), func(a, b string) int {
+		return len(appIDs[b]) - len(appIDs[a])
+	})
+	profiles := make(map[string]string, len(extensions))
+	var problems []string
+	for _, path := range paths {
+		covered := false
+		for _, id := range extensions {
+			if signing.Covers(appIDs[path], id) {
+				covered = true
+				if _, ok := profiles[id]; !ok {
+					profiles[id] = path
+				}
+			}
+		}
+		if !covered {
+			problems = append(problems, fmt.Sprintf("%s covers %s, which is not in ios.extensions", path, appIDs[path]))
+		}
+	}
+	for _, id := range extensions {
+		if _, ok := profiles[id]; !ok {
+			problems = append(problems, fmt.Sprintf("extension %s has no profile; pass --extension-profile <mobileprovision> for it", id))
+		}
+	}
+	if len(problems) > 0 {
+		return nil, fmt.Errorf("extension profiles do not match ios.extensions in builder.json:\n  %s", strings.Join(problems, "\n  "))
+	}
+	return profiles, nil
 }
 
 // manualSigningType is what the .mobileprovision says it is. A --distribution

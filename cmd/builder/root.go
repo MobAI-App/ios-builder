@@ -438,6 +438,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if cfg.IOS.BundleID == "" {
 		cfg.IOS.BundleID = detectBundleID(iosPath)
 	}
+	syncExtensions(cfg, os.Stdout)
 	if flutterVersion != "" {
 		cfg.Flutter.Version = flutterVersion
 	}

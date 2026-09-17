@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"github.com/MobAI-App/ios-builder/internal/ipa"
 	"github.com/MobAI-App/ios-builder/internal/mobai"
 	"github.com/MobAI-App/ios-builder/internal/signing"
+	"github.com/MobAI-App/ios-builder/internal/xcodeproj"
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -91,6 +93,7 @@ func runSigningAuto(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	syncExtensions(cfg, out.log)
 	devices, err := signingDevices(ctx, cmd, cfg, typ)
 	if err != nil {
 		return err
@@ -103,6 +106,9 @@ func runSigningAuto(cmd *cobra.Command) error {
 
 	// The plan, then one confirmation before anything is created.
 	fmt.Fprintf(out.log, "Bundle ID:    %s\n", bundleID)
+	if len(cfg.IOS.Extensions) > 0 {
+		fmt.Fprintf(out.log, "Extensions:   %s\n", strings.Join(cfg.IOS.Extensions, ", "))
+	}
 	fmt.Fprintf(out.log, "Distribution: %s (signing set %s)\n", typ, set)
 	fmt.Fprintf(out.log, "Profile:      %s (builder.json)\n", profileName)
 	if typ.NeedsDevices() {
@@ -144,14 +150,14 @@ func runSigningAuto(cmd *cobra.Command) error {
 
 	res := &signingAutoResult{SigningSet: set, BuildProfile: profileName, GeneratedPassword: generated}
 	res.AutoResult, err = signing.Auto(ctx, client, &signing.AutoOptions{
-		BundleID: bundleID, Type: typ, Devices: devices, KeyPEM: keyPEM, CommonName: cfg.Project,
+		BundleID: bundleID, Extensions: cfg.IOS.Extensions, Type: typ, Devices: devices, KeyPEM: keyPEM, CommonName: cfg.Project,
 		Password: password, Force: force, OutDir: outDir, Log: out.log,
 	})
 	if err != nil {
 		return finish(out, cmd, res, err, nil)
 	}
 	fmt.Fprintln(out.log)
-	uploadErr := uploadSigningSet(ctx, store, storeErr, cfg, out.log, set, res.P12, password, res.ProfileContent)
+	uploadErr := uploadSigningSet(ctx, store, storeErr, cfg, out.log, set, res.P12, password, res.ProfileContent, res.ExtensionProfiles)
 	res.SecretsUploaded = uploadErr == nil
 	res.GitHubUpload = "ok"
 	if uploadErr != nil {
@@ -194,22 +200,42 @@ func setupDistribution(cfg *config.Config, profileName, flag string) (signing.Ty
 	return signing.TypeDevelopment, nil
 }
 
-// uploadSigningSet writes the three secrets of a set to the GitHub repository
+// uploadSigningSet writes the secrets of a set to the GitHub repository
 // in builder.json. storeErr is a client that could not be built (no login),
 // reported like a failed upload since the values are printed afterwards.
-func uploadSigningSet(ctx context.Context, store secretStore, storeErr error, cfg *config.Config, log io.Writer, set string, p12 []byte, password string, profile []byte) error {
+func uploadSigningSet(ctx context.Context, store secretStore, storeErr error, cfg *config.Config, log io.Writer, set string, p12 []byte, password string, profile []byte, extensions map[string][]byte) error {
 	if storeErr != nil {
 		return storeErr
 	}
 	fmt.Fprintf(log, "Uploading secrets to %s/%s...\n", cfg.GitHub.Owner, cfg.GitHub.Repo)
-	return uploadSigningSecrets(ctx, store, cfg, log, set, p12, password, profile)
+	return uploadSigningSecrets(ctx, store, cfg, log, set, p12, password, profile, extensions)
 }
 
 // signingUploadFailed is what `signing setup` ends with when the set did not
 // reach the repository: everything is printed by then, so this only carries
 // the exit code and says what is left to do.
 func signingUploadFailed(cfg *config.Config) error {
-	return fmt.Errorf("the signing set was not uploaded to %s/%s; add the three secrets above by hand, or fix the access and run builder signing setup again", cfg.GitHub.Owner, cfg.GitHub.Repo)
+	return fmt.Errorf("the signing set was not uploaded to %s/%s; add the secrets above by hand, or fix the access and run builder signing setup again", cfg.GitHub.Owner, cfg.GitHub.Repo)
+}
+
+// syncExtensions appends the extension targets of the local Xcode project
+// that ios.extensions does not list yet, keeping what was listed by hand (a
+// managed Expo project has no project to read until the runner generates it)
+// and returning the new ones.
+func syncExtensions(cfg *config.Config, log io.Writer) []string {
+	found, err := xcodeproj.ExtensionBundleIDs(cfg.IOS.Path)
+	if err != nil {
+		fmt.Fprintf(log, "Warning: could not read the extension targets of the Xcode project: %v. List their bundle IDs in ios.extensions in builder.json.\n", err)
+		return nil
+	}
+	var added []string
+	for _, id := range found {
+		if !slices.Contains(cfg.IOS.Extensions, id) {
+			cfg.IOS.Extensions = append(cfg.IOS.Extensions, id)
+			added = append(added, id)
+		}
+	}
+	return added
 }
 
 // writeSigningProfile creates or updates the builder.json profile that builds
@@ -434,10 +460,12 @@ type secretStore interface {
 	ListSecretNames(ctx context.Context, owner, repo string) ([]string, error)
 }
 
-// uploadSigningSecrets encrypts and stores the three signing secrets of a set
+// uploadSigningSecrets encrypts and stores the signing secrets of a set
 // (IOS_CERTIFICATE_<SET>, ...). Other sets, and the unsuffixed secrets of
-// repositories set up before signing sets, are left alone.
-func uploadSigningSecrets(ctx context.Context, gh secretStore, cfg *config.Config, log io.Writer, set string, p12 []byte, password string, profile []byte) error {
+// repositories set up before signing sets, are left alone. The extension
+// profiles are written even when empty, so a removed extension's profile
+// does not linger in the repository.
+func uploadSigningSecrets(ctx context.Context, gh secretStore, cfg *config.Config, log io.Writer, set string, p12 []byte, password string, profile []byte, extensions map[string][]byte) error {
 	publicKey, err := gh.GetPublicKey(ctx, cfg.GitHub.Owner, cfg.GitHub.Repo)
 	if err != nil {
 		return fmt.Errorf("failed to get repository public key: %w", err)
@@ -447,6 +475,7 @@ func uploadSigningSecrets(ctx context.Context, gh secretStore, cfg *config.Confi
 		{names.Certificate, base64.StdEncoding.EncodeToString(p12)},
 		{names.Password, password},
 		{names.Profile, base64.StdEncoding.EncodeToString(profile)},
+		{names.Extensions, signing.EncodeExtensionProfiles(extensions)},
 	}
 	for _, s := range secrets {
 		encrypted, err := github.EncryptSecret(publicKey.Key, s.value)
@@ -462,14 +491,18 @@ func uploadSigningSecrets(ctx context.Context, gh secretStore, cfg *config.Confi
 }
 
 // missingSigningSecrets names the secrets of a set that the repository does
-// not hold.
+// not hold; the extension profiles only count when the app has extensions.
 func missingSigningSecrets(ctx context.Context, gh secretStore, cfg *config.Config, set string) ([]string, error) {
 	have, err := gh.ListSecretNames(ctx, cfg.GitHub.Owner, cfg.GitHub.Repo)
 	if err != nil {
 		return nil, err // names the repository already
 	}
+	names := config.SigningSecretNames(set)
 	var missing []string
-	for _, name := range config.SigningSecretNames(set).Names() {
+	for _, name := range names.Names() {
+		if name == names.Extensions && len(cfg.IOS.Extensions) == 0 {
+			continue
+		}
 		if !slices.Contains(have, name) {
 			missing = append(missing, name)
 		}
@@ -502,14 +535,22 @@ func ensureSigningSecrets(ctx context.Context, cfg *config.Config, store secretS
 		return nil
 	}
 	typ, set := signing.Type(s.Distribution), s.SigningSet()
+	// A secret's contents cannot be read back, so an extension target that
+	// appeared since builder.json last listed it is provisioned like a
+	// missing secret.
+	newExtensions := syncExtensions(cfg, log)
 	missing, err := missingSigningSecrets(ctx, store, cfg, set)
 	if err != nil {
 		return err
 	}
-	if len(missing) == 0 {
+	if len(missing) == 0 && len(newExtensions) == 0 {
 		return nil
 	}
-	fmt.Fprintf(log, "Profile %q signs with set %s, but %s/%s is missing %s.\n", s.Profile, set, cfg.GitHub.Owner, cfg.GitHub.Repo, strings.Join(missing, ", "))
+	if len(missing) > 0 {
+		fmt.Fprintf(log, "Profile %q signs with set %s, but %s/%s is missing %s.\n", s.Profile, set, cfg.GitHub.Owner, cfg.GitHub.Repo, strings.Join(missing, ", "))
+	} else {
+		fmt.Fprintf(log, "Profile %q signs with set %s, but the Xcode project has extension targets the set has no profile for: %s.\n", s.Profile, set, strings.Join(newExtensions, ", "))
+	}
 	manual := fmt.Sprintf("builder signing setup --certificate <p12> --profile <mobileprovision> --name %s", s.Profile)
 	if typ == signing.TypeEnterprise {
 		return fmt.Errorf("enterprise (in-house) profiles are not issued through the App Store Connect API; upload the files from the portal with %s", manual)
@@ -533,7 +574,7 @@ func ensureSigningSecrets(ctx context.Context, cfg *config.Config, store secretS
 	}
 	fmt.Fprintf(log, "Provisioning %s signing for %s through App Store Connect...\n", typ, bundleID)
 	res, err := signing.Auto(ctx, client, &signing.AutoOptions{
-		BundleID: bundleID, Type: typ, KeyPEM: keyPEM, CommonName: cfg.Project, Password: password, OutDir: dirs[0], Log: log,
+		BundleID: bundleID, Extensions: cfg.IOS.Extensions, Type: typ, KeyPEM: keyPEM, CommonName: cfg.Project, Password: password, OutDir: dirs[0], Log: log,
 	})
 	if err != nil {
 		if keyPath == "" && certificateRefused(err) {
@@ -546,13 +587,15 @@ func ensureSigningSecrets(ctx context.Context, cfg *config.Config, store secretS
 	// A build cannot go on without the set in the repository, so here the
 	// upload is fatal.
 	fmt.Fprintln(log)
-	if err := uploadSigningSet(ctx, store, nil, cfg, log, set, res.P12, password, res.ProfileContent); err != nil {
+	if err := uploadSigningSet(ctx, store, nil, cfg, log, set, res.P12, password, res.ProfileContent, res.ExtensionProfiles); err != nil {
 		return err
 	}
 	fmt.Fprintln(log)
 	printSigningFiles(log, res, password)
-	if cfg.IOS.BundleID == "" {
-		cfg.IOS.BundleID = bundleID
+	if cfg.IOS.BundleID == "" || len(newExtensions) > 0 {
+		if cfg.IOS.BundleID == "" {
+			cfg.IOS.BundleID = bundleID
+		}
 		if err := config.NewManager().Save(cfg); err != nil {
 			return fmt.Errorf("failed to update config: %w", err)
 		}
@@ -576,6 +619,9 @@ func printSigningFiles(w io.Writer, res *signing.AutoResult, generatedPassword s
 	}
 	fmt.Fprintf(w, "Certificate: %s\n", res.Files.P12)
 	fmt.Fprintf(w, "Profile:     %s\n", res.Files.Profile)
+	for i := range res.Extensions {
+		fmt.Fprintf(w, "Extension:   %s\n", res.Extensions[i].File)
+	}
 	if generatedPassword != "" {
 		fmt.Fprintf(w, "Password:    %s (generated; shown only now)\n", generatedPassword)
 	}
@@ -599,13 +645,19 @@ func printSigningSummary(w io.Writer, cfg *config.Config, res *signingAutoResult
 		fmt.Fprintf(w, "Devices:     %d in the profile, %d registered now\n", res.Devices.InProfile, len(res.Devices.Registered))
 	}
 	fmt.Fprintf(w, "Profile:     %s (%s, %s, expires %s)\n", res.Profile.Name, state(res.Profile.Created, res.Profile.Reason), strings.ToLower(res.Profile.State), res.Profile.ExpirationDate.Format("2006-01-02"))
+	extensionFiles := map[string]string{}
+	for i := range res.Extensions {
+		ext := &res.Extensions[i]
+		fmt.Fprintf(w, "Extension:   %s (App ID %s, profile %s, expires %s)\n", ext.BundleID.Identifier, state(ext.BundleID.Created, ""), state(ext.Profile.Created, ext.Profile.Reason), ext.Profile.ExpirationDate.Format("2006-01-02"))
+		extensionFiles[ext.BundleID.Identifier] = ext.File
+	}
 	fmt.Fprintln(w)
 	printSigningFiles(w, res.AutoResult, res.GeneratedPassword)
 	fmt.Fprintln(w)
 	names := config.SigningSecretNames(res.SigningSet)
 	fmt.Fprintln(w, signingUploadLine(cfg, names, uploadErr))
 	fmt.Fprintln(w)
-	printSigningSecretValues(w, names, res.Files.P12, res.Files.Profile)
+	printSigningSecretValues(w, names, res.Files.P12, res.Files.Profile, extensionFiles)
 	fmt.Fprintln(w)
 	printSigningNext(w, res.BuildProfile, res.Type)
 	fmt.Fprintln(w, "Run builder signing setup again any time: it reuses what is valid and renews only what expired or changed.")
@@ -616,17 +668,27 @@ func signingUploadLine(cfg *config.Config, names config.SigningSecrets, uploadEr
 	if uploadErr != nil {
 		return fmt.Sprintf("Secrets were NOT uploaded to %s/%s: %v", cfg.GitHub.Owner, cfg.GitHub.Repo, uploadErr)
 	}
-	return fmt.Sprintf("Secrets %s, %s and %s uploaded to %s/%s.", names.Certificate, names.Password, names.Profile, cfg.GitHub.Owner, cfg.GitHub.Repo)
+	return fmt.Sprintf("Secrets %s uploaded to %s/%s.", strings.Join(names.Names(), ", "), cfg.GitHub.Owner, cfg.GitHub.Repo)
 }
 
-// printSigningSecretValues names the three secrets of the set and where their
+// printSigningSecretValues names the secrets of the set and where their
 // values come from, whether or not the upload worked: Codemagic, Bitrise and a
 // repository this token cannot write to are set by hand.
-func printSigningSecretValues(w io.Writer, names config.SigningSecrets, p12Path, profilePath string) {
+func printSigningSecretValues(w io.Writer, names config.SigningSecrets, p12Path, profilePath string, extensionFiles map[string]string) {
 	fmt.Fprintln(w, "Set them by hand wherever Builder cannot (Codemagic, Bitrise, a repository this login cannot write to):")
-	fmt.Fprintf(w, "  %-*s  base64 of %s\n", len(names.Password), names.Certificate, p12Path)
-	fmt.Fprintf(w, "  %s  the .p12 password\n", names.Password)
-	fmt.Fprintf(w, "  %-*s  base64 of %s\n", len(names.Password), names.Profile, profilePath)
+	width := len(names.Extensions)
+	fmt.Fprintf(w, "  %-*s  base64 of %s\n", width, names.Certificate, p12Path)
+	fmt.Fprintf(w, "  %-*s  the .p12 password\n", width, names.Password)
+	fmt.Fprintf(w, "  %-*s  base64 of %s\n", width, names.Profile, profilePath)
+	if len(extensionFiles) == 0 {
+		fmt.Fprintf(w, "  %s  {} (no extension targets)\n", names.Extensions)
+	} else {
+		entries := make([]string, 0, len(extensionFiles))
+		for _, id := range slices.Sorted(maps.Keys(extensionFiles)) {
+			entries = append(entries, fmt.Sprintf("%q: base64 of %s", id, extensionFiles[id]))
+		}
+		fmt.Fprintf(w, "  %s  JSON object {%s}\n", names.Extensions, strings.Join(entries, ", "))
+	}
 	fmt.Fprintf(w, "Steps: %s\n", providerSecretsDoc)
 }
 

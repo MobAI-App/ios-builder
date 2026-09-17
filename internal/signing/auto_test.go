@@ -1,6 +1,7 @@
 package signing
 
 import (
+	"bytes"
 	"context"
 	"crypto/rsa"
 	"os"
@@ -359,5 +360,61 @@ func TestBundleIDName(t *testing.T) {
 		if got := bundleIDName(in); got != want {
 			t.Errorf("bundleIDName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// An app with extensions gets one App ID and one profile per extension, all
+// of the app's type, on the same certificate and devices; the second run
+// reuses them all.
+func TestAutoProvisionsExtensions(t *testing.T) {
+	p := signingtest.New(t)
+	p.BundleIDs = []string{"com.example.app.widget"}
+	dir := t.TempDir()
+	opts := devOpts(dir)
+	opts.Extensions = []string{"com.example.app.widget", "com.example.app.share"}
+	res := run(t, p, opts)
+
+	if len(res.Extensions) != 2 || res.Extensions[0].BundleID.Created || !res.Extensions[1].BundleID.Created {
+		t.Fatalf("extensions = %+v", res.Extensions)
+	}
+	if p.Count("POST /v1/profiles") != 3 || p.Count("POST /v1/certificates") != 1 || len(p.Profiles) != 3 {
+		t.Errorf("calls = %v", p.Calls())
+	}
+	for i, id := range opts.Extensions {
+		ext := res.Extensions[i]
+		if !ext.Profile.Created || ext.Profile.Name != "Builder development "+id || ext.Profile.Type != asc.ProfileTypeIOSAppDevelopment {
+			t.Errorf("%s: profile = %+v", id, ext.Profile)
+		}
+		if ext.File != filepath.Join(dir, "Builder-development-"+id+".mobileprovision") {
+			t.Errorf("%s: file = %s", id, ext.File)
+		}
+		if data, err := os.ReadFile(ext.File); err != nil || !bytes.Equal(data, res.ExtensionProfiles[id]) || !strings.HasPrefix(string(data), "profile:") {
+			t.Errorf("%s: file %q, %v, secret %q", id, data, err, res.ExtensionProfiles[id])
+		}
+	}
+	for _, pr := range p.Profiles {
+		if !slices.Equal(pr.CertIDs, []string{res.Certificate.ID}) || len(pr.DeviceIDs) != 1 {
+			t.Errorf("profile %s: certificates %v, devices %v", pr.Name, pr.CertIDs, pr.DeviceIDs)
+		}
+	}
+
+	keyPEM, err := os.ReadFile(res.Files.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts.KeyPEM = keyPEM
+	again := run(t, p, opts)
+	for _, call := range p.Calls() {
+		if strings.HasPrefix(call, "POST") || strings.HasPrefix(call, "DELETE") {
+			t.Errorf("second run made %s", call)
+		}
+	}
+	if again.Extensions[0].Profile.Created || again.Extensions[1].Profile.Created || len(again.ExtensionProfiles) != 2 {
+		t.Errorf("second run = %+v", again.Extensions)
+	}
+	// No extensions: nothing extra, and an empty map to encode as {}.
+	opts.Extensions = nil
+	if none := run(t, p, opts); len(none.Extensions) != 0 || EncodeExtensionProfiles(none.ExtensionProfiles) != "{}" {
+		t.Errorf("no extensions = %+v", none.Extensions)
 	}
 }

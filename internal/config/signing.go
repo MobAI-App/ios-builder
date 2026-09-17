@@ -54,19 +54,25 @@ func SigningSet(distribution string) (string, error) {
 	return strings.ToUpper(strings.ReplaceAll(d, "-", "_")), nil
 }
 
-// SigningSecrets names the three secrets of a signing set.
+// SigningSecrets names the secrets of a signing set.
 type SigningSecrets struct {
 	Certificate string // base64 .p12
 	Password    string // the .p12 password
-	Profile     string // base64 .mobileprovision
+	Profile     string // base64 .mobileprovision of the app
+	// Extensions is a JSON object of extension bundle id to base64
+	// .mobileprovision; {} when the app has none. A build needs it only when
+	// ios.extensions is non-empty.
+	Extensions string
 }
 
-// Names lists the three secret names in the order they are written.
-func (s SigningSecrets) Names() []string { return []string{s.Certificate, s.Password, s.Profile} }
+// Names lists the secret names in the order they are written.
+func (s SigningSecrets) Names() []string {
+	return []string{s.Certificate, s.Password, s.Profile, s.Extensions}
+}
 
 // SigningSecretNames returns the secret names of a set: IOS_CERTIFICATE_<SET>,
-// IOS_CERTIFICATE_PASSWORD_<SET> and IOS_PROVISIONING_PROFILE_<SET>. The empty
-// set names the unsuffixed legacy secrets.
+// IOS_CERTIFICATE_PASSWORD_<SET>, IOS_PROVISIONING_PROFILE_<SET> and
+// IOS_EXTENSION_PROFILES_<SET>. The empty set names the unsuffixed legacy secrets.
 func SigningSecretNames(set string) SigningSecrets {
 	suffix := ""
 	if set != "" {
@@ -76,6 +82,7 @@ func SigningSecretNames(set string) SigningSecrets {
 		Certificate: "IOS_CERTIFICATE" + suffix,
 		Password:    "IOS_CERTIFICATE_PASSWORD" + suffix,
 		Profile:     "IOS_PROVISIONING_PROFILE" + suffix,
+		Extensions:  "IOS_EXTENSION_PROFILES" + suffix,
 	}
 }
 

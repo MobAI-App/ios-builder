@@ -136,11 +136,16 @@ type KMPConfig struct {
 type IOSConfig struct {
 	// Path to iOS project relative to repo root (e.g., "ios" for React Native, "platforms/ios" for Cordova)
 	// Empty means root directory contains the Xcode project
-	Path          string `json:"path,omitempty"`
-	Scheme        string `json:"scheme,omitempty"`        // Xcode scheme to build (auto-detected if empty)
-	BundleID      string `json:"bundleId,omitempty"`      // App bundle identifier, for signing setup (detected by init when unambiguous)
-	Signing       bool   `json:"signing,omitempty"`       // Legacy: sign builds without a profile with the unsuffixed IOS_* secrets
-	Configuration string `json:"configuration,omitempty"` // Build configuration: Debug (faster) or Release (production)
+	Path     string `json:"path,omitempty"`
+	Scheme   string `json:"scheme,omitempty"`   // Xcode scheme to build (auto-detected if empty)
+	BundleID string `json:"bundleId,omitempty"` // App bundle identifier, for signing setup (detected by init when unambiguous)
+	// Extensions are the bundle identifiers of the app's extension targets
+	// (widgets, share/notification extensions, watch apps, app clips), each of
+	// which signing setup provisions a profile for. init and signing setup fill
+	// it from the local Xcode project; a managed Expo project lists them by hand.
+	Extensions    []string `json:"extensions,omitempty"`
+	Signing       bool     `json:"signing,omitempty"`       // Legacy: sign builds without a profile with the unsuffixed IOS_* secrets
+	Configuration string   `json:"configuration,omitempty"` // Build configuration: Debug (faster) or Release (production)
 }
 
 // MobAIConfig holds MobAI settings for local development
