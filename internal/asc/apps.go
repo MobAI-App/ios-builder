@@ -54,4 +54,3 @@ func (c *Client) ListApps(ctx context.Context) ([]App, error) {
 	}
 	return apps, nil
 }
-
