@@ -32,8 +32,12 @@ go install ./cmd/builder
 ./builder dev rn --skip-install --bundle-id <id>       # Use already installed app
 ./builder auth apple        # Save an App Store Connect API key
 ./builder ios upload --wait # Upload dist/*.ipa to App Store Connect, wait for processing
-./builder ios submit --testflight --group <name> --notes <text>  # TestFlight
+./builder ios submit --testflight --group <name> --notes <text>  # TestFlight (creates the group if missing)
 ./builder ios submit --app-store --release after-approval        # App Review
+./builder asc apps|builds|groups|testers|users                   # App Store Connect listings (--json)
+./builder asc groups create <name> [--external]                  # also: groups delete, groups add-build
+./builder asc testers add <email>... --group <name>              # also: testers remove, users invite
+./builder asc builds expire --build-number N --yes
 ```
 
 ## Architecture
@@ -135,8 +139,9 @@ cmd/builder/         # CLI entrypoint (Cobra)
 internal/
   auth/              # GitHub OAuth device flow + keyring storage (also CI tokens, ASC API key)
   github/            # GitHub REST API (workflow dispatch, artifacts)
-  asc/               # App Store Connect API client (JWT, JSON:API, builds, uploads, TestFlight, review)
-  distribute/        # Upload / TestFlight / App Store flows on top of asc
+  asc/               # App Store Connect API client (JWT, JSON:API, apps, builds, uploads, TestFlight,
+                     #   beta groups, beta testers, team users/invitations, review)
+  distribute/        # Upload / TestFlight / App Store / tester flows on top of asc
   ipa/               # Info.plist reading from .ipa archives
   build/             # Build coordination (snapshot + trigger + poll + download)
   signing/           # CSR generation and .p12 assembly (signing without a Mac)
@@ -224,6 +229,26 @@ internal/
   chosen group is external and none exists) → add groups. App Store reuses an open
   `reviewSubmission` (READY_FOR_REVIEW/UNRESOLVED_ISSUES), skips the item when the version is
   already in it, and rewrites ASC 409/422 with a "complete the metadata" hint.
+- **Group Auto-Create**: `SubmitTestFlight` creates any `--group` name the app lacks (internal,
+  or external with `External`/`--external`); existing groups keep their type. `GroupRef.Created`
+  marks them in the JSON result. `asc groups add-build` reuses `SubmitTestFlight`, so it inherits
+  this and the beta-review step.
+- **Automatic Distribution Groups**: an internal group with `hasAccessToAllBuilds: true` gets every
+  build by itself and `POST builds/{id}/relationships/betaGroups` answers 422 for it. The add-build
+  path skips such groups with a note (`GroupRef.AutoBuilds`, exit 0); `asc groups create` sends
+  `hasAccessToAllBuilds: true` for internal groups unless `--no-auto-builds`.
+- **Internal Testers**: internal groups take team members only. `distribute.AddTester` routes by
+  group type: external → `asc.Client.AddBetaTester` (POST `betaTesters` with the group, 409 → find
+  by email → POST `betaGroups/{id}/relationships/betaTesters`); internal → `GET users?filter
+  [username]`, then the member's tester record joins the group, or a stranger gets
+  `POST userInvitations` (`CUSTOMER_SUPPORT`, `visibleApps` = this app) and the status
+  `team_invite_sent`/`team_invite_pending`; the build reaches them only after they accept and the
+  command reruns. Apple's email/username filters are substring matches, so `Find*` compare exactly.
+- **asc Command Layer**: `cmd/builder/asc.go` is thin cobra over `asc` and `distribute`. The app is
+  resolved once by `resolveBundleID` (`--bundle-id` → `ios.bundleId` in builder.json → newest
+  `dist/*.ipa`); `getASCClient` is a package var so command tests point it at an httptest server.
+  Listings are `[]row` structs with snake_case JSON tags and `text/tabwriter` columns; builds use
+  `include=preReleaseVersion,betaGroups` and the `included` block (`collect`/`includedAttr`).
 - **Extension Points**: a future `ios release` (upload + TestFlight, automatic build numbers)
   composes `distribute.Upload` and `distribute.SubmitTestFlight` and reads `asc.Client.ListBuilds`
   for the latest build number; the `pkg/` wrappers do not expose `asc` yet.
@@ -236,9 +261,11 @@ internal/
   "project": "MyApp",
   "platform": "ios",
   "github": { "owner": "username", "repo": "my-ios-app" },
-  "ios": { "path": "ios", "scheme": "" }
+  "ios": { "path": "ios", "scheme": "", "bundleId": "com.example.myapp" }
 }
 ```
+
+`ios.bundleId` is optional; the `asc` commands fall back to the newest IPA in `./dist/`.
 
 ## Workflow Features
 
