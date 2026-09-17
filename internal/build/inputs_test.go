@@ -60,7 +60,7 @@ func TestGitHubInputsMapping(t *testing.T) {
 	c := NewCoordinatorWithOutput(profiledConfig(), nil, io.Discard)
 
 	s, _, _ := c.settings("", "", false)
-	got := c.buildInputs("abcdef12", "refs/ios-builder/jobs/abcdef12", s)
+	got := c.buildInputs("abcdef12", "refs/ios-builder/jobs/abcdef12", s, "")
 	want := map[string]string{
 		"build_id": "abcdef12", "snapshot_ref": "refs/ios-builder/jobs/abcdef12",
 		"ios_path": "ios", "scheme": "App", "configuration": "Debug", "flutter_version": "3.24.0",
@@ -70,8 +70,8 @@ func TestGitHubInputsMapping(t *testing.T) {
 	}
 
 	s, _, _ = c.settings("preview", "", false)
-	got = c.buildInputs("abcdef12", "ref", s)
-	if got["scheme"] != "AppPreview" || got["configuration"] != "Release" || got["use_signing"] != "true" {
+	got = c.buildInputs("abcdef12", "ref", s, "1.2.3+42")
+	if got["scheme"] != "AppPreview" || got["configuration"] != "Release" || got["use_signing"] != "true" || got["build_number"] != "1.2.3+42" {
 		t.Fatalf("profile not mapped: %v", got)
 	}
 	var profile struct {
@@ -88,6 +88,12 @@ func TestGitHubInputsMapping(t *testing.T) {
 	if len(got) > 10 {
 		t.Fatalf("workflow_dispatch allows at most 10 inputs, sending %d", len(got))
 	}
+	// Every declared input at once: the workflow has exactly ten.
+	c.config.KMP.JDKVersion = "17"
+	if got = c.buildInputs("abcdef12", "ref", s, "7"); len(got) != 10 {
+		t.Fatalf("expected all ten inputs, got %d: %v", len(got), got)
+	}
+	c.config.KMP.JDKVersion = ""
 
 	share := c.workflowInputs("abcdef12", "ref", s)
 	for _, k := range []string{"use_signing", "configuration"} {
@@ -112,6 +118,10 @@ func TestTriggerErrorExplainsOldWorkflow(t *testing.T) {
 	err := triggerError(rejected, map[string]string{"profile": "{}"}, WorkflowFile)
 	if !strings.Contains(err.Error(), "builder init") || !strings.Contains(err.Error(), WorkflowFile) || !errors.Is(err, rejected) {
 		t.Fatalf("old workflow not explained: %v", err)
+	}
+	err = triggerError(rejected, map[string]string{"build_number": "7"}, WorkflowFile)
+	if !strings.Contains(err.Error(), "`build_number` input") || !strings.Contains(err.Error(), "builder init") {
+		t.Fatalf("old workflow not explained for build_number: %v", err)
 	}
 	// Without the profile input the message is GitHub's, unchanged.
 	if err := triggerError(rejected, map[string]string{}, WorkflowFile); strings.Contains(err.Error(), "builder init") || !errors.Is(err, rejected) {

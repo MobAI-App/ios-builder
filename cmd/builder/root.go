@@ -20,6 +20,7 @@ import (
 	"github.com/MobAI-App/ios-builder/internal/build"
 	"github.com/MobAI-App/ios-builder/internal/config"
 	"github.com/MobAI-App/ios-builder/internal/github"
+	"github.com/MobAI-App/ios-builder/internal/release"
 	"github.com/MobAI-App/ios-builder/internal/update"
 	"github.com/MobAI-App/ios-builder/internal/workflow"
 	"github.com/manifoldco/promptui"
@@ -594,6 +595,7 @@ func init() {
 	iosBuildCmd.Flags().StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
 	iosBuildCmd.Flags().String("provider", "", "Override CI provider (default github or builder.json provider)")
 	iosBuildCmd.Flags().String("profile", "", "Build profile from builder.json (default: defaultProfile, else the top-level ios settings)")
+	iosBuildCmd.Flags().Bool("submit", false, "Also upload to App Store Connect and process for TestFlight (short for: ios release)")
 	iosCmd.AddCommand(iosBuildCmd)
 
 	// iOS share command flags
@@ -628,23 +630,25 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
 
-	outputDir, _ := cmd.Flags().GetString("output")
-	timeout, _ := cmd.Flags().GetDuration("timeout")
-	unsigned, _ := cmd.Flags().GetBool("unsigned")
-	remote, _ := cmd.Flags().GetString("remote")
-	providerFlag, _ := cmd.Flags().GetString("provider")
-	profile, _ := cmd.Flags().GetString("profile")
+	opts, err := buildOptionsFromFlags(cmd, cfg)
+	if err != nil {
+		return err
+	}
+	opts.Unsigned, _ = cmd.Flags().GetBool("unsigned")
+	submit, _ := cmd.Flags().GetBool("submit")
+	if submit {
+		if opts.Unsigned {
+			return fmt.Errorf("--submit uploads to App Store Connect, which needs a signed build; drop --unsigned")
+		}
+		return runRelease(cmd, cfg, &release.Options{Build: opts})
+	}
 
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	provider, err := effectiveProvider(cfg, profile, providerFlag)
-	if err != nil {
-		return err
-	}
-	name, err := cfg.ProviderName(provider)
+	name, err := cfg.ProviderName(opts.Provider)
 	if err != nil {
 		return err
 	}
@@ -653,14 +657,7 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 		ctx, stop = signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer stop()
 	}
-	return runBuild(ctx, cfg, &build.BuildOptions{
-		Provider:  provider,
-		Profile:   profile,
-		OutputDir: outputDir,
-		Timeout:   timeout,
-		Unsigned:  unsigned,
-		Remote:    remote,
-	})
+	return runBuild(ctx, cfg, &opts)
 }
 
 func runIOSShare(cmd *cobra.Command, args []string) error {

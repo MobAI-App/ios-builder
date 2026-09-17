@@ -63,6 +63,10 @@ type BuildOptions struct {
 	Timeout   time.Duration
 	Unsigned  bool   // Skip code signing even if configured
 	Remote    string // Git remote to push the working-tree snapshot to
+	// BuildNumber is the CFBundleVersion the runner stamps on the build, or
+	// "X.Y.Z+N" to set the marketing version too (the pubspec convention).
+	// Empty leaves the project's own.
+	BuildNumber string
 }
 
 // settings applies the selected profile, then the command flags, over
@@ -114,9 +118,11 @@ func (c *Coordinator) workflowInputs(buildID, ref string, s *config.BuildSetting
 	return inputs
 }
 
-// buildInputs are the ios-build.yml inputs: the shared ones plus signing and
-// configuration, which the simulator workflow has no use for.
-func (c *Coordinator) buildInputs(buildID, ref string, s *config.BuildSettings) map[string]string {
+// buildInputs are the ios-build.yml inputs: the shared ones plus signing,
+// configuration and the build number, which the simulator workflow has no use
+// for. build_number is only sent when set, like profile: it is the tenth and
+// last input GitHub allows, and older workflow files do not declare it.
+func (c *Coordinator) buildInputs(buildID, ref string, s *config.BuildSettings, buildNumber string) map[string]string {
 	inputs := c.workflowInputs(buildID, ref, s)
 	if s.Signing {
 		inputs["use_signing"] = "true"
@@ -125,15 +131,23 @@ func (c *Coordinator) buildInputs(buildID, ref string, s *config.BuildSettings) 
 	if s.Configuration != "" {
 		inputs["configuration"] = s.Configuration
 	}
+	if buildNumber != "" {
+		inputs["build_number"] = buildNumber
+	}
 	return inputs
 }
 
 // triggerError explains a rejected dispatch. GitHub answers 422 "Unexpected
 // inputs provided" when the committed workflow file does not declare an input,
-// which for `profile` means the file predates build profiles.
+// which for `profile` and `build_number` means the file predates them.
 func triggerError(err error, inputs map[string]string, file string) error {
-	if _, ok := inputs["profile"]; ok && strings.Contains(err.Error(), "Unexpected inputs") {
-		return fmt.Errorf("failed to trigger workflow: the committed .github/workflows/%s does not declare the `profile` input; run `builder init` to refresh it, then commit and push the workflow to the default branch: %w", file, err)
+	if !strings.Contains(err.Error(), "Unexpected inputs") {
+		return fmt.Errorf("failed to trigger workflow: %w", err)
+	}
+	for _, name := range []string{"profile", "build_number"} {
+		if _, ok := inputs[name]; ok {
+			return fmt.Errorf("failed to trigger workflow: the committed .github/workflows/%s does not declare the `%s` input; run `builder init` to refresh it, then commit and push the workflow to the default branch: %w", file, name, err)
+		}
 	}
 	return fmt.Errorf("failed to trigger workflow: %w", err)
 }
@@ -147,7 +161,8 @@ type BuildResult struct {
 	IPASize     int64
 }
 
-// Build triggers a remote build and downloads the IPA artifact
+// Build triggers a remote build and downloads the IPA artifact. opts is not
+// modified.
 func (c *Coordinator) Build(ctx context.Context, opts *BuildOptions) (*BuildResult, error) {
 	// Defaults below are filled in on a copy: opts belongs to the caller.
 	o := *opts
@@ -164,13 +179,13 @@ func (c *Coordinator) Build(ctx context.Context, opts *BuildOptions) (*BuildResu
 	}
 	startTime := time.Now()
 
-	// Set default timeout
-	if opts.Timeout == 0 {
-		opts.Timeout = DefaultTimeout
+	timeout := opts.Timeout
+	if timeout == 0 {
+		timeout = DefaultTimeout
 	}
 
 	// Create context with timeout
-	ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// Generate build ID
@@ -196,7 +211,7 @@ func (c *Coordinator) Build(ctx context.Context, opts *BuildOptions) (*BuildResu
 
 	// Step 2: Trigger workflow
 	c.progress.Update(PhaseTriggering, "Triggering GitHub Actions build...")
-	inputs := c.buildInputs(buildID, ref, settings)
+	inputs := c.buildInputs(buildID, ref, settings, opts.BuildNumber)
 	if err := c.github.TriggerWorkflow(ctx, c.config.GitHub.Owner, c.config.GitHub.Repo, WorkflowFile, inputs); err != nil {
 		err = triggerError(err, inputs, WorkflowFile)
 		c.progress.Error(PhaseTriggering, err)
@@ -220,7 +235,7 @@ func (c *Coordinator) Build(ctx context.Context, opts *BuildOptions) (*BuildResu
 	// Poll for artifact availability instead of waiting for job completion
 	// This allows us to download the IPA as soon as it's uploaded, without waiting
 	// for cache save and other post-build steps
-	artifact, err := c.github.PollForArtifact(ctx, c.config.GitHub.Owner, c.config.GitHub.Repo, run.ID, IPAArtifactName, opts.Timeout, func() {
+	artifact, err := c.github.PollForArtifact(ctx, c.config.GitHub.Owner, c.config.GitHub.Repo, run.ID, IPAArtifactName, timeout, func() {
 		c.showRunningStep(ctx, run.ID)
 	})
 	if err != nil {

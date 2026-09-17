@@ -127,9 +127,12 @@ type KMPConfig struct {
 type IOSConfig struct {
 	// Path to iOS project relative to repo root (e.g., "ios" for React Native, "platforms/ios" for Cordova)
 	// Empty means root directory contains the Xcode project
-	Path          string `json:"path,omitempty"`
-	Scheme        string `json:"scheme,omitempty"`        // Xcode scheme to build (auto-detected if empty)
-	BundleID      string `json:"bundleId,omitempty"`      // App bundle identifier, for signing setup (detected by init when unambiguous)
+	Path   string `json:"path,omitempty"`
+	Scheme string `json:"scheme,omitempty"` // Xcode scheme to build (auto-detected if empty)
+	// BundleID is the app bundle identifier, for signing setup and to find the
+	// App Store Connect app in `ios release` before any IPA exists (detected by
+	// init when unambiguous; otherwise the newest IPA in the output directory).
+	BundleID      string `json:"bundleId,omitempty"`
 	Signing       bool   `json:"signing,omitempty"`       // Legacy: sign builds without a profile with the unsuffixed IOS_* secrets
 	Configuration string `json:"configuration,omitempty"` // Build configuration: Debug (faster) or Release (production)
 }

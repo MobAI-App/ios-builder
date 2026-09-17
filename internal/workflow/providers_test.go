@@ -169,15 +169,20 @@ fi
 		cmd := exec.Command("/bin/bash", script, "build")
 		cmd.Dir = clone
 		// The profile env arrives as one JSON object and must reach the build
-		// tools as ordinary variables, values intact.
+		// tools as ordinary variables, values intact. BUILD_NUMBER=17 plays
+		// Codemagic's own build counter, which a plain build must not stamp
+		// on the app.
 		buildEnv := `{"API_URL":"https://staging.example.com","NOTES":"line one\nline \"two\""}`
-		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "SNAPSHOT_REF="+ref, "SNAPSHOT_SHA="+sha, "BUILD_ID=abcdef12", "IOS_PATH=.", "USE_SIGNING=false", "CONFIGURATION=Debug", "SCHEME="+scheme, "SCHEME_LOG="+filepath.Join(dir, "scheme.log"), "BUILDER_CI_DIR="+filepath.Join(dir, "state"),
+		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "SNAPSHOT_REF="+ref, "SNAPSHOT_SHA="+sha, "BUILD_ID=abcdef12", "IOS_PATH=.", "USE_SIGNING=false", "CONFIGURATION=Debug", "BUILD_NUMBER=17", "SCHEME="+scheme, "SCHEME_LOG="+filepath.Join(dir, "scheme.log"), "BUILDER_CI_DIR="+filepath.Join(dir, "state"),
 			"BUILD_ENV="+buildEnv, "DISTRIBUTION=ad-hoc", "ENV_LOG="+filepath.Join(dir, "env.log"))
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("runner: %s %v", out, err)
 		}
 		if data, err := os.ReadFile(filepath.Join(dir, "env.log")); err != nil || string(data) != "https://staging.example.com|line one\nline \"two\"|ad-hoc" {
 			t.Fatalf("profile env did not reach the build: %q %v", data, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "scheme.log.stamped")); !os.IsNotExist(err) {
+			t.Fatal("the provider's BUILD_NUMBER was stamped on a plain build")
 		}
 		if _, err := os.Stat(filepath.Join(clone, "build", "abcdef12.ipa")); err != nil {
 			t.Fatal("runner produced no IPA:", err)
@@ -465,6 +470,114 @@ func TestWorkflowTemplatesParse(t *testing.T) {
 				t.Fatalf("%s: job %s has no steps", name, job)
 			}
 		}
+	}
+}
+
+func TestApplyBuildNumber(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("macOS/Linux shell test")
+	}
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq unavailable for the xcodebuild stub")
+	}
+	runner, err := GetTemplate("runner.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := GetTemplate("ios-build.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn := shellFunc(t, string(runner), "apply_build_number") + "\n"
+	if got := shellFunc(t, string(workflow), "apply_build_number") + "\n"; got != fn {
+		t.Fatalf("apply_build_number differs between runner.sh and ios-build.yml:\n%s\n---\n%s", fn, got)
+	}
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// xcodebuild answers -showBuildSettings with the app target's plist path
+	// and records that it was asked; plutil works on key=value files.
+	stubs := map[string]string{
+		"xcodebuild": `#!/bin/bash
+echo "$@" >> "$STUB_LOG"
+printf '[{"buildSettings":{"PRODUCT_TYPE":"com.apple.product-type.application","SRCROOT":"%s","INFOPLIST_FILE":"%s"}}]\n' "$SRCROOT" "$INFOPLIST_FILE"
+`,
+		"plutil": `#!/bin/bash
+echo "plutil $@" >> "$STUB_LOG"
+case "$1" in
+  -extract) grep "^$2=" "$6" | cut -d= -f2- ;;
+  -replace) grep -v "^$2=" "$5" > "$5.tmp"; echo "$2=$4" >> "$5.tmp"; mv "$5.tmp" "$5" ;;
+  *) exit 2 ;;
+esac
+`,
+	}
+	for name, body := range stubs {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script := filepath.Join(dir, "apply.sh")
+	if err := os.WriteFile(script, []byte("set -euo pipefail\n"+fn+`apply_build_number "$@"
+printf '%s|%s|%s\n' "$build_number" "$build_name" "$version_settings"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tt := range []struct {
+		name, input, plist, want, wantPlist string
+		noPlist, fail                       bool
+	}{
+		{name: "unset leaves the build alone", input: "", want: "||"},
+		{name: "project version setting", input: "42", plist: "CFBundleVersion=$(CURRENT_PROJECT_VERSION)\n", want: "42||CURRENT_PROJECT_VERSION=42", wantPlist: "CFBundleVersion=$(CURRENT_PROJECT_VERSION)\n"},
+		{name: "flutter setting", input: "42", plist: "CFBundleVersion=$(FLUTTER_BUILD_NUMBER)\n", want: "42||CURRENT_PROJECT_VERSION=42", wantPlist: "CFBundleVersion=$(FLUTTER_BUILD_NUMBER)\n"},
+		{name: "hardcoded plist", input: "1.2.3+42", plist: "CFBundleVersion=7\nCFBundleShortVersionString=1.0\n", want: "42|1.2.3|CURRENT_PROJECT_VERSION=42 MARKETING_VERSION=1.2.3", wantPlist: "CFBundleVersion=42\nCFBundleShortVersionString=1.2.3\n"},
+		{name: "brace setting", input: "1.2.3+42", plist: "CFBundleVersion=${CURRENT_PROJECT_VERSION}\nCFBundleShortVersionString=${MARKETING_VERSION}\n", want: "42|1.2.3|CURRENT_PROJECT_VERSION=42 MARKETING_VERSION=1.2.3", wantPlist: "CFBundleVersion=${CURRENT_PROJECT_VERSION}\nCFBundleShortVersionString=${MARKETING_VERSION}\n"},
+		{name: "generated plist", input: "42", noPlist: true, want: "42||CURRENT_PROJECT_VERSION=42"},
+		{name: "rejects shell metacharacters", input: "42; touch pwned", fail: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			work := t.TempDir()
+			plist := filepath.Join(work, "Info.plist")
+			infoPlistFile := "Info.plist"
+			if tt.noPlist {
+				infoPlistFile = ""
+			} else if err := os.WriteFile(plist, []byte(tt.plist), 0644); err != nil {
+				t.Fatal(err)
+			}
+			log := filepath.Join(work, "stub.log")
+			cmd := exec.Command("bash", script, "-project", "App.xcodeproj", "-scheme", "App")
+			cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"BUILD_NUMBER="+tt.input, "SRCROOT="+work, "INFOPLIST_FILE="+infoPlistFile, "STUB_LOG="+log)
+			out, err := cmd.CombinedOutput()
+			if tt.fail {
+				if err == nil {
+					t.Fatalf("accepted %q: %s", tt.input, out)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("%s %v", out, err)
+			}
+			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+			if got := lines[len(lines)-1]; got != tt.want {
+				t.Errorf("result = %q, want %q\n%s", got, tt.want, out)
+			}
+			calls, _ := os.ReadFile(log)
+			if tt.input == "" && len(calls) != 0 {
+				t.Errorf("tools invoked without a build number: %s", calls)
+			}
+			if tt.noPlist && strings.Contains(string(calls), "plutil") {
+				t.Errorf("plutil run without a plist: %s", calls)
+			}
+			if tt.wantPlist != "" {
+				if got, _ := os.ReadFile(plist); string(got) != tt.wantPlist {
+					t.Errorf("plist = %q, want %q", got, tt.wantPlist)
+				}
+			}
+		})
 	}
 }
 

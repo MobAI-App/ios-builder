@@ -137,6 +137,11 @@ func (c *Coordinator) buildRemote(ctx context.Context, opts *BuildOptions, s *co
 		return nil, err
 	}
 	v := c.inputs(buildID, ref, sha, s)
+	// Not BUILD_NUMBER: Codemagic predefines that as its own build counter,
+	// and runner.sh must see nothing on a plain build.
+	if opts.BuildNumber != "" {
+		v["BUILDER_BUILD_NUMBER"] = opts.BuildNumber
+	}
 	c.progress.Update(PhaseTriggering, "Triggering "+p.Name()+" build...")
 	run, err := p.Start(ctx, ci.Request{Workflow: cfgCI.BuildWorkflow, Variables: v})
 	if err != nil {

@@ -209,13 +209,16 @@ builder signing csr           # Manual path: create a private key + certificate 
 builder signing p12           # Manual path: assemble a .p12 from the key and Apple's certificate
 
 # TestFlight and App Store (needs builder auth apple)
+builder ios release --group "Beta Testers" --notes "What to test"  # Build with the next build number, upload, wait, add to TestFlight
+builder ios release --app-store --release after-approval  # Same, then submit the version for App Review
+builder ios build --submit    # Short for: ios release (TestFlight, no groups)
 builder ios upload --wait     # Upload ./dist/*.ipa to App Store Connect and wait for processing
 builder ios submit --testflight --group "Beta Testers" --notes "What to test"
 builder ios submit --app-store --release after-approval  # Submit the version for App Review
 ```
 
-Every `upload`/`submit` command takes `--json` for machine-readable output and
-never prompts, so agents and CI jobs can drive them.
+Every `release`/`upload`/`submit` command takes `--json` for machine-readable
+output and never prompts, so agents and CI jobs can drive them.
 
 ## Configuration
 
@@ -260,7 +263,7 @@ never prompts, so agents and CI jobs can drive them.
 |-------|-------------|---------|
 | `ios.path` | Path to the Xcode project relative to the repo root | detected by `init` |
 | `ios.scheme` | Xcode scheme to build | auto-detected |
-| `ios.bundleId` | App bundle identifier, used by `signing setup` | detected by `init` when the project has one app target; else saved by `signing setup` |
+| `ios.bundleId` | App bundle identifier, used by `signing setup` and by `ios release` to find the App Store Connect app before the first IPA exists | detected by `init` when the project has one app target; else saved by `signing setup`, else the newest IPA in `./dist/` |
 | `ios.configuration` | Xcode build configuration. **Builds are `Debug` unless you set `Release`**; Debug is faster and is what the dev commands expect | `Debug` |
 | `ios.signing` | Legacy: sign builds that select no profile, with the unsuffixed `IOS_CERTIFICATE`, `IOS_CERTIFICATE_PASSWORD` and `IOS_PROVISIONING_PROFILE` secrets. Profiles ignore it; use `distribution` there | `false` |
 
@@ -619,7 +622,7 @@ Two things Apple checks on every upload:
 
 - **Build numbers must increase.** A second upload with the same
   `CFBundleVersion` for the same version is rejected (`ITMS-90189`), so bump
-  it before rebuilding.
+  it before rebuilding — or let `ios release` (below) pick the next one.
 - **Export compliance.** A build shows as *Missing Compliance* in TestFlight
   until you say whether it uses non-exempt encryption. If your Info.plist sets
   `ITSAppUsesNonExemptEncryption` to `false`, `upload --wait` answers that
@@ -654,6 +657,40 @@ screenshots or in-app purchases; fill them in App Store Connect, or on a Mac
 with [asc-cli](https://github.com/tddworks/asc-cli), whose production use of
 the `buildUploads` API also proved that the Mac-free upload path works and
 served as the reference for Builder's implementation.
+
+### 5. Or all of it in one command: release
+
+```bash
+builder ios release --group "Beta Testers" --notes "New login flow"
+builder ios release --app-store --release after-approval
+builder ios build --submit     # TestFlight release with no groups
+```
+
+`release` runs steps 2 to 4 back to back: build, download, upload, wait for
+processing, then TestFlight (default) or `--app-store`, with the same flags as
+`submit`. Before dispatching anything it checks that an API key is saved,
+`ios.signing` is `true` and `ios.configuration` is `Release`, and reports the
+first thing missing.
+
+It also solves the build-number problem. Builder asks App Store Connect for the
+app's builds, takes the highest `CFBundleVersion` across all versions and
+builds with the next one (`1` for a new app); `--build-number N` overrides it
+and `--version X.Y.Z` sets the marketing version too. The number reaches the
+runner as the `build_number` workflow input and is applied per project type:
+`flutter build ios --build-number`, `CURRENT_PROJECT_VERSION` (and
+`MARKETING_VERSION`) on every `xcodebuild archive`, and for an Info.plist that
+hardcodes `CFBundleVersion` instead of `$(CURRENT_PROJECT_VERSION)`, an in-place
+edit before archiving — the build log says which. After the download Builder
+reads the IPA and refuses to upload one whose `CFBundleVersion` is not the
+requested number.
+
+To find the app before the first IPA exists, set `ios.bundleId` in
+`builder.json` or pass `--bundle-id`; afterwards the newest IPA in `./dist/`
+is enough. The workflow file must have the `build_number` input, so repos set
+up before this feature need `builder init` once more and a push to the default
+branch. `--timeout` bounds the build and then the App Store Connect wait
+separately; `--json` prints one object with the build ID, App Store Connect
+build ID, version, build number and groups.
 
 ## Installing the IPA
 

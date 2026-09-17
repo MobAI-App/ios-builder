@@ -57,6 +57,12 @@ on:
         required: false
         type: string
         default: '{}'
+      # The tenth and last input workflow_dispatch allows; combine before adding.
+      build_number:
+        description: 'CFBundleVersion to stamp on the build: N, or X.Y.Z+N to set the marketing version too. Empty leaves the project as is.'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   build:
@@ -96,6 +102,7 @@ jobs:
           IN_FLUTTER_VERSION: ${{ inputs.flutter_version }}
           IN_JDK_VERSION: ${{ inputs.jdk_version }}
           IN_PROFILE: ${{ inputs.profile }}
+          IN_BUILD_NUMBER: ${{ inputs.build_number }}
         run: |
           set -e
           PROFILE=""
@@ -128,6 +135,8 @@ jobs:
           param configuration    "$IN_CONFIGURATION" '(.profiles[$p].configuration // (if $p != "" and (.profiles[$p].distribution // "") != "" then (if .profiles[$p].distribution == "development" then "Debug" else "Release" end) else .ios.configuration end))' 'Debug'
           param flutter_version  "$IN_FLUTTER_VERSION" '.flutter.version' ''
           param jdk_version      "$IN_JDK_VERSION" '.kmp.jdkVersion' '17'
+          # A build number only comes from `builder ios release`, never builder.json.
+          param build_number     "$IN_BUILD_NUMBER" '""' ''
 
           # The rest of the profile: name (for the summary), distribution
           # (which signing set the signing step reads and which profile type
@@ -511,8 +520,53 @@ jobs:
           PROJECT_TYPE: ${{ steps.detect.outputs.type }}
           USE_SIGNING: ${{ steps.params.outputs.use_signing }}
           CONFIGURATION: ${{ steps.params.outputs.configuration }}
+          BUILD_NUMBER: ${{ steps.params.outputs.build_number }}
         run: |
           set -e
+
+          # BUILD_NUMBER is "N", or "X.Y.Z+N" to set the marketing version as
+          # well (the pubspec convention). Sets build_number, build_name and
+          # version_settings, the xcodebuild settings that carry them. Given an
+          # xcodebuild target and scheme it also rewrites an Info.plist that
+          # hardcodes CFBundleVersion, which CURRENT_PROJECT_VERSION never
+          # reaches. Same function in runner.sh; keep them identical.
+          apply_build_number() {
+            build_number="" build_name="" version_settings=""
+            [ -n "${BUILD_NUMBER:-}" ] || return 0
+            if ! [[ "$BUILD_NUMBER" =~ ^([0-9]+(\.[0-9]+)*\+)?[0-9]+(\.[0-9]+)*$ ]]; then
+              echo "BUILD_NUMBER must be N or X.Y.Z+N, got '$BUILD_NUMBER'" >&2
+              return 1
+            fi
+            build_number="${BUILD_NUMBER##*+}"
+            case "$BUILD_NUMBER" in *+*) build_name="${BUILD_NUMBER%+*}" ;; esac
+            version_settings="CURRENT_PROJECT_VERSION=$build_number${build_name:+ MARKETING_VERSION=$build_name}"
+            echo "Build number: $build_number${build_name:+ (version $build_name)}"
+            [ $# -gt 0 ] || return 0
+            plist=$(xcodebuild "$@" -showBuildSettings -json 2>/dev/null \
+              | jq -r 'map(.buildSettings)
+                       | map(select(.PRODUCT_TYPE == "com.apple.product-type.application" and .INFOPLIST_FILE != null and .INFOPLIST_FILE != ""))
+                       | map(.SRCROOT + "/" + .INFOPLIST_FILE) | first // empty' || true)
+            if [ -z "$plist" ] || [ ! -f "$plist" ]; then
+              echo "No Info.plist file in the app target; CFBundleVersion comes from CURRENT_PROJECT_VERSION"
+              return 0
+            fi
+            current=$(plutil -extract CFBundleVersion raw -o - "$plist" 2>/dev/null || true)
+            case "$current" in
+              '$(CURRENT_PROJECT_VERSION)'|'${CURRENT_PROJECT_VERSION}'|'$(FLUTTER_BUILD_NUMBER)'|'${FLUTTER_BUILD_NUMBER}')
+                echo "$plist reads CFBundleVersion from $current" ;;
+              *)
+                echo "$plist hardcodes CFBundleVersion '$current'; setting $build_number in the plist"
+                plutil -replace CFBundleVersion -string "$build_number" "$plist" ;;
+            esac
+            [ -n "$build_name" ] || return 0
+            current=$(plutil -extract CFBundleShortVersionString raw -o - "$plist" 2>/dev/null || true)
+            case "$current" in
+              '$(MARKETING_VERSION)'|'${MARKETING_VERSION}'|'$(FLUTTER_BUILD_NAME)'|'${FLUTTER_BUILD_NAME}') ;;
+              *)
+                echo "$plist hardcodes CFBundleShortVersionString '$current'; setting $build_name in the plist"
+                plutil -replace CFBundleShortVersionString -string "$build_name" "$plist" ;;
+            esac
+          }
 
           # Navigate to iOS project
           cd "$IOS_PATH"
@@ -528,15 +582,19 @@ jobs:
             WORKSPACE=$(find . -maxdepth 1 -name "*.xcworkspace" | head -1)
           fi
 
+          if [ -n "$WORKSPACE" ]; then
+            TARGET_FLAG=-workspace
+            TARGET_PATH=$WORKSPACE
+          else
+            TARGET_FLAG=-project
+            TARGET_PATH=$PROJECT
+          fi
+
           # Determine scheme (only needed for native projects)
           if [ -z "$SCHEME" ] && [ "$PROJECT_TYPE" = "native" ]; then
             if [ -n "$WORKSPACE" ]; then
-              TARGET_FLAG=-workspace
-              TARGET_PATH=$WORKSPACE
               BASE=$(basename "$WORKSPACE" .xcworkspace)
             else
-              TARGET_FLAG=-project
-              TARGET_PATH=$PROJECT
               BASE=$(basename "$PROJECT" .xcodeproj)
             fi
 
@@ -579,12 +637,17 @@ jobs:
 
           if [ "$PROJECT_TYPE" = "flutter" ]; then
             cd "$GITHUB_WORKSPACE"
+            apply_build_number
+            FLUTTER_VERSION_FLAGS=""
+            if [ -n "$build_number" ]; then
+              FLUTTER_VERSION_FLAGS="--build-number=$build_number${build_name:+ --build-name=$build_name}"
+            fi
             if [ "$CONFIGURATION" = "Debug" ]; then
               echo "Building Flutter iOS Debug..."
-              flutter build ios --debug --no-codesign
+              flutter build ios --debug --no-codesign $FLUTTER_VERSION_FLAGS
             else
               echo "Building Flutter iOS Release..."
-              flutter build ios --release --no-codesign
+              flutter build ios --release --no-codesign $FLUTTER_VERSION_FLAGS
             fi
             cd "$IOS_PATH"
 
@@ -602,11 +665,14 @@ jobs:
                 exit 1
               fi
 
+              # Flutter wrote the build number into Generated.xcconfig; this
+              # only catches a Runner Info.plist that hardcodes it.
+              apply_build_number "$TARGET_FLAG" "$TARGET_PATH" -scheme "${SCHEME:-Runner}"
               ARCHIVE_CMD="$ARCHIVE_CMD -scheme '${SCHEME:-Runner}'"
               ARCHIVE_CMD="$ARCHIVE_CMD -configuration '$CONFIGURATION'"
               ARCHIVE_CMD="$ARCHIVE_CMD -destination 'generic/platform=iOS'"
               ARCHIVE_CMD="$ARCHIVE_CMD -derivedDataPath '$DERIVED_DATA_PATH'"
-              ARCHIVE_CMD="$ARCHIVE_CMD COMPILER_INDEX_STORE_ENABLE=NO"
+              ARCHIVE_CMD="$ARCHIVE_CMD COMPILER_INDEX_STORE_ENABLE=NO $version_settings"
               ARCHIVE_CMD="$ARCHIVE_CMD DEVELOPMENT_TEAM='$DEVELOPMENT_TEAM'"
               ARCHIVE_CMD="$ARCHIVE_CMD CODE_SIGN_STYLE=Manual"
               ARCHIVE_CMD="$ARCHIVE_CMD PROVISIONING_PROFILE_SPECIFIER='$PROVISIONING_PROFILE_NAME'"
@@ -645,11 +711,12 @@ jobs:
               fi
             fi
 
+            apply_build_number "$TARGET_FLAG" "$TARGET_PATH" -scheme "$SCHEME"
             BUILD_CMD="$BUILD_CMD -scheme '$SCHEME'"
             BUILD_CMD="$BUILD_CMD -configuration '$CONFIGURATION'"
             BUILD_CMD="$BUILD_CMD -destination 'generic/platform=iOS'"
             BUILD_CMD="$BUILD_CMD -derivedDataPath '$DERIVED_DATA_PATH'"
-            BUILD_CMD="$BUILD_CMD COMPILER_INDEX_STORE_ENABLE=NO"
+            BUILD_CMD="$BUILD_CMD COMPILER_INDEX_STORE_ENABLE=NO $version_settings"
             BUILD_CMD="$BUILD_CMD -quiet"
 
             if [ "$USE_SIGNING" = "true" ]; then
@@ -673,10 +740,12 @@ jobs:
               BUILD_CMD="$BUILD_CMD -project $PROJECT"
             fi
 
+            apply_build_number "$TARGET_FLAG" "$TARGET_PATH" -scheme "$SCHEME"
             BUILD_CMD="$BUILD_CMD -scheme '$SCHEME'"
             BUILD_CMD="$BUILD_CMD -configuration '$CONFIGURATION'"
             BUILD_CMD="$BUILD_CMD -destination 'generic/platform=iOS'"
             BUILD_CMD="$BUILD_CMD -derivedDataPath '$DERIVED_DATA_PATH'"
+            BUILD_CMD="$BUILD_CMD $version_settings"
 
             # Speed optimization flags
             BUILD_CMD="$BUILD_CMD COMPILER_INDEX_STORE_ENABLE=NO"
@@ -761,13 +830,6 @@ jobs:
               # which bundle this scheme produces: the first .app under
               # Build/Products is the wrong one whenever the repo has more than
               # one app target.
-              if [ -n "$WORKSPACE" ]; then
-                TARGET_FLAG=-workspace
-                TARGET_PATH=$WORKSPACE
-              else
-                TARGET_FLAG=-project
-                TARGET_PATH=$PROJECT
-              fi
               APP_PATH=$(xcodebuild "$TARGET_FLAG" "$TARGET_PATH" \
                 -scheme "$SCHEME" \
                 -configuration "$CONFIGURATION" \
@@ -834,6 +896,7 @@ jobs:
           USE_SIGNING: ${{ steps.params.outputs.use_signing }}
           CONFIGURATION: ${{ steps.params.outputs.configuration }}
           PROFILE: ${{ steps.params.outputs.profile }}
+          BUILD_NUMBER: ${{ steps.params.outputs.build_number }}
         run: |
           echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -843,6 +906,9 @@ jobs:
             echo "- **Profile:** $PROFILE" >> $GITHUB_STEP_SUMMARY
           fi
           echo "- **Configuration:** $CONFIGURATION" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$BUILD_NUMBER" ]; then
+            echo "- **Build number:** $BUILD_NUMBER" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "- **DerivedData Cache:** ${{ steps.cache-deriveddata.outputs.cache-hit == 'true' && 'Hit' || 'Miss' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Pods Cache:** ${{ steps.pods-cache.outputs.cache-hit == 'true' && 'Hit' || 'Miss' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Node Modules Cache:** ${{ steps.node-modules-cache.outputs.cache-hit == 'true' && 'Hit' || 'N/A' }}" >> $GITHUB_STEP_SUMMARY
