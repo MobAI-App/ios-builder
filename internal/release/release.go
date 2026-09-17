@@ -1,8 +1,5 @@
-// Package release drives `builder ios release` and `builder ios build
-// --submit`: pick the next build number from App Store Connect, build with it,
-// check the IPA carries it, upload, wait for processing and hand the build to
-// TestFlight groups or App Review. It composes build and distribute; every API
-// call lives in asc.
+// Package release drives `builder ios release` and `builder ios build --submit`:
+// next build number from App Store Connect, build, verify the IPA, upload, submit.
 package release
 
 import (
@@ -28,11 +25,10 @@ type Builder interface {
 
 // Options configures Run.
 type Options struct {
-	// Build carries Profile, Provider, Remote, Timeout and OutputDir; Run sets
-	// BuildNumber and Unsigned itself. Profile (or defaultProfile) must be an
-	// App Store profile: see Preflight.
+	// Build supplies Provider, Remote, Timeout and OutputDir; Run sets
+	// BuildNumber, Unsigned and the Profile Preflight settles on itself.
 	Build build.BuildOptions
-	// BundleID identifies the app before the IPA exists. Empty falls back to
+	// BundleID identifies the app before the IPA exists; empty means
 	// ios.bundleId in builder.json, then the newest IPA in the output directory.
 	BundleID string
 	// BuildNumber overrides the automatic next number; Version sets the
@@ -66,22 +62,15 @@ type Result struct {
 	Link       string                `json:"link,omitempty"`
 }
 
-// versionRe matches what Apple accepts for CFBundleVersion and
-// CFBundleShortVersionString: one to three period-separated integers. The
-// runner validates the same shape, so nothing else reaches its shell.
+// versionRe is what Apple accepts for CFBundleVersion and
+// CFBundleShortVersionString; the runner validates the same shape.
 var versionRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+){0,2}$`)
 
-// Preflight checks, before anything is dispatched, that the selected build
-// profile (--profile, else defaultProfile) produces what App Store Connect
-// accepts: an archive signed with an App Store profile (distribution store)
-// and built in Release. TestFlight takes nothing else either.
-//
-// It returns the profile the release must build with: the one passed, except
-// when nothing selects an App Store profile and builder.json holds exactly
-// one, which Preflight then names and logs. That is what `signing setup
-// --distribution store` leaves behind — it writes the store profile without
-// touching defaultProfile — so the common setup needs no --profile. With
-// several App Store profiles only the caller knows which to release.
+// Preflight returns the profile to release with: the selected one (--profile,
+// else defaultProfile) when it has distribution store and builds Release, else
+// the only store profile in builder.json, which `signing setup --distribution
+// store` writes without touching defaultProfile. Anything else is an error,
+// since TestFlight accepts nothing but App Store archives.
 func Preflight(cfg *config.Config, profile string, log io.Writer) (string, error) {
 	s, err := cfg.ResolveProfile(profile)
 	if err != nil {
@@ -116,10 +105,8 @@ func notStoreProfileErr(s *config.BuildSettings) error {
 	return fmt.Errorf("profile %q has distribution %s; TestFlight and the App Store need an App Store profile (\"distribution\": \"store\"). Run builder signing setup --distribution store, which writes the \"store\" profile to builder.json, then release with --profile store", s.Profile, s.Distribution)
 }
 
-// storeProfiles names the profiles in builder.json that build for the App
-// Store, sorted. Profiles that do not resolve (an unknown distribution, a
-// reserved env name) are left out: they could not be released anyway, and the
-// error belongs to whoever names them.
+// storeProfiles lists the profiles with distribution store, sorted; ones that
+// fail to resolve are skipped, since they could not be released anyway.
 func storeProfiles(cfg *config.Config) []string {
 	var names []string
 	for _, name := range cfg.ProfileNames() {
@@ -182,9 +169,8 @@ func Run(ctx context.Context, cfg *config.Config, builder Builder, client *asc.C
 	if info.BundleID != bundleID {
 		return res, fmt.Errorf("%s was built for bundle ID %s, not %s; check --bundle-id or ios.bundleId", built.IPAPath, info.BundleID, bundleID)
 	}
-	// The runner stamps CURRENT_PROJECT_VERSION and rewrites a hardcoded
-	// Info.plist; anything it missed would be rejected by App Store Connect
-	// as a duplicate, so refuse here with the reason instead.
+	// A number the runner missed would reach App Store Connect as an opaque
+	// duplicate; refuse here with the reason instead.
 	if info.BuildNumber != res.BuildNumber {
 		return res, fmt.Errorf("the runner did not apply build number %s: %s has CFBundleVersion %q. Check the Build IPA log for the 'Build number' line; a workflow file predating the build_number input needs builder init and a push", res.BuildNumber, built.IPAPath, info.BuildNumber)
 	}
@@ -228,9 +214,8 @@ func Run(ctx context.Context, cfg *config.Config, builder Builder, client *asc.C
 	return res, err
 }
 
-// buildNumberInput encodes the build number and marketing version the way the
-// runner's apply_build_number reads them: "N", or "X.Y.Z+N" when a version is
-// given (the pubspec convention).
+// buildNumberInput encodes "N", or "X.Y.Z+N" with a version, the way the
+// runner's apply_build_number reads it (the pubspec convention).
 func buildNumberInput(buildNumber, version string) string {
 	if version == "" {
 		return buildNumber
@@ -257,9 +242,9 @@ func resolveBundleID(flag, configured, outputDir string) (string, error) {
 	return info.BundleID, nil
 }
 
-// NextBuildNumber returns one more than the highest CFBundleVersion App Store
-// Connect holds for the app, across every marketing version, since a second
-// upload is rejected unless its number is higher. The first build is 1.
+// NextBuildNumber is one above the highest CFBundleVersion App Store Connect
+// holds for the app across every marketing version (1 when none), since an
+// upload is rejected unless its number is higher.
 func NextBuildNumber(ctx context.Context, client *asc.Client, appID string) (string, error) {
 	builds, err := client.ListBuilds(ctx, &asc.BuildFilter{AppID: appID, Platform: asc.PlatformIOS})
 	if err != nil {

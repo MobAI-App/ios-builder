@@ -348,8 +348,7 @@ func TestRunPreflight(t *testing.T) {
 			}
 		})
 	}
-	// A store profile that sets Release explicitly, and one selected by flag
-	// over a non-store default, both pass.
+	// Explicit Release, and --profile over a non-store default, both pass.
 	for _, tc := range []struct {
 		cfg     *config.Config
 		profile string
@@ -373,8 +372,7 @@ func TestRunPreflight(t *testing.T) {
 }
 
 // TestPreflightPicksTheOnlyStoreProfile covers what `signing setup
-// --distribution store` leaves behind: one App Store profile in builder.json
-// and nothing selecting it, since defaultProfile is not touched.
+// --distribution store` leaves behind: one store profile, no defaultProfile.
 func TestPreflightPicksTheOnlyStoreProfile(t *testing.T) {
 	store := config.Profile{Distribution: "store"}
 	dev := config.Profile{Distribution: "development"}

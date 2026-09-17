@@ -115,10 +115,9 @@ func (c *Coordinator) workflowInputs(buildID, ref string, s *config.BuildSetting
 }
 
 // buildInputs are the ios-build.yml inputs: the shared ones plus signing,
-// configuration, the profile and the build number, none of which the simulator
-// workflow has a use for. `profile` and `build_number` are only sent when set:
-// a workflow file from before them rejects a dispatch carrying an input it does
-// not declare, and build_number is the tenth and last input GitHub allows.
+// configuration, profile and build number. `profile` and `build_number` go
+// only when set, since an older workflow file rejects inputs it does not
+// declare, and build_number is the tenth and last input GitHub allows.
 func (c *Coordinator) buildInputs(buildID, ref string, s *config.BuildSettings, buildNumber string) map[string]string {
 	inputs := c.workflowInputs(buildID, ref, s)
 	if s.Signing {
@@ -164,7 +163,6 @@ type BuildResult struct {
 // Build triggers a remote build and downloads the IPA artifact. opts is not
 // modified.
 func (c *Coordinator) Build(ctx context.Context, opts *BuildOptions) (*BuildResult, error) {
-	// Defaults below are filled in on a copy: opts belongs to the caller.
 	o := *opts
 	opts = &o
 	settings, name, err := c.settings(opts.Profile, opts.Provider, opts.Unsigned)

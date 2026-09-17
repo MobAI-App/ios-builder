@@ -739,31 +739,24 @@ builder ios build --profile store --submit     # TestFlight release with no grou
 
 `release` runs steps 3 to 5 back to back: build, download, upload, wait for
 processing, then TestFlight (default) or `--app-store`, with the same flags as
-`submit`. It builds with a [build profile](#build-profiles) (`--profile`, or
-`defaultProfile`) that must have `"distribution": "store"` — TestFlight and the
-App Store accept nothing but an App Store profile — and its configuration must
-be `Release` (the default for `store`; an explicit `Debug` is refused). Before
-dispatching anything it checks that an API key is saved and the profile fits,
-and reports the first thing missing; without a store profile the message names
-`builder signing setup --distribution store`, which writes the `store` profile,
-and `--profile store`. When neither `--profile` nor `defaultProfile` names an
-App Store profile and `builder.json` has exactly one, that profile is used and
-the log says so (`Using profile store (the only App Store profile)`); with
-more than one the error lists them so you can pick with `--profile`. On GitHub
-a missing `STORE` signing set is provisioned
-first, as `ios build --profile` does. `--unsigned` is refused with `--submit`.
+`submit`. It needs a [build profile](#build-profiles) with
+`"distribution": "store"` built as `Release` (the default for `store`; an
+explicit `Debug` is refused): `--profile`, else `defaultProfile`, else the only
+store profile in `builder.json` (logged; with several, pick one with
+`--profile`). API key and profile are checked before anything is dispatched —
+without a store profile the error names `builder signing setup --distribution
+store`, which writes one — and on GitHub a missing `STORE` signing set is
+provisioned first. `--unsigned` is refused with `--submit`.
 
-It also solves the build-number problem. Builder asks App Store Connect for the
-app's builds, takes the highest `CFBundleVersion` across all versions and
-builds with the next one (`1` for a new app); `--build-number N` overrides it
-and `--version X.Y.Z` sets the marketing version too. The number reaches the
-runner as the `build_number` workflow input and is applied per project type:
-`flutter build ios --build-number`, `CURRENT_PROJECT_VERSION` (and
-`MARKETING_VERSION`) on every `xcodebuild archive`, and for an Info.plist that
-hardcodes `CFBundleVersion` instead of `$(CURRENT_PROJECT_VERSION)`, an in-place
-edit before archiving — the build log says which. After the download Builder
-reads the IPA and refuses to upload one whose `CFBundleVersion` is not the
-requested number.
+It also solves the build-number problem: Builder takes the highest
+`CFBundleVersion` among the app's builds in App Store Connect, across all
+versions, and builds with the next one (`1` for a new app); `--build-number N`
+overrides it and `--version X.Y.Z` sets the marketing version too. The runner
+applies it per project type — `flutter build ios --build-number`,
+`CURRENT_PROJECT_VERSION`/`MARKETING_VERSION` on `xcodebuild archive`, or an
+in-place edit of an Info.plist that hardcodes `CFBundleVersion` — and the log
+says which. Builder then reads the IPA and refuses to upload one whose
+`CFBundleVersion` is not the requested number.
 
 To find the app before the first IPA exists, set `ios.bundleId` in
 `builder.json` or pass `--bundle-id`; afterwards the newest IPA in `./dist/`

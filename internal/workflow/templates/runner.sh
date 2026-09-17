@@ -512,12 +512,10 @@ install_signing() {
   cp "$signing_dir/profile.mobileprovision" "$profile_dest"
 }
 
-# BUILD_NUMBER is "N", or "X.Y.Z+N" to set the marketing version as
-# well (the pubspec convention). Sets build_number, build_name and
-# version_settings, the xcodebuild settings that carry them. Given an
-# xcodebuild target and scheme it also rewrites an Info.plist that
-# hardcodes CFBundleVersion, which CURRENT_PROJECT_VERSION never
-# reaches. Same function in ios-build.yml; keep them identical.
+# BUILD_NUMBER is "N" or "X.Y.Z+N" (pubspec convention); sets build_number,
+# build_name and version_settings for xcodebuild. Given a target and scheme
+# it also rewrites an Info.plist that hardcodes CFBundleVersion, which
+# CURRENT_PROJECT_VERSION never reaches; identical in ios-build.yml and runner.sh.
 apply_build_number() {
   build_number="" build_name="" version_settings=""
   [ -n "${BUILD_NUMBER:-}" ] || return 0

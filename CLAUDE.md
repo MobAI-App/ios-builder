@@ -417,37 +417,12 @@ internal/
   refuses the export. `detect_export_method` in `ios-build.yml` and `runner.sh` reads it from
   the profile of the selected signing set, and `check_signing_set` confirms it is the type the
   build profile's `distribution` asked for (`app-store` is the `store` distribution).
-- **Release Flow** (`internal/release`): `ios release` and `ios build --submit` share `release.Run`,
-  which takes a `Builder` interface (`*build.Coordinator`) and an `*asc.Client`, so tests use a
-  fake builder that writes an IPA plus an httptest ASC. `Preflight(cfg, profile)` resolves the
-  profile (`--profile`, else `defaultProfile`) and refuses to dispatch unless its distribution is
-  `store` (TestFlight accepts nothing else either) and its effective configuration is `Release`
-  (derived for `store`; an explicit `Debug` is refused with the hint); `ios.signing`/
-  `ios.configuration` play no part. Without a store profile the error names `builder signing
-  setup --distribution store` (which writes the `store` profile) and `--profile store`. The
-  command checks the API key, then `Preflight`, then `ensureSigningSecrets` for a GitHub build
-  (missing `STORE` secrets are provisioned like `ios build --profile`), all before the snapshot
-  push; `Run` calls `Preflight` again so the package is safe on its own. `--unsigned` with
-  `--submit` is refused. The cobra layer stays thin and reuses `finish`/`newOutput` from
-  `upload.go`. `--timeout` bounds the build and then the ASC wait separately. `Coordinator.Build`
-  takes `*BuildOptions`.
-- **Automatic Build Numbers**: ASC rejects an upload whose `CFBundleVersion` is not above every
-  processed build, so `release` lists the app's builds across all marketing versions
-  (`ListBuilds`, no limit, pages through `links.next`) and increments the last component of the
-  largest (`1` when none; dotted numbers compare component-wise). `--build-number` skips the
-  query. The number travels as the single `build_number` dispatch input (`BUILDER_BUILD_NUMBER`
-  for Codemagic/Bitrise — Codemagic predefines `BUILD_NUMBER` as its own counter, so `runner.sh`
-  maps the prefixed name onto it), encoded `N` or `X.Y.Z+N` when `--version` is given — one input because
-  `workflow_dispatch` caps inputs at 10. `apply_build_number` in both templates must stay
-  byte-identical; `TestApplyBuildNumber` extracts it from each and diffs them. It validates the
-  shape (the value reaches `eval` and `plutil`), passes `--build-number`/`--build-name` to
-  `flutter build`, appends `CURRENT_PROJECT_VERSION`/`MARKETING_VERSION` to every `xcodebuild`,
-  and when the app target's `INFOPLIST_FILE` (from `-showBuildSettings`) holds a literal
-  `CFBundleVersion` rather than `$(CURRENT_PROJECT_VERSION)`/`$(FLUTTER_BUILD_NUMBER)`, rewrites
-  it with `plutil -replace` and logs which path it took. Back home, `release.Run` reads the IPA
-  and fails if `CFBundleVersion` differs from the request, so a missed case never reaches ASC as
-  an opaque duplicate. Plain `ios build` sends no input and behaves as before; the runner also
-  ignores an empty `BUILD_NUMBER`.
+- **Release Flow** (`internal/release`): `ios release` and `ios build --submit` share `release.Run`; `Preflight`
+  wants a `store` profile built Release (`--profile`, else `defaultProfile`, else the only store profile) and runs
+  before the snapshot push, with `ensureSigningSecrets`. `--timeout` bounds the build and the ASC wait separately.
+- **Automatic Build Numbers**: `release` sends the largest `CFBundleVersion` among the app's builds + 1 as the
+  single `build_number` input (`BUILDER_BUILD_NUMBER` for `runner.sh`, since Codemagic owns `BUILD_NUMBER`) and
+  refuses an IPA that lacks it. `apply_build_number` must stay byte-identical in both templates (`TestApplyBuildNumber`).
 - **Signing Identity Follows The Profile Type**: `signing_identities` and `signing_identity`
   (verbatim in both templates) pick `CODE_SIGN_IDENTITY` out of `security find-identity`, run right
   after `security import`: `Apple Development`, else the pre-2021 `iPhone Developer`, for a

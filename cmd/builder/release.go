@@ -90,10 +90,8 @@ func runIOSRelease(cmd *cobra.Command, _ []string) error {
 	return runRelease(cmd, cfg, opts)
 }
 
-// buildOptionsFromFlags reads the flags `ios build` and `ios release` share.
-// Provider is the one that will run the job (--provider, else the profile's,
-// else builder.json's), so the GitHub client and signal handling agree with
-// the coordinator.
+// buildOptionsFromFlags reads the flags `ios build` and `ios release` share;
+// Provider is resolved as the coordinator will, so the GitHub client agrees.
 func buildOptionsFromFlags(cmd *cobra.Command, cfg *config.Config) (build.BuildOptions, error) {
 	var opts build.BuildOptions
 	opts.OutputDir, _ = cmd.Flags().GetString("output")
@@ -109,10 +107,9 @@ func buildOptionsFromFlags(cmd *cobra.Command, cfg *config.Config) (build.BuildO
 	return opts, nil
 }
 
-// runRelease is the flow behind `ios release` and `ios build --submit`. The
-// API key and the App Store profile are checked first, then a GitHub build
-// gets its STORE signing set provisioned when the repository lacks it (the
-// same path as `ios build --profile`), all before anything is pushed.
+// runRelease is the flow behind `ios release` and `ios build --submit`: API
+// key, App Store profile and (on GitHub) the STORE signing set are settled
+// before anything is pushed.
 func runRelease(cmd *cobra.Command, cfg *config.Config, opts *release.Options) error {
 	client, err := getASCClient()
 	if err != nil {
@@ -120,14 +117,12 @@ func runRelease(cmd *cobra.Command, cfg *config.Config, opts *release.Options) e
 	}
 	out := newOutput(cmd)
 	opts.Log = out.log
-	// Preflight may select the only App Store profile; the build and the
-	// signing set it provisions have to be that one, so keep what it chose.
+	// Preflight may pick the only store profile; the build, the provider and
+	// the signing set below must all follow that choice.
 	opts.Build.Profile, err = release.Preflight(cfg, opts.Build.Profile, out.log)
 	if err != nil {
 		return err
 	}
-	// That profile may name a provider of its own, so settle the provider
-	// against it: the client and the signing set must match what will build.
 	providerFlag, _ := cmd.Flags().GetString("provider")
 	opts.Build.Provider, err = effectiveProvider(cfg, opts.Build.Profile, providerFlag)
 	if err != nil {
