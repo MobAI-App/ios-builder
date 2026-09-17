@@ -33,15 +33,15 @@ func TestSigningSet(t *testing.T) {
 
 func TestSigningSecretNames(t *testing.T) {
 	got := SigningSecretNames("STORE")
-	want := SigningSecrets{"IOS_CERTIFICATE_STORE", "IOS_CERTIFICATE_PASSWORD_STORE", "IOS_PROVISIONING_PROFILE_STORE"}
+	want := SigningSecrets{"IOS_CERTIFICATE_STORE", "IOS_CERTIFICATE_PASSWORD_STORE", "IOS_PROVISIONING_PROFILE_STORE", "IOS_EXTENSION_PROFILES_STORE"}
 	if got != want {
 		t.Errorf("suffixed = %+v, want %+v", got, want)
 	}
-	if !slices.Equal(got.Names(), []string{"IOS_CERTIFICATE_STORE", "IOS_CERTIFICATE_PASSWORD_STORE", "IOS_PROVISIONING_PROFILE_STORE"}) {
+	if !slices.Equal(got.Names(), []string{"IOS_CERTIFICATE_STORE", "IOS_CERTIFICATE_PASSWORD_STORE", "IOS_PROVISIONING_PROFILE_STORE", "IOS_EXTENSION_PROFILES_STORE"}) {
 		t.Errorf("Names = %v", got.Names())
 	}
 	legacy := SigningSecretNames("")
-	if legacy != (SigningSecrets{"IOS_CERTIFICATE", "IOS_CERTIFICATE_PASSWORD", "IOS_PROVISIONING_PROFILE"}) {
+	if legacy != (SigningSecrets{"IOS_CERTIFICATE", "IOS_CERTIFICATE_PASSWORD", "IOS_PROVISIONING_PROFILE", "IOS_EXTENSION_PROFILES"}) {
 		t.Errorf("legacy = %+v", legacy)
 	}
 	// Every name is one a profile's env may not set.

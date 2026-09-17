@@ -88,15 +88,18 @@ func TestUploadSigningSecretsWritesOneSet(t *testing.T) {
 	store := newFakeSecrets(t)
 	cfg := &config.Config{GitHub: config.GitHubConfig{Owner: "o", Repo: "r"}}
 	var log strings.Builder
-	if err := uploadSigningSecrets(context.Background(), store, cfg, &log, "STORE", []byte("p12"), "pw", []byte("profile")); err != nil {
+	if err := uploadSigningSecrets(context.Background(), store, cfg, &log, "STORE", []byte("p12"), "pw", []byte("profile"), map[string][]byte{"com.example.app.widget": []byte("widget")}); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"IOS_CERTIFICATE_STORE", "IOS_CERTIFICATE_PASSWORD_STORE", "IOS_PROVISIONING_PROFILE_STORE"}
+	want := []string{"IOS_CERTIFICATE_STORE", "IOS_CERTIFICATE_PASSWORD_STORE", "IOS_PROVISIONING_PROFILE_STORE", "IOS_EXTENSION_PROFILES_STORE"}
 	if !slices.Equal(store.names, want) {
 		t.Fatalf("secrets written: %v, want %v", store.names, want)
 	}
 	if store.stored["IOS_CERTIFICATE_STORE"] != base64.StdEncoding.EncodeToString([]byte("p12")) || store.stored["IOS_CERTIFICATE_PASSWORD_STORE"] != "pw" || store.stored["IOS_PROVISIONING_PROFILE_STORE"] != base64.StdEncoding.EncodeToString([]byte("profile")) {
 		t.Fatalf("values: %v", store.stored)
+	}
+	if got, err := signing.DecodeExtensionProfiles(store.stored["IOS_EXTENSION_PROFILES_STORE"]); err != nil || string(got["com.example.app.widget"]) != "widget" {
+		t.Fatalf("extension profiles: %q, %v", store.stored["IOS_EXTENSION_PROFILES_STORE"], err)
 	}
 	for _, name := range want {
 		if !strings.Contains(log.String(), "Uploaded: "+name) {
@@ -104,12 +107,13 @@ func TestUploadSigningSecretsWritesOneSet(t *testing.T) {
 		}
 	}
 
-	// A second set adds to the first; the legacy names are never touched.
-	if err := uploadSigningSecrets(context.Background(), store, cfg, io.Discard, "DEVELOPMENT", []byte("dev"), "pw2", []byte("dev-profile")); err != nil {
+	// A second set adds to the first; the legacy names are never touched, and
+	// an app without extensions writes {} so nothing stale is left behind.
+	if err := uploadSigningSecrets(context.Background(), store, cfg, io.Discard, "DEVELOPMENT", []byte("dev"), "pw2", []byte("dev-profile"), nil); err != nil {
 		t.Fatal(err)
 	}
-	if len(store.stored) != 6 || store.stored["IOS_CERTIFICATE_STORE"] == "" || store.stored["IOS_CERTIFICATE_DEVELOPMENT"] == "" {
-		t.Fatalf("second set replaced the first: %v", store.names)
+	if len(store.stored) != 8 || store.stored["IOS_CERTIFICATE_STORE"] == "" || store.stored["IOS_CERTIFICATE_DEVELOPMENT"] == "" || store.stored["IOS_EXTENSION_PROFILES_DEVELOPMENT"] != "{}" {
+		t.Fatalf("second set replaced the first: %v", store.stored)
 	}
 	for name := range store.stored {
 		if name == "IOS_CERTIFICATE" || name == "IOS_CERTIFICATE_PASSWORD" || name == "IOS_PROVISIONING_PROFILE" {
@@ -122,6 +126,119 @@ func TestUploadSigningSecretsWritesOneSet(t *testing.T) {
 // bytes, as the CMS wrapper leaves it.
 func profileBytes(body string) []byte {
 	return []byte("\x30\x82\x1a\x00 cms " + `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>` + body + `</dict></plist>` + "\x00\xff trailer")
+}
+
+// storeProfile is an App Store profile for the app id, team ABCDE12345.
+func storeProfile(appID string) []byte {
+	return profileBytes("<key>TeamIdentifier</key><array><string>ABCDE12345</string></array><key>Entitlements</key><dict><key>get-task-allow</key><false/><key>application-identifier</key><string>ABCDE12345." + appID + "</string></dict>")
+}
+
+// appWithWidgetPbxproj is an app target and a widget extension target, in
+// the OpenStep form Xcode writes.
+const appWithWidgetPbxproj = `// !$*UTF8*$!
+{
+	objects = {
+		A1 = { isa = PBXNativeTarget; buildConfigurationList = LA; name = App; productType = "com.apple.product-type.application"; };
+		W1 = { isa = PBXNativeTarget; buildConfigurationList = LW; name = Widget; productType = "com.apple.product-type.app-extension"; };
+		AR = { isa = XCBuildConfiguration; buildSettings = { PRODUCT_BUNDLE_IDENTIFIER = com.example.app; }; name = Release; };
+		WR = { isa = XCBuildConfiguration; buildSettings = { PRODUCT_BUNDLE_IDENTIFIER = com.example.app.widget; }; name = Release; };
+		LA = { isa = XCConfigurationList; buildConfigurations = ( AR, ); };
+		LW = { isa = XCConfigurationList; buildConfigurations = ( WR, ); };
+	};
+	rootObject = P0;
+}
+`
+
+// writeProject writes a project.pbxproj under ./<name> in the working directory.
+func writeProject(t *testing.T, name, pbxproj string) {
+	t.Helper()
+	if err := os.MkdirAll(name, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(name, "project.pbxproj"), []byte(pbxproj), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMatchExtensionProfiles(t *testing.T) {
+	widget, share, wildcard := storeProfile("com.example.app.widget"), storeProfile("com.example.app.share"), storeProfile("com.example.*")
+	extensions := []string{"com.example.app.share", "com.example.app.widget"}
+
+	got, err := matchExtensionProfiles(extensions, map[string][]byte{"w.mobileprovision": widget, "s.mobileprovision": share}, signing.TypeStore)
+	if err != nil || got["com.example.app.widget"] != "w.mobileprovision" || got["com.example.app.share"] != "s.mobileprovision" {
+		t.Fatalf("exact profiles: %v, %v", got, err)
+	}
+	// One wildcard profile covers every extension under it; an exact one
+	// wins over it for its own extension.
+	if got, err = matchExtensionProfiles(extensions, map[string][]byte{"any.mobileprovision": wildcard}, signing.TypeStore); err != nil || got["com.example.app.widget"] != "any.mobileprovision" || got["com.example.app.share"] != "any.mobileprovision" {
+		t.Fatalf("wildcard profile: %v, %v", got, err)
+	}
+	if got, err = matchExtensionProfiles(extensions, map[string][]byte{"any.mobileprovision": wildcard, "w.mobileprovision": widget}, signing.TypeStore); err != nil || got["com.example.app.widget"] != "w.mobileprovision" || got["com.example.app.share"] != "any.mobileprovision" {
+		t.Fatalf("exact over wildcard: %v, %v", got, err)
+	}
+	// Nothing to match is fine both ways round only when both are empty.
+	if got, err = matchExtensionProfiles(nil, nil, signing.TypeStore); err != nil || len(got) != 0 {
+		t.Fatalf("no extensions: %v, %v", got, err)
+	}
+	// A missing profile names the extension and the flag; a profile for an
+	// unlisted extension names the file and the config field.
+	_, err = matchExtensionProfiles(extensions, map[string][]byte{"w.mobileprovision": widget}, signing.TypeStore)
+	if err == nil || !strings.Contains(err.Error(), "extension com.example.app.share has no profile") || !strings.Contains(err.Error(), "--extension-profile") {
+		t.Fatalf("missing profile: %v", err)
+	}
+	_, err = matchExtensionProfiles(nil, map[string][]byte{"w.mobileprovision": widget}, signing.TypeStore)
+	if err == nil || !strings.Contains(err.Error(), "w.mobileprovision covers com.example.app.widget, which is not in ios.extensions") {
+		t.Fatalf("unlisted extension: %v", err)
+	}
+	// Every extension profile is of the app profile's type.
+	_, err = matchExtensionProfiles(extensions[1:], map[string][]byte{"w.mobileprovision": widget}, signing.TypeDevelopment)
+	if err == nil || !strings.Contains(err.Error(), "w.mobileprovision is a store profile, but the app profile is development") {
+		t.Fatalf("type mismatch: %v", err)
+	}
+	if _, err = matchExtensionProfiles(extensions, map[string][]byte{"bad.mobileprovision": []byte("nope")}, signing.TypeStore); err == nil {
+		t.Fatal("unreadable profile accepted")
+	}
+}
+
+// TestSigningSetupManualUploadsExtensionProfiles: the widget found in the
+// project goes into ios.extensions, its --extension-profile into the fourth
+// secret, and a run without that flag says which extension lacks a profile.
+func TestSigningSetupManualUploadsExtensionProfiles(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := &config.Config{Project: "App", Platform: "ios", GitHub: config.GitHubConfig{Owner: "o", Repo: "r"}}
+	if err := config.NewManager().Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	writeProject(t, "App.xcodeproj", appWithWidgetPbxproj)
+	for name, data := range map[string][]byte{"ios-signing.p12": []byte("p12 bytes"), "App.mobileprovision": storeProfile("com.example.app"), "Widget.mobileprovision": storeProfile("com.example.app.widget")} {
+		if err := os.WriteFile(name, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := newFakeSecrets(t)
+
+	cmd, _, _ := signingSetupCommand(t, store, "--certificate", "ios-signing.p12", "--profile", "App.mobileprovision", "--password", "pw")
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "extension com.example.app.widget has no profile") {
+		t.Fatalf("widget without a profile: %v", err)
+	}
+	if len(store.names) != 0 {
+		t.Fatalf("uploaded despite the missing profile: %v", store.names)
+	}
+
+	cmd, stdout, stderr := signingSetupCommand(t, store, "--certificate", "ios-signing.p12", "--profile", "App.mobileprovision", "--password", "pw", "--extension-profile", "Widget.mobileprovision")
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("%v\n%s", err, stderr.String())
+	}
+	if got, err := signing.DecodeExtensionProfiles(store.stored["IOS_EXTENSION_PROFILES_STORE"]); err != nil || !bytes.Equal(got["com.example.app.widget"], storeProfile("com.example.app.widget")) || len(got) != 1 {
+		t.Errorf("extension profiles secret: %q, %v", store.stored["IOS_EXTENSION_PROFILES_STORE"], err)
+	}
+	if !strings.Contains(stdout.String(), `IOS_EXTENSION_PROFILES_STORE  JSON object {"com.example.app.widget": base64 of Widget.mobileprovision}`) {
+		t.Errorf("secret value not explained:\n%s", stdout.String())
+	}
+	saved, err := config.NewManager().Load()
+	if err != nil || !slices.Equal(saved.IOS.Extensions, []string{"com.example.app.widget"}) {
+		t.Errorf("ios.extensions = %v, %v", saved.IOS.Extensions, err)
+	}
 }
 
 func TestManualSigningTypeReadsTheProfile(t *testing.T) {
@@ -290,13 +407,23 @@ func TestEnsureSigningSecretsChecksTheSet(t *testing.T) {
 		t.Fatalf("no profile: %v, listed %d", err, store.listed)
 	}
 
-	// The set is complete: dispatch as today, no Apple credentials needed.
-	for _, name := range config.SigningSecretNames("STORE").Names() {
+	// The set is complete: dispatch as today, no Apple credentials needed. The
+	// extension profiles are required only once the app has extensions.
+	for _, name := range config.SigningSecretNames("STORE").Names()[:3] {
 		store.stored[name] = "x"
 	}
 	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "store", "", io.Discard); err != nil {
 		t.Fatalf("complete set: %v", err)
 	}
+	cfg.IOS.Extensions = []string{"com.example.app.widget"}
+	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "store", "", io.Discard); err == nil || !strings.Contains(err.Error(), "auth apple") {
+		t.Fatalf("missing extension profiles accepted: %v", err)
+	}
+	store.stored["IOS_EXTENSION_PROFILES_STORE"] = "{}"
+	if err := ensureSigningSecrets(ctx, cfg, store, noASC, "store", "", io.Discard); err != nil {
+		t.Fatalf("complete set with extensions: %v", err)
+	}
+	cfg.IOS.Extensions = nil
 
 	// A partial set without Apple credentials stops before the dispatch and
 	// names both ways out.
@@ -385,8 +512,31 @@ func TestEnsureSigningSecretsProvisionsOnDemand(t *testing.T) {
 
 	// Second build: the set is there, nothing is provisioned again.
 	portal.Reset()
-	if err := ensureSigningSecrets(ctx, cfg, store, withPortal, "store", "", io.Discard); err != nil || len(portal.Calls()) != 0 || len(store.names) != 3 {
+	if err := ensureSigningSecrets(ctx, cfg, store, withPortal, "store", "", io.Discard); err != nil || len(portal.Calls()) != 0 || len(store.names) != 4 {
 		t.Fatalf("second build: %v, calls %v, uploads %v", err, portal.Calls(), store.names)
+	}
+
+	// An extension target found in the project is written to builder.json,
+	// gets its own profile, and the whole set is uploaded again with it.
+	writeProject(t, "App.xcodeproj", appWithWidgetPbxproj)
+	if err := config.NewManager().Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	portal.Reset()
+	if err := ensureSigningSecrets(ctx, cfg, store, withPortal, "store", "", io.Discard); err != nil {
+		t.Fatalf("build with a new extension: %v", err)
+	}
+	if !slices.Equal(cfg.IOS.Extensions, []string{"com.example.app.widget"}) || portal.Count("POST /v1/profiles") != 1 || len(portal.Profiles) != 2 {
+		t.Errorf("extensions %v, calls %v", cfg.IOS.Extensions, portal.Calls())
+	}
+	if saved, err := config.NewManager().Load(); err != nil || !slices.Equal(saved.IOS.Extensions, cfg.IOS.Extensions) {
+		t.Errorf("builder.json extensions = %v, %v", saved.IOS.Extensions, err)
+	}
+	if got, err := signing.DecodeExtensionProfiles(store.stored["IOS_EXTENSION_PROFILES_STORE"]); err != nil || string(got["com.example.app.widget"]) != "profile:prof-3" {
+		t.Errorf("extension profiles secret: %q, %v", store.stored["IOS_EXTENSION_PROFILES_STORE"], err)
+	}
+	if _, err := os.Stat("Builder-store-com.example.app.widget.mobileprovision"); err != nil {
+		t.Errorf("extension profile not written: %v", err)
 	}
 
 	// Development with no device anywhere cannot be provisioned without
@@ -395,7 +545,7 @@ func TestEnsureSigningSecretsProvisionsOnDemand(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "builder signing setup --distribution development --devices-from-mobai") {
 		t.Fatalf("development without devices: %v", err)
 	}
-	if portal.Count("POST /v1/certificates") != 0 || len(store.names) != 3 {
+	if portal.Count("POST /v1/certificates") != 0 || len(store.names) != 8 {
 		t.Fatalf("devices are checked before anything is issued: %v", portal.Calls())
 	}
 
@@ -404,7 +554,7 @@ func TestEnsureSigningSecretsProvisionsOnDemand(t *testing.T) {
 	if err := ensureSigningSecrets(ctx, cfg, store, withPortal, "development", "", io.Discard); err != nil {
 		t.Fatalf("development with a registered device: %v", err)
 	}
-	if len(store.stored) != 6 || store.stored["IOS_CERTIFICATE_DEVELOPMENT"] == "" {
+	if len(store.stored) != 8 || store.stored["IOS_CERTIFICATE_DEVELOPMENT"] == "" {
 		t.Fatalf("development set not uploaded: %v", store.names)
 	}
 
@@ -466,7 +616,7 @@ func TestEnsureSigningSecretsReusesTheKeyInTheRecordedDir(t *testing.T) {
 	if err := ensureSigningSecrets(ctx, cfg, store, withPortal, "store", "", &log); err != nil {
 		t.Fatalf("on-demand provisioning: %v\n%s", err, log.String())
 	}
-	if portal.Count("POST /v1/certificates") != 0 || len(store.names) != 3 {
+	if portal.Count("POST /v1/certificates") != 0 || len(store.names) != 4 {
 		t.Errorf("the certificate must be reused, not requested: %v, uploads %v", portal.Calls(), store.names)
 	}
 	// The material lands next to the key, not in the working directory.

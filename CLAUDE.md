@@ -371,9 +371,16 @@ internal/
   settings into app targets only via `plutil`; on the command line every Pods target would inherit them
 - **App Target Selection**: one app target is signed whatever its bundle id (the export reports a
   mismatch); with several, those whose `PRODUCT_BUNDLE_IDENTIFIER` `PROFILE_BUNDLE_ID` covers (`*`
-  wildcards), else `::error::` naming the ids found; conditional `NAME[sdk=…]` variants are dropped.
-  Extension targets (widgets, share/notification extensions) are not signed: they need their own
-  profiles, which Builder does not create, so such apps still fail at the archive
+  wildcards), else `::error::` naming the ids found; conditional `NAME[sdk=…]` variants are dropped
+- **Extension Targets**: `ios.extensions` lists their bundle ids (`init`/`signing setup` append what
+  `xcodeproj.ExtensionBundleIDs` finds; managed Expo lists by hand). `signing.Auto` makes an App ID and
+  `Builder <d> <id>` profile per entry, uploaded as `IOS_EXTENSION_PROFILES_<SET>` (JSON of id → base64).
+- **Extension Secrets**: always written, `{}` for none; required by `missingSigningSecrets` only when
+  the list is non-empty. Manual mode: one `--extension-profile` each, matched by the profile's app id.
+  Secrets are unreadable, so a build re-provisions when the project has extensions not in builder.json
+- **Extension Signing On The Runner**: `install_extension_profiles` hands `EXTENSION_PROFILES` (id →
+  name) to `apply_signing_to_app_target`, which signs each extension-type target (`xcodeproj.ExtensionProductTypes`)
+  with the longest covering entry or fails naming the ids to add; `write_export_options` exports them
 - **Extension Points**: `ios release` composes `distribute.Upload` and
   `distribute.SubmitTestFlight`; the `pkg/` wrappers do not expose `asc`.
 

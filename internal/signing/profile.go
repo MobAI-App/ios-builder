@@ -14,14 +14,9 @@ import (
 // enterprise, ProvisionedDevices with get-task-allow is development and
 // without it ad-hoc, and a profile with neither is App Store (store).
 func ProfileType(data []byte) (Type, error) {
-	start := bytes.Index(data, []byte("<?xml"))
-	end := bytes.LastIndex(data, []byte("</plist>"))
-	if start < 0 || end < start {
-		return "", errors.New("not a provisioning profile: no plist inside")
-	}
-	var dict map[string]any
-	if _, err := plist.Unmarshal(data[start:end+len("</plist>")], &dict); err != nil {
-		return "", fmt.Errorf("parse provisioning profile: %w", err)
+	dict, err := profilePlist(data)
+	if err != nil {
+		return "", err
 	}
 	if all, _ := dict["ProvisionsAllDevices"].(bool); all {
 		return TypeEnterprise, nil
@@ -34,4 +29,18 @@ func ProfileType(data []byte) (Type, error) {
 		return TypeAdHoc, nil
 	}
 	return TypeStore, nil
+}
+
+// profilePlist is the plist inside a .mobileprovision's CMS signature.
+func profilePlist(data []byte) (map[string]any, error) {
+	start := bytes.Index(data, []byte("<?xml"))
+	end := bytes.LastIndex(data, []byte("</plist>"))
+	if start < 0 || end < start {
+		return nil, errors.New("not a provisioning profile: no plist inside")
+	}
+	var dict map[string]any
+	if _, err := plist.Unmarshal(data[start:end+len("</plist>")], &dict); err != nil {
+		return nil, fmt.Errorf("parse provisioning profile: %w", err)
+	}
+	return dict, nil
 }

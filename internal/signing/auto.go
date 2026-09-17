@@ -88,6 +88,9 @@ func P12FileName(t Type) string { return fmt.Sprintf("ios-signing-%s.p12", t) }
 type AutoOptions struct {
 	BundleID string
 	Type     Type
+	// Extensions are the bundle ids of the app's extension targets; each gets
+	// an App ID and a profile of the same type, certificate and devices.
+	Extensions []string
 	// Devices are registered when missing; development and ad-hoc profiles
 	// then cover every enabled iOS device on the account.
 	Devices []Device
@@ -149,6 +152,13 @@ type ProfileResult struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// ExtensionResult reports one extension's App ID and profile.
+type ExtensionResult struct {
+	BundleID BundleIDResult `json:"bundle_id"`
+	Profile  ProfileResult  `json:"profile"`
+	File     string         `json:"file"`
+}
+
 // Files lists what Auto wrote.
 type Files struct {
 	// Key is set only when a key was generated.
@@ -164,10 +174,13 @@ type AutoResult struct {
 	Certificate CertificateResult `json:"certificate"`
 	Devices     DevicesResult     `json:"devices"`
 	Profile     ProfileResult     `json:"profile"`
+	Extensions  []ExtensionResult `json:"extensions,omitempty"`
 	Files       Files             `json:"files"`
-	// P12 and ProfileContent are the bytes written, for uploading.
-	P12            []byte `json:"-"`
-	ProfileContent []byte `json:"-"`
+	// P12 and ProfileContent are the bytes written, for uploading;
+	// ExtensionProfiles maps each extension bundle id to its profile.
+	P12               []byte            `json:"-"`
+	ProfileContent    []byte            `json:"-"`
+	ExtensionProfiles map[string][]byte `json:"-"`
 }
 
 // Auto provisions everything an iOS build needs to sign through the App Store
@@ -195,23 +208,21 @@ func Auto(ctx context.Context, client *asc.Client, opts *AutoOptions) (*AutoResu
 	if now == nil {
 		now = time.Now
 	}
-	res := &AutoResult{Type: opts.Type}
+	res := &AutoResult{Type: opts.Type, ExtensionProfiles: map[string][]byte{}}
 
-	// 1. Bundle ID
-	bundle, err := client.BundleIDByIdentifier(ctx, opts.BundleID)
+	// 1. Bundle IDs: the app's and every extension's, since Apple issues a
+	// profile per App ID and an extension is one of its own.
+	bundle, err := ensureBundleID(ctx, client, opts, opts.BundleID, &res.BundleID)
 	if err != nil {
 		return res, err
 	}
-	if bundle == nil {
-		logf(opts.Log, "Registering App ID %s...", opts.BundleID)
-		if bundle, err = client.CreateBundleID(ctx, opts.BundleID, bundleIDName(opts.BundleID), asc.PlatformIOS); err != nil {
-			return res, fmt.Errorf("register App ID %s: %w", opts.BundleID, err)
+	extensionBundles := make([]*asc.BundleID, len(opts.Extensions))
+	for i, id := range opts.Extensions {
+		res.Extensions = append(res.Extensions, ExtensionResult{})
+		if extensionBundles[i], err = ensureBundleID(ctx, client, opts, id, &res.Extensions[i].BundleID); err != nil {
+			return res, err
 		}
-		res.BundleID.Created = true
-	} else {
-		logf(opts.Log, "App ID %s is registered (%s)", bundle.Identifier, bundle.Name)
 	}
-	res.BundleID.ID, res.BundleID.Identifier = bundle.ID, bundle.Identifier
 
 	// 2. Devices, before anything that counts against a quota: a development
 	// profile with no device to cover is an error, and it must not cost a
@@ -247,12 +258,19 @@ func Auto(ctx context.Context, client *asc.Client, opts *AutoOptions) (*AutoResu
 		return res, err
 	}
 
-	// 4. Profile
-	profile, err := ensureProfile(ctx, client, opts, bundle.ID, cert.ID, deviceIDs, now(), &res.Profile)
+	// 4. Profiles: the app's, then one per extension
+	profile, err := ensureProfile(ctx, client, opts, bundle, cert.ID, deviceIDs, now(), &res.Profile)
 	if err != nil {
 		return res, err
 	}
 	res.ProfileContent = profile.Content
+	for i, b := range extensionBundles {
+		p, err := ensureProfile(ctx, client, opts, b, cert.ID, deviceIDs, now(), &res.Extensions[i].Profile)
+		if err != nil {
+			return res, err
+		}
+		res.ExtensionProfiles[b.Identifier] = p.Content
+	}
 
 	// 5. Files
 	res.Files.P12 = filepath.Join(opts.OutDir, P12FileName(opts.Type))
@@ -263,7 +281,33 @@ func Auto(ctx context.Context, client *asc.Client, opts *AutoOptions) (*AutoResu
 	if err := os.WriteFile(res.Files.Profile, profile.Content, 0600); err != nil {
 		return res, fmt.Errorf("write provisioning profile: %w", err)
 	}
+	for i, b := range extensionBundles {
+		ext := &res.Extensions[i]
+		ext.File = filepath.Join(opts.OutDir, ProfileFileName(ext.Profile.Name))
+		if err := os.WriteFile(ext.File, res.ExtensionProfiles[b.Identifier], 0600); err != nil {
+			return res, fmt.Errorf("write provisioning profile: %w", err)
+		}
+	}
 	return res, nil
+}
+
+// ensureBundleID registers the App ID for identifier when it is missing.
+func ensureBundleID(ctx context.Context, client *asc.Client, opts *AutoOptions, identifier string, out *BundleIDResult) (*asc.BundleID, error) {
+	bundle, err := client.BundleIDByIdentifier(ctx, identifier)
+	if err != nil {
+		return nil, err
+	}
+	if bundle == nil {
+		logf(opts.Log, "Registering App ID %s...", identifier)
+		if bundle, err = client.CreateBundleID(ctx, identifier, bundleIDName(identifier), asc.PlatformIOS); err != nil {
+			return nil, fmt.Errorf("register App ID %s: %w", identifier, err)
+		}
+		out.Created = true
+	} else {
+		logf(opts.Log, "App ID %s is registered (%s)", bundle.Identifier, bundle.Name)
+	}
+	out.ID, out.Identifier = bundle.ID, bundle.Identifier
+	return bundle, nil
 }
 
 // ProfileName is the portal name of the profile Auto manages for a bundle ID.
@@ -397,8 +441,8 @@ func ensureDevices(ctx context.Context, client *asc.Client, opts *AutoOptions, o
 // ensureProfile reuses the Builder-managed profile when it is ACTIVE,
 // unexpired and still lists exactly this certificate and these devices;
 // otherwise it deletes and recreates it. Same-named duplicates go too.
-func ensureProfile(ctx context.Context, client *asc.Client, opts *AutoOptions, bundleResourceID, certID string, deviceIDs []string, now time.Time, out *ProfileResult) (*asc.Profile, error) {
-	name := ProfileName(opts.Type, opts.BundleID)
+func ensureProfile(ctx context.Context, client *asc.Client, opts *AutoOptions, bundle *asc.BundleID, certID string, deviceIDs []string, now time.Time, out *ProfileResult) (*asc.Profile, error) {
+	name := ProfileName(opts.Type, bundle.Identifier)
 	profileType := opts.Type.profileType()
 	existing, err := client.ListProfilesByName(ctx, name)
 	if err != nil {
@@ -427,7 +471,7 @@ func ensureProfile(ctx context.Context, client *asc.Client, opts *AutoOptions, b
 	if !opts.Type.NeedsDevices() {
 		deviceIDs = nil
 	}
-	p, err := client.CreateProfile(ctx, name, profileType, bundleResourceID, []string{certID}, deviceIDs)
+	p, err := client.CreateProfile(ctx, name, profileType, bundle.ID, []string{certID}, deviceIDs)
 	if err != nil {
 		return nil, fmt.Errorf("create profile %q: %w", name, err)
 	}

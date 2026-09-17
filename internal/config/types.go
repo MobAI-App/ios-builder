@@ -141,9 +141,14 @@ type IOSConfig struct {
 	// BundleID is the app bundle identifier, for signing setup and to find the
 	// App Store Connect app in `ios release` before any IPA exists (detected by
 	// init when unambiguous; otherwise the newest IPA in the output directory).
-	BundleID      string `json:"bundleId,omitempty"`
-	Signing       bool   `json:"signing,omitempty"`       // Legacy: sign builds without a profile with the unsuffixed IOS_* secrets
-	Configuration string `json:"configuration,omitempty"` // Build configuration: Debug (faster) or Release (production)
+	BundleID string `json:"bundleId,omitempty"`
+	// Extensions are the bundle identifiers of the app's extension targets
+	// (widgets, share/notification extensions, watch apps, app clips), each of
+	// which signing setup provisions a profile for. init and signing setup fill
+	// it from the local Xcode project; a managed Expo project lists them by hand.
+	Extensions    []string `json:"extensions,omitempty"`
+	Signing       bool     `json:"signing,omitempty"`       // Legacy: sign builds without a profile with the unsuffixed IOS_* secrets
+	Configuration string   `json:"configuration,omitempty"` // Build configuration: Debug (faster) or Release (production)
 }
 
 // MobAIConfig holds MobAI settings for local development
