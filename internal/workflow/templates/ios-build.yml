@@ -442,18 +442,32 @@ jobs:
             fi
           }
 
-          # The certificate kind the profile's type needs. Without an explicit
-          # CODE_SIGN_IDENTITY the archive keeps the project's default (usually
-          # Apple Development / iPhone Developer), and Xcode refuses to pair a
-          # development identity with a distribution profile: "No signing
-          # certificate iOS Development found". Duplicated verbatim in
-          # ios-build.yml and runner.sh.
-          signing_identity() {
+          # The certificate names that can sign for a profile of this type, the
+          # current one first. Apple renamed the certificates in 2021; keychains
+          # still hold iPhone Developer / iPhone Distribution certificates that
+          # sign exactly the same profiles. Duplicated verbatim in ios-build.yml
+          # and runner.sh.
+          signing_identities() {
             case "$1" in
-              development) echo "Apple Development" ;;
-              ad-hoc|app-store|enterprise) echo "Apple Distribution" ;;
+              development) printf '%s\n' "Apple Development" "iPhone Developer" ;;
+              ad-hoc|app-store|enterprise) printf '%s\n' "Apple Distribution" "iPhone Distribution" ;;
               *) return 1 ;;
             esac
+          }
+
+          # The identity to archive with: the first of those names the imported
+          # certificate actually goes by ($2 is security find-identity output).
+          # Without an explicit CODE_SIGN_IDENTITY the archive keeps the
+          # project's default, and Xcode refuses to pair a development identity
+          # with a distribution profile: "No signing certificate iOS Development
+          # found". Duplicated verbatim in ios-build.yml and runner.sh.
+          signing_identity() {
+            local names name
+            names=$(signing_identities "$1") || return 1
+            while IFS= read -r name; do
+              case "$2" in *"$name: "*) echo "$name"; return 0 ;; esac
+            done <<< "$names"
+            return 2
           }
 
           select_signing_set
@@ -476,7 +490,6 @@ jobs:
 
           EXPORT_METHOD=$(detect_export_method "$PROFILE_PLIST")
           check_signing_set "$EXPORT_METHOD"
-          CODE_SIGN_IDENTITY=$(signing_identity "$EXPORT_METHOD") || fail "No signing identity for export method $EXPORT_METHOD."
 
           # A Debug archive carries get-task-allow=true, which no distribution
           # profile grants: the export fails, or an IPA that App Store Connect
@@ -501,11 +514,12 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH"
 
-          # The certificate has to be the kind the profile asks for. Say so here
-          # instead of letting xcodebuild discover it after the whole archive.
+          # The certificate has to be the kind the profile asks for, under
+          # whichever of its names it carries. Say so here instead of letting
+          # xcodebuild discover it after the whole archive.
           IDENTITIES=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH")
           echo "$IDENTITIES"
-          echo "$IDENTITIES" | grep -qF "$CODE_SIGN_IDENTITY" || fail "IOS_CERTIFICATE${SIGNING_SET:+_$SIGNING_SET} holds no \"$CODE_SIGN_IDENTITY\" certificate, which an $EXPORT_METHOD profile must be signed with. Run builder signing setup --distribution ${DISTRIBUTION:-<distribution>} to issue the right one."
+          CODE_SIGN_IDENTITY=$(signing_identity "$EXPORT_METHOD" "$IDENTITIES") || fail "IOS_CERTIFICATE${SIGNING_SET:+_$SIGNING_SET} holds no $(signing_identities "$EXPORT_METHOD" | paste -sd '/' -) certificate, which an $EXPORT_METHOD profile must be signed with. Run builder signing setup --distribution ${DISTRIBUTION:-<distribution>} to issue the right one."
 
           # Install provisioning profile
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
