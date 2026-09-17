@@ -153,7 +153,6 @@ func toBuildUploadFile(r Resource[buildUploadFileAttributes]) BuildUploadFile {
 	}
 }
 
-// utiFor maps the archive extension to Apple's uniform type identifier.
 func utiFor(fileName string) string {
 	if strings.EqualFold(filepath.Ext(fileName), ".pkg") {
 		return "com.apple.pkg"

@@ -103,11 +103,10 @@ func (c *Coordinator) workflowInputs(buildID, ref string, s *config.BuildSetting
 	if s.Scheme != "" {
 		inputs["scheme"] = s.Scheme
 	}
-	// Pass Flutter version if configured (ensures SDK version match for hot reload)
+	// The Flutter SDK version must match the local one for hot reload.
 	if c.config.Flutter.Version != "" {
 		inputs["flutter_version"] = c.config.Flutter.Version
 	}
-	// Pass JDK version for Kotlin Multiplatform Gradle builds
 	if c.config.KMP.JDKVersion != "" {
 		inputs["jdk_version"] = c.config.KMP.JDKVersion
 	}
@@ -123,7 +122,6 @@ func (c *Coordinator) buildInputs(buildID, ref string, s *config.BuildSettings, 
 	if s.Signing {
 		inputs["use_signing"] = "true"
 	}
-	// Pass build configuration (Debug is faster, Release for production)
 	if s.Configuration != "" {
 		inputs["configuration"] = s.Configuration
 	}

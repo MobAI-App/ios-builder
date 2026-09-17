@@ -62,9 +62,8 @@ func (c *Coordinator) remote(override string) (ci.Provider, config.CIConfig, err
 }
 
 // inputs are the variables runner.sh reads on Codemagic and Bitrise. The
-// profile's env travels as one JSON object in BUILD_ENV, which the runner
-// exports before installing dependencies; DISTRIBUTION is passed through for
-// the export step. Both are only set when the profile provides them.
+// profile's env travels as one JSON object in BUILD_ENV, and DISTRIBUTION
+// selects the signing set; both are only set when the profile provides them.
 func (c *Coordinator) inputs(buildID, ref, sha string, s *config.BuildSettings) map[string]string {
 	v := map[string]string{"BUILD_ID": buildID, "SNAPSHOT_REF": ref, "SNAPSHOT_SHA": sha,
 		"IOS_PATH": c.config.IOS.Path, "SCHEME": s.Scheme,

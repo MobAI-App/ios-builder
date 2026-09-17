@@ -363,12 +363,11 @@ How a build's settings are resolved:
 **`env` values are build-time configuration, not secrets.** They are stored in
 `builder.json`, sent to the CI provider as plain workflow inputs, and visible in
 the run's inputs and logs. Keep tokens and passwords in the provider's secrets
-instead (`gh secret set` on GitHub, or the [Codemagic / Bitrise secrets
+(`gh secret set` on GitHub, or the [Codemagic / Bitrise secrets
 guide](docs/provider-secrets.md)); the build reads those as environment
-variables too. Names the runner owns are rejected: its own parameters
-(`SCHEME`, `CONFIGURATION`, `USE_SIGNING`, `BUILD_ENV`, ...), the signing
-secrets, `PATH`, `HOME`, `DEVELOPER_DIR`, and anything starting with `GITHUB_`,
-`RUNNER_`, `CM_`, `BITRISE_` or `BUILDER_`.
+variables too. Names the runner owns are rejected: its own parameters (`SCHEME`,
+`CONFIGURATION`, `USE_SIGNING`, `BUILD_ENV`, ...), the signing secrets, `PATH`,
+`HOME`, `DEVELOPER_DIR`, and the `GITHUB_`, `RUNNER_`, `CM_`, `BITRISE_`, `BUILDER_` prefixes.
 
 Selecting a profile, with `--profile` or `defaultProfile`, needs the workflow
 file from this version of Builder, which declares a `profile` input; an older
@@ -483,13 +482,12 @@ create certificates. It then:
    newest IPA in `./dist/`; in a terminal it asks as a last resort.
 2. Issues a **certificate** — Apple Development for `development`, Apple
    Distribution for `ad-hoc` and `store` — for a private key generated on your
-   machine (`ios-signing-<distribution>.key`, or `--key` to reuse one from
-   `signing csr`; a `ios-signing.key` from an earlier version is picked up
+   machine (`ios-signing-<distribution>.key`; `--key` reuses one from
+   `signing csr`, and an `ios-signing.key` from an earlier version is picked up
    too). A valid certificate on the account is reused only when its private
-   key is here, because that is the only way to build the `.p12`; otherwise a
-   new one is issued. Nothing is ever revoked: when Apple's limit (2
-   Development, 3 Distribution) is hit, the error names it and points at the
-   portal.
+   key is here, since the `.p12` needs it; otherwise a new one is issued.
+   Nothing is ever revoked: at Apple's limit (2 Development, 3 Distribution)
+   the error says so and points at the portal.
 3. Registers **devices** from `--device <udid>` (repeatable) and
    `--devices-from-mobai` (name and UDID of every physical iOS device MobAI has
    connected; simulators and cloud farm devices are skipped). Development and
@@ -504,17 +502,13 @@ create certificates. It then:
    changed`, `forced`).
 5. Writes `ios-signing-<distribution>.key` (when generated),
    `ios-signing-<distribution>.p12` and `Builder-<distribution>-<bundle
-   id>.mobileprovision` to `--out-dir` (default `.`), uploads the three secrets
-   of the set to GitHub, and writes the build profile in `builder.json`:
-   `--name` (default: the distribution name) with `"distribution":
-   "<distribution>"`. Other fields of an existing profile are kept; a
-   different `distribution` in it is replaced, and the command says so.
-   `defaultProfile` is not touched: point it at the profile for a plain
-   `ios build` to use it, or pass `--profile`. An `--out-dir` other than `.`
-   is recorded as `signing.dir` (as typed, `~` included), so a later
-   `ios build --profile` that has to provision a set finds the certificate's
-   key there instead of asking Apple for a second certificate, which it
-   refuses.
+   id>.mobileprovision` to `--out-dir` (default `.`), uploads the set's three
+   secrets to GitHub, and writes `"distribution": "<distribution>"` into the
+   `--name` profile (default: the distribution name) in `builder.json`, keeping
+   its other fields and reporting a replaced distribution; `defaultProfile` is
+   left alone. An `--out-dir` other than `.` is recorded as `signing.dir`, so a
+   later `ios build` that provisions a set reuses the key there instead of
+   asking Apple for a second certificate, which it refuses.
 6. Prints the three secret names and where their values come from — the
    `.p12` base64-encoded, the password, the `.mobileprovision` base64-encoded
    — every time, so the same set can be pasted into Codemagic or Bitrise,
@@ -551,15 +545,13 @@ builder signing setup --certificate ios-signing.p12 --profile MyApp.mobileprovis
 
 `builder ios build --profile <name>` checks, before dispatching to GitHub,
 that the repository holds all three secrets of the profile's set. When any is
-missing and an App Store Connect key is saved, it runs the same provisioning as
-`signing setup` without prompts, uploads the set and then builds. A development
-or ad-hoc profile needs at least one registered device; with none, the build
-stops and points at `builder signing setup --distribution development
---devices-from-mobai`. Without an Apple key the build stops before anything is
-pushed and names both ways out: `builder auth apple`, or `builder signing setup
---certificate ... --profile ...`. `--unsigned` skips all of this, and
-Codemagic/Bitrise builds skip the check (no secrets API): their runner
-reports a missing set itself.
+missing and an App Store Connect key is saved, it runs the same provisioning
+as `signing setup` without prompts, uploads the set and builds; a development
+or ad-hoc profile with no registered device stops and points at `builder
+signing setup --distribution development --devices-from-mobai`. Without an
+Apple key it stops before anything is pushed and names both ways out (`builder
+auth apple`, or `signing setup --certificate ... --profile ...`). `--unsigned`
+skips the check, and so do Codemagic/Bitrise builds (no secrets API).
 
 ### Legacy: `ios.signing` without profiles
 

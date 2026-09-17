@@ -58,7 +58,6 @@ var getASCClient = func() (*asc.Client, error) {
 	return asc.NewClient(asc.Credentials{IssuerID: creds.IssuerID, KeyID: creds.KeyID, PrivateKey: creds.PrivateKey})
 }
 
-// resolveIPA returns the given path, or the newest IPA in ./dist.
 func resolveIPA(path string) (string, error) {
 	if path != "" {
 		return path, nil

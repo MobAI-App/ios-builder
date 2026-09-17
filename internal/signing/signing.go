@@ -15,12 +15,10 @@ import (
 	pkcs12 "software.sslmate.com/src/go-pkcs12"
 )
 
-// GenerateKeyAndCSR creates an RSA-2048 private key and a certificate signing
-// request for the Apple Developer portal, both PEM-encoded. Apple requires
-// RSA 2048 for signing certificates; the subject mirrors what Keychain Access
-// puts in its CSRs (email address and common name). The key is written in
-// PKCS#8 ("PRIVATE KEY"), the form openssl and zsign read without a legacy
-// flag.
+// GenerateKeyAndCSR creates an RSA-2048 private key (Apple's requirement) and
+// a certificate signing request whose subject mirrors Keychain Access's, both
+// PEM-encoded. The key is PKCS#8 ("PRIVATE KEY"), the form openssl and zsign
+// read without a legacy flag.
 func GenerateKeyAndCSR(commonName, email string) (keyPEM, csrPEM []byte, err error) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

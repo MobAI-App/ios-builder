@@ -36,17 +36,15 @@ type SigningConfig struct {
 }
 
 // Profile is a named set of build settings, selected with --profile. Every
-// field is optional and overrides the matching top-level setting; unset fields
-// keep the top-level value. Runner and submit settings are planned here too.
+// field is optional and overrides the matching top-level setting.
 type Profile struct {
 	Configuration string            `json:"configuration,omitempty"` // overrides ios.configuration; derived from distribution when empty
 	Scheme        string            `json:"scheme,omitempty"`        // overrides ios.scheme
 	Provider      string            `json:"provider,omitempty"`      // overrides provider
 	Env           map[string]string `json:"env,omitempty"`           // exported on the runner before dependencies and the build
-	// Distribution is the only signing setting of a profile: development,
-	// ad-hoc (or internal), store or enterprise. It selects the signing set the
-	// runner reads (IOS_*_<SET> secrets, see SigningSet) and the type the
-	// provisioning profile in it must have. Empty means an unsigned build.
+	// Distribution is the only signing setting of a profile (development,
+	// ad-hoc or internal, store, enterprise; empty is unsigned): it selects the
+	// signing set and the type the provisioning profile in it must have.
 	Distribution string `json:"distribution,omitempty"`
 }
 

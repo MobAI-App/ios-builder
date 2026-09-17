@@ -199,7 +199,6 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	}
 }
 
-// sleep waits for d or until ctx is done.
 func sleep(ctx context.Context, d time.Duration) error {
 	timer := time.NewTimer(d)
 	defer timer.Stop()

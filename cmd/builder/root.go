@@ -255,9 +255,8 @@ func detectIOSPath() (string, string) {
 var bundleIDRe = regexp.MustCompile(`PRODUCT_BUNDLE_IDENTIFIER\s*=\s*"?([^";\s]+)"?\s*;`)
 
 // detectBundleID reads the app's bundle identifier from the Xcode project
-// under iosPath. Test targets (…Tests) and values built from build settings
-// ($(…)) are ignored; anything still ambiguous yields "" so init leaves the
-// field for `signing setup` to resolve.
+// under iosPath, skipping test targets and $(…) values. Anything still
+// ambiguous yields "" so init leaves the field for `signing setup` to resolve.
 func detectBundleID(iosPath string) string {
 	if iosPath == "" {
 		iosPath = "."
@@ -756,8 +755,7 @@ func runBuild(ctx context.Context, cfg *config.Config, opts *build.BuildOptions)
 		return err
 	}
 	// A GitHub build with a distribution needs its signing set in the
-	// repository; Codemagic and Bitrise have no secrets API, so their runner
-	// reports a missing set itself (the check knows the profile may pick them).
+	// repository; ensureSigningSecrets leaves Codemagic and Bitrise alone.
 	if ghClient != nil && !opts.Unsigned {
 		if err := ensureSigningSecrets(ctx, cfg, ghClient, getASCClient, opts.Profile, opts.Provider, os.Stdout); err != nil {
 			return err

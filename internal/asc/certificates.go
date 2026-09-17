@@ -62,11 +62,10 @@ func toCertificate(r Resource[certificateAttributes]) (Certificate, error) {
 	return c, nil
 }
 
-// CheckAccess verifies the key with one cheap read-only call. It lists one
-// certificate rather than one app: apps?limit=1 answers 200 with an empty
-// page for a key of any role, while certificates demands the Certificates,
-// Identifiers & Profiles access that signing needs (and every role that can
-// upload builds has).
+// CheckAccess verifies the key with one cheap read-only call. It lists
+// certificates rather than apps because apps?limit=1 answers 200 for a key of
+// any role, while certificates demands the Certificates, Identifiers &
+// Profiles access that signing needs.
 func (c *Client) CheckAccess(ctx context.Context) error {
 	_, err := getPage[certificateAttributes](ctx, c, "/v1/certificates", url.Values{"limit": {"1"}})
 	return err

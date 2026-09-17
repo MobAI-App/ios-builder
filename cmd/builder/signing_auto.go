@@ -195,9 +195,8 @@ func setupDistribution(cfg *config.Config, profileName, flag string) (signing.Ty
 }
 
 // uploadSigningSet writes the three secrets of a set to the GitHub repository
-// in builder.json. storeErr is a client that could not be built at all (no
-// login), reported the same way as a failed upload: `signing setup` prints the
-// values afterwards, so neither is the end of the road.
+// in builder.json. storeErr is a client that could not be built (no login),
+// reported like a failed upload since the values are printed afterwards.
 func uploadSigningSet(ctx context.Context, store secretStore, storeErr error, cfg *config.Config, log io.Writer, set string, p12 []byte, password string, profile []byte) error {
 	if storeErr != nil {
 		return storeErr
@@ -329,10 +328,9 @@ func mobaiSigningDevices(connected []mobai.Device) []signing.Device {
 	return devices
 }
 
-// signingKey returns the key at keyPath (--key), else the key a previous run
-// of this type left in the first of dirs that has one (ios-signing-<type>.key,
-// or the ios-signing.key of runs before signing sets), else nil so a key is
-// generated. The returned path is "" when generating.
+// signingKey returns the key at keyPath (--key), else the first
+// ios-signing-<type>.key or legacy ios-signing.key in dirs, else nil so a key
+// is generated (path "" then).
 func signingKey(keyPath string, typ signing.Type, dirs ...string) (keyPEM []byte, path string, err error) {
 	if keyPath == "" {
 		keyPath = findSigningKey(typ, dirs)
@@ -360,10 +358,9 @@ func findSigningKey(typ signing.Type, dirs []string) string {
 	return ""
 }
 
-// recordSigningDir keeps `signing setup`'s --out-dir in builder.json as it
-// was given (a ~ stays a ~, so the file works for every user of the repo),
-// where on-demand provisioning looks for the key first. The default working
-// directory is not written.
+// recordSigningDir keeps `signing setup`'s --out-dir in builder.json as given
+// (a ~ stays a ~, so the file works for every user of the repo), where
+// on-demand provisioning looks for the key first; "." is not written.
 func recordSigningDir(cfg *config.Config, outDir string) {
 	outDir = strings.TrimSpace(outDir)
 	if filepath.Clean(outDir) == "." {
@@ -480,14 +477,10 @@ func missingSigningSecrets(ctx context.Context, gh secretStore, cfg *config.Conf
 	return missing, nil
 }
 
-// ensureSigningSecrets runs before a build is dispatched to GitHub: when the
-// selected profile has a distribution, its signing set must be in the
-// repository. A missing or partial set is provisioned through App Store
-// Connect the way `signing setup` does, without prompts; without Apple
-// credentials the build stops here, before anything is pushed. The provider
-// that will run the job is --provider, else the profile's, else the top-level
-// one (as the coordinator resolves it); Codemagic and Bitrise have no secrets
-// API, so their builds are left to the runner, which reports a missing set.
+// ensureSigningSecrets provisions a missing or partial signing set through
+// App Store Connect without prompts before a build is dispatched, so a
+// distribution build never fails on the runner for want of secrets. It stops
+// before anything is pushed when there are no Apple credentials.
 func ensureSigningSecrets(ctx context.Context, cfg *config.Config, store secretStore, ascClient func() (*asc.Client, error), profile, provider string, log io.Writer) error {
 	s, err := cfg.ResolveProfile(profile)
 	if err != nil {
@@ -504,9 +497,7 @@ func ensureSigningSecrets(ctx context.Context, cfg *config.Config, store secretS
 		return nil
 	}
 	if name != "github" {
-		// Codemagic and Bitrise have no secrets API, so the set cannot be
-		// checked or provisioned from here; the runner fails by name if it
-		// is missing.
+		// Codemagic and Bitrise have no secrets API; their runner fails by name.
 		fmt.Fprintf(log, "Profile %q signs with set %s. Builder cannot check %s secrets; if the build fails on signing, run: builder signing setup --distribution %s\n", s.Profile, s.SigningSet(), name, s.Distribution)
 		return nil
 	}
@@ -629,9 +620,8 @@ func signingUploadLine(cfg *config.Config, names config.SigningSecrets, uploadEr
 }
 
 // printSigningSecretValues names the three secrets of the set and where their
-// values come from. It is printed whether or not the upload worked: Codemagic
-// and Bitrise are set in their own dashboards, and so is a GitHub repository
-// this token cannot write to.
+// values come from, whether or not the upload worked: Codemagic, Bitrise and a
+// repository this token cannot write to are set by hand.
 func printSigningSecretValues(w io.Writer, names config.SigningSecrets, p12Path, profilePath string) {
 	fmt.Fprintln(w, "Set them by hand wherever Builder cannot (Codemagic, Bitrise, a repository this login cannot write to):")
 	fmt.Fprintf(w, "  %-*s  base64 of %s\n", len(names.Password), names.Certificate, p12Path)
