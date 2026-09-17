@@ -561,7 +561,7 @@ func TestSigningSettingsOnAppTargetOnly(t *testing.T) {
 		if archives == 0 || archives != calls {
 			t.Errorf("%s: %d signed archives but %d calls of apply_signing_to_app_target", name, archives, calls)
 		}
-		steps := []string{"pod install\n", "flutter build ios --release --no-codesign"}
+		steps := []string{"pod install\n", "flutter build ios"}
 		if name == "runner.sh" {
 			steps = append(steps, "expo prebuild")
 		}
