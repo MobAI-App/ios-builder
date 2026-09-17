@@ -209,9 +209,9 @@ builder signing csr           # Manual path: create a private key + certificate 
 builder signing p12           # Manual path: assemble a .p12 from the key and Apple's certificate
 
 # TestFlight and App Store (needs builder auth apple)
-builder ios release --group "Beta Testers" --notes "What to test"  # Build with the next build number, upload, wait, add to TestFlight
-builder ios release --app-store --release after-approval  # Same, then submit the version for App Review
-builder ios build --submit    # Short for: ios release (TestFlight, no groups)
+builder ios release --profile store --group "Beta Testers" --notes "What to test"  # Build with the next build number, upload, wait, add to TestFlight
+builder ios release --profile store --app-store --release after-approval  # Same, then submit the version for App Review
+builder ios build --profile store --submit    # Short for: ios release (TestFlight, no groups)
 builder ios upload --wait     # Upload ./dist/*.ipa to App Store Connect and wait for processing
 builder ios submit --testflight --group "Beta Testers" --notes "What to test"
 builder ios submit --app-store --release after-approval  # Submit the version for App Review
@@ -661,16 +661,22 @@ served as the reference for Builder's implementation.
 ### 5. Or all of it in one command: release
 
 ```bash
-builder ios release --group "Beta Testers" --notes "New login flow"
-builder ios release --app-store --release after-approval
-builder ios build --submit     # TestFlight release with no groups
+builder ios release --profile store --group "Beta Testers" --notes "New login flow"
+builder ios release --profile store --app-store --release after-approval
+builder ios build --profile store --submit     # TestFlight release with no groups
 ```
 
 `release` runs steps 2 to 4 back to back: build, download, upload, wait for
 processing, then TestFlight (default) or `--app-store`, with the same flags as
-`submit`. Before dispatching anything it checks that an API key is saved,
-`ios.signing` is `true` and `ios.configuration` is `Release`, and reports the
-first thing missing.
+`submit`. It builds with a [build profile](#build-profiles) (`--profile`, or
+`defaultProfile`) that must have `"distribution": "store"` — TestFlight and the
+App Store accept nothing but an App Store profile — and its configuration must
+be `Release` (the default for `store`; an explicit `Debug` is refused). Before
+dispatching anything it checks that an API key is saved and the profile fits,
+and reports the first thing missing; without a store profile the message names
+`builder signing setup --distribution store`, which writes the `store` profile,
+and `--profile store`. On GitHub a missing `STORE` signing set is provisioned
+first, as `ios build --profile` does. `--unsigned` is refused with `--submit`.
 
 It also solves the build-number problem. Builder asks App Store Connect for the
 app's builds, takes the highest `CFBundleVersion` across all versions and

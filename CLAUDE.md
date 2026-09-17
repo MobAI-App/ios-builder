@@ -38,9 +38,9 @@ go install ./cmd/builder
 ./builder ios upload --wait # Upload dist/*.ipa to App Store Connect, wait for processing
 ./builder ios submit --testflight --group <name> --notes <text>  # TestFlight
 ./builder ios submit --app-store --release after-approval        # App Review
-./builder ios release --group <name> --notes <text>  # Build with the next build number, upload, wait, TestFlight
-./builder ios release --app-store --release after-approval       # Same, then App Review
-./builder ios build --submit                                     # Short for: ios release (no groups)
+./builder ios release --profile store --group <name> --notes <text>  # Build with the next build number, upload, wait, TestFlight
+./builder ios release --profile store --app-store --release after-approval  # Same, then App Review
+./builder ios build --profile store --submit                          # Short for: ios release (no groups)
 ```
 
 ## Architecture
@@ -158,7 +158,9 @@ builder ios submit ──────► Picks the newest VALID build (or --buil
                                   build, releaseType), reviewSubmissions +
                                   reviewSubmissionItems, PATCH submitted=true
 
-builder ios release ─────► Preflight: API key, ios.signing, ios.configuration=Release
+builder ios release ─────► Preflight: API key; --profile/defaultProfile has distribution
+                            store and configuration Release; STORE set provisioned on
+                            demand (ensureSigningSecrets, GitHub only)
                                 │
                                 ▼
                           Bundle ID (--bundle-id, ios.bundleId, newest dist/*.ipa)
@@ -374,10 +376,18 @@ internal/
   build profile's `distribution` asked for (`app-store` is the `store` distribution).
 - **Release Flow** (`internal/release`): `ios release` and `ios build --submit` share `release.Run`,
   which takes a `Builder` interface (`*build.Coordinator`) and an `*asc.Client`, so tests use a
-  fake builder that writes an IPA plus an httptest ASC. `Preflight` refuses to dispatch without
-  `ios.signing` and `ios.configuration: "Release"`; the API key is checked first by the command.
-  The cobra layer stays thin and reuses `finish`/`newOutput` from `upload.go`. `--timeout` bounds
-  the build and then the ASC wait separately. `Coordinator.Build` takes `*BuildOptions`.
+  fake builder that writes an IPA plus an httptest ASC. `Preflight(cfg, profile)` resolves the
+  profile (`--profile`, else `defaultProfile`) and refuses to dispatch unless its distribution is
+  `store` (TestFlight accepts nothing else either) and its effective configuration is `Release`
+  (derived for `store`; an explicit `Debug` is refused with the hint); `ios.signing`/
+  `ios.configuration` play no part. Without a store profile the error names `builder signing
+  setup --distribution store` (which writes the `store` profile) and `--profile store`. The
+  command checks the API key, then `Preflight`, then `ensureSigningSecrets` for a GitHub build
+  (missing `STORE` secrets are provisioned like `ios build --profile`), all before the snapshot
+  push; `Run` calls `Preflight` again so the package is safe on its own. `--unsigned` with
+  `--submit` is refused. The cobra layer stays thin and reuses `finish`/`newOutput` from
+  `upload.go`. `--timeout` bounds the build and then the ASC wait separately. `Coordinator.Build`
+  takes `*BuildOptions`.
 - **Automatic Build Numbers**: ASC rejects an upload whose `CFBundleVersion` is not above every
   processed build, so `release` lists the app's builds across all marketing versions
   (`ListBuilds`, no limit, pages through `links.next`) and increments the last component of the

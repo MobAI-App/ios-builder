@@ -28,8 +28,11 @@ holds for the app, so every release uploads; --build-number overrides it and
 --version sets the marketing version. The app is identified by --bundle-id,
 ios.bundleId in builder.json, or the newest IPA in the output directory.
 
-Needs ios.signing true and ios.configuration "Release" in builder.json, and an
-App Store Connect API key (builder auth apple).`,
+Needs an App Store Connect API key (builder auth apple) and a builder.json
+profile with "distribution": "store" (--profile, or defaultProfile), built in
+Release; builder signing setup --distribution store writes the "store" profile.
+Missing STORE signing secrets on GitHub are provisioned first, as ios build
+--profile does.`,
 	Args: cobra.NoArgs,
 	RunE: runIOSRelease,
 }
@@ -48,6 +51,7 @@ func init() {
 	f.StringP("output", "o", "dist", "Output directory for the IPA")
 	f.StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
 	f.String("provider", "", "Override CI provider (default github or builder.json provider)")
+	f.String("profile", "", "App Store build profile from builder.json, distribution store (default: defaultProfile)")
 	f.Duration("timeout", 30*time.Minute, "Time limit for the build, and again for App Store Connect processing")
 	f.Bool("json", false, "Print the result as JSON (progress goes to stderr)")
 	iosCmd.AddCommand(iosReleaseCmd)
@@ -105,11 +109,15 @@ func buildOptionsFromFlags(cmd *cobra.Command, cfg *config.Config) (build.BuildO
 }
 
 // runRelease is the flow behind `ios release` and `ios build --submit`. The
-// API key is checked first; release.Run checks the builder.json preconditions
-// before it dispatches anything.
+// API key and the App Store profile are checked first, then a GitHub build
+// gets its STORE signing set provisioned when the repository lacks it (the
+// same path as `ios build --profile`), all before anything is pushed.
 func runRelease(cmd *cobra.Command, cfg *config.Config, opts *release.Options) error {
 	client, err := getASCClient()
 	if err != nil {
+		return err
+	}
+	if err := release.Preflight(cfg, opts.Build.Profile); err != nil {
 		return err
 	}
 	ghClient, err := clientForProvider(cfg, opts.Build.Provider)
@@ -121,6 +129,11 @@ func runRelease(cmd *cobra.Command, cfg *config.Config, opts *release.Options) e
 	ctx, cancel := commandContext(cmd, false)
 	defer cancel()
 
+	if ghClient != nil {
+		if err := ensureSigningSecrets(ctx, cfg, ghClient, getASCClient, opts.Build.Profile, opts.Build.Provider, out.log); err != nil {
+			return err
+		}
+	}
 	coordinator := build.NewCoordinatorWithOutput(cfg, ghClient, out.log)
 	res, err := release.Run(ctx, cfg, coordinator, client, opts)
 	return finish(out, cmd, res, err, func() {

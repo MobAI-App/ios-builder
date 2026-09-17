@@ -28,8 +28,9 @@ type Builder interface {
 
 // Options configures Run.
 type Options struct {
-	// Build carries Provider, Remote, Timeout and OutputDir; Run sets
-	// BuildNumber and Unsigned itself.
+	// Build carries Profile, Provider, Remote, Timeout and OutputDir; Run sets
+	// BuildNumber and Unsigned itself. Profile (or defaultProfile) must be an
+	// App Store profile: see Preflight.
 	Build build.BuildOptions
 	// BundleID identifies the app before the IPA exists. Empty falls back to
 	// ios.bundleId in builder.json, then the newest IPA in the output directory.
@@ -70,18 +71,24 @@ type Result struct {
 // runner validates the same shape, so nothing else reaches its shell.
 var versionRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+){0,2}$`)
 
-// Preflight reports the builder.json settings App Store Connect needs before
-// anything is dispatched: a signed archive built in Release.
-func Preflight(cfg *config.Config) error {
-	if !cfg.IOS.Signing {
-		return fmt.Errorf("ios.signing is false in builder.json; App Store Connect only accepts signed builds. Run builder signing setup with an Apple Distribution certificate and an App Store provisioning profile, then set \"signing\": true")
+// Preflight checks, before anything is dispatched, that the selected build
+// profile (--profile, else defaultProfile) produces what App Store Connect
+// accepts: an archive signed with an App Store profile (distribution store)
+// and built in Release. TestFlight takes nothing else either.
+func Preflight(cfg *config.Config, profile string) error {
+	s, err := cfg.ResolveProfile(profile)
+	if err != nil {
+		return err
 	}
-	if cfg.IOS.Configuration != "Release" {
-		got := cfg.IOS.Configuration
-		if got == "" {
-			got = "unset (Debug)"
-		}
-		return fmt.Errorf("ios.configuration is %s in builder.json; App Store Connect rejects Debug archives. Set \"configuration\": \"Release\"", got)
+	switch s.Distribution {
+	case config.DistributionStore:
+	case "":
+		return fmt.Errorf("no App Store build profile selected; TestFlight and the App Store need one with \"distribution\": \"store\". Run builder signing setup --distribution store, which writes the \"store\" profile to builder.json, then release with --profile store")
+	default:
+		return fmt.Errorf("profile %q has distribution %s; TestFlight and the App Store need an App Store profile (\"distribution\": \"store\"). Run builder signing setup --distribution store, which writes the \"store\" profile to builder.json, then release with --profile store", s.Profile, s.Distribution)
+	}
+	if s.Configuration != "Release" {
+		return fmt.Errorf("profile %q builds %s; App Store Connect rejects Debug archives. Remove \"configuration\" from the profile (it defaults to Release for store) or set it to \"Release\"", s.Profile, s.Configuration)
 	}
 	return nil
 }
@@ -89,7 +96,7 @@ func Preflight(cfg *config.Config) error {
 // Run builds, uploads and submits. A partial Result comes back with the error
 // so callers can show how far it got.
 func Run(ctx context.Context, cfg *config.Config, builder Builder, client *asc.Client, opts *Options) (*Result, error) {
-	if err := Preflight(cfg); err != nil {
+	if err := Preflight(cfg, opts.Build.Profile); err != nil {
 		return nil, err
 	}
 	if opts.BuildNumber != "" && !versionRe.MatchString(opts.BuildNumber) {

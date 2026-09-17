@@ -220,8 +220,13 @@ func (f *fake) called(key string) bool {
 	return false
 }
 
+// releaseConfig has the store profile `signing setup --distribution store`
+// writes, selected as the default so tests need no --profile.
 func releaseConfig() *config.Config {
-	return &config.Config{Project: "App", IOS: config.IOSConfig{Signing: true, Configuration: "Release", BundleID: bundleID}}
+	return &config.Config{
+		Project: "App", IOS: config.IOSConfig{BundleID: bundleID},
+		DefaultProfile: "store", Profiles: map[string]config.Profile{"store": {Distribution: "store"}},
+	}
 }
 
 func TestRunTestFlightPicksNextBuildNumber(t *testing.T) {
@@ -235,7 +240,7 @@ func TestRunTestFlightPicksNextBuildNumber(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, log.String())
 	}
-	if b.opts.BuildNumber != "13" || b.opts.Unsigned || b.opts.Provider != "codemagic" || b.opts.Remote != "upstream" {
+	if b.opts.BuildNumber != "13" || b.opts.Unsigned || b.opts.Provider != "codemagic" || b.opts.Remote != "upstream" || b.opts.Profile != "" {
 		t.Errorf("build options = %+v", b.opts)
 	}
 	if res.BuildNumber != "13" || res.Version != "2.0.0" || res.BuildID != "abcdef12" || res.ASCBuildID != "build-9" || res.BundleID != bundleID {
@@ -266,14 +271,18 @@ func TestRunTestFlightPicksNextBuildNumber(t *testing.T) {
 func TestRunAppStoreWithOverrides(t *testing.T) {
 	f := newFake(t, "40")
 	b := &fakeBuilder{t: t}
-	res, err := Run(context.Background(), releaseConfig(), b, f.client(t), &Options{
-		Build: build.BuildOptions{OutputDir: filepath.Join(t.TempDir(), "dist")}, BuildNumber: "100", Version: "3.1.0",
+	// --profile names a store profile other than the default.
+	cfg := releaseConfig()
+	cfg.DefaultProfile = "development"
+	cfg.Profiles["development"] = config.Profile{Distribution: "development"}
+	res, err := Run(context.Background(), cfg, b, f.client(t), &Options{
+		Build: build.BuildOptions{OutputDir: filepath.Join(t.TempDir(), "dist"), Profile: "store"}, BuildNumber: "100", Version: "3.1.0",
 		AppStore: true, ReleaseType: asc.ReleaseTypeAfterApproval, PollInterval: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.opts.BuildNumber != "3.1.0+100" {
+	if b.opts.BuildNumber != "3.1.0+100" || b.opts.Profile != "store" {
 		t.Errorf("build options = %+v", b.opts)
 	}
 	if res.Version != "3.1.0" || res.BuildNumber != "100" || res.Link != "https://appstoreconnect.apple.com/apps/app-1/distribution" {
@@ -305,25 +314,52 @@ func TestRunRefusesIPAWithoutTheBuildNumber(t *testing.T) {
 }
 
 func TestRunPreflight(t *testing.T) {
-	for name, cfg := range map[string]*config.Config{
-		"unsigned": {IOS: config.IOSConfig{Configuration: "Release"}},
-		"debug":    {IOS: config.IOSConfig{Signing: true}},
+	profiles := map[string]config.Profile{
+		"store":       {Distribution: "store"},
+		"store-debug": {Distribution: "store", Configuration: "Debug"},
+		"development": {Distribution: "development"},
+		"unsigned":    {},
+	}
+	for name, tc := range map[string]struct {
+		cfg     *config.Config
+		profile string
+		want    []string
+	}{
+		// The legacy ios.signing path is not an App Store profile either.
+		"no profile":         {&config.Config{IOS: config.IOSConfig{Signing: true, Configuration: "Release"}}, "", []string{"signing setup --distribution store", "--profile store"}},
+		"unsigned profile":   {&config.Config{Profiles: profiles}, "unsigned", []string{"signing setup --distribution store", "--profile store"}},
+		"development":        {&config.Config{Profiles: profiles}, "development", []string{`"development" has distribution development`, "--profile store"}},
+		"explicit Debug":     {&config.Config{Profiles: profiles}, "store-debug", []string{`"store-debug" builds Debug`, `"Release"`}},
+		"unknown profile":    {&config.Config{Profiles: profiles}, "missing", []string{`"missing" is not defined`}},
+		"defaultProfile":     {&config.Config{Profiles: profiles, DefaultProfile: "development"}, "", []string{"distribution development"}},
+		"flag beats default": {&config.Config{Profiles: profiles, DefaultProfile: "store"}, "development", []string{"distribution development"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t)
 			b := &fakeBuilder{t: t}
-			_, err := Run(context.Background(), cfg, b, f.client(t), &Options{})
+			_, err := Run(context.Background(), tc.cfg, b, f.client(t), &Options{Build: build.BuildOptions{Profile: tc.profile}})
 			if err == nil || b.calls != 0 || len(f.calls) != 0 {
 				t.Fatalf("err = %v, builds = %d, calls = %v", err, b.calls, f.calls)
 			}
-			want := "ios.signing"
-			if name == "debug" {
-				want = "ios.configuration"
-			}
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("err = %v", err)
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("err = %v\nwant %q", err, want)
+				}
 			}
 		})
+	}
+	// A store profile that sets Release explicitly, and one selected by flag
+	// over a non-store default, both pass.
+	for _, tc := range []struct {
+		cfg     *config.Config
+		profile string
+	}{
+		{&config.Config{Profiles: map[string]config.Profile{"prod": {Distribution: "store", Configuration: "Release"}}}, "prod"},
+		{&config.Config{Profiles: profiles, DefaultProfile: "development"}, "store"},
+	} {
+		if err := Preflight(tc.cfg, tc.profile); err != nil {
+			t.Errorf("Preflight(%q) = %v", tc.profile, err)
+		}
 	}
 	f := newFake(t)
 	for _, opts := range []*Options{{BuildNumber: "1.2.3.4"}, {Version: "v1"}, {BuildNumber: "12a"}} {
