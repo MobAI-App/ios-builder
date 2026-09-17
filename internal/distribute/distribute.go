@@ -58,14 +58,12 @@ func distributionLink(appID string) string {
 	return "https://appstoreconnect.apple.com/apps/" + appID + "/distribution"
 }
 
-// logf writes progress when w is set.
 func logf(w io.Writer, format string, args ...any) {
 	if w != nil {
 		fmt.Fprintf(w, format+"\n", args...)
 	}
 }
 
-// pollInterval applies the default when opts leave it zero.
 func pollInterval(d time.Duration) time.Duration {
 	if d <= 0 {
 		return 15 * time.Second
@@ -108,7 +106,6 @@ func pickBuild(ctx context.Context, client *asc.Client, appID, version, buildNum
 
 // setCompliance answers the export compliance question with "no non-exempt
 // encryption" when the caller asked for it and the build is still unanswered.
-// It returns what happened for the result.
 func setCompliance(ctx context.Context, client *asc.Client, log io.Writer, build *asc.Build, exempt bool) (string, error) {
 	switch {
 	case build.UsesNonExemptEncryption != nil:

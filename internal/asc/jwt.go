@@ -2,10 +2,7 @@
 //
 // It runs on the developer's machine (or a CI agent) rather than on the macOS
 // runner, authenticating with an App Store Connect API key: no Mac, altool or
-// Transporter is involved. The client covers the JSON:API plumbing (auth,
-// errors, pagination, retries) generically and adds typed helpers for the
-// resources Builder needs: apps, builds, build uploads, TestFlight groups and
-// App Store review submissions.
+// Transporter is involved.
 package asc
 
 import (
