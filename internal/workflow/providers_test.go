@@ -13,7 +13,9 @@ import (
 	"text/template"
 
 	"github.com/MobAI-App/ios-builder/internal/signing"
+	"github.com/MobAI-App/ios-builder/internal/xcodeproj"
 	"go.yaml.in/yaml/v3"
+	"howett.net/plist"
 )
 
 func TestProviderYAMLAndPreservation(t *testing.T) {
@@ -241,10 +243,15 @@ func TestExportMethodFollowsProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fromWorkflow := shellFunc(t, string(workflowTemplate), "detect_export_method")
-	fromRunner := shellFunc(t, string(runner), "detect_export_method")
-	if fromWorkflow != fromRunner {
-		t.Fatalf("templates disagree on the export method:\n%s\n---\n%s", fromWorkflow, fromRunner)
+	var fromRunner string
+	for _, fn := range []string{"detect_export_method", "write_export_options"} {
+		fromWorkflow, fromRunnerFn := shellFunc(t, string(workflowTemplate), fn), shellFunc(t, string(runner), fn)
+		if fromWorkflow != fromRunnerFn {
+			t.Fatalf("templates disagree on %s:\n%s\n---\n%s", fn, fromWorkflow, fromRunnerFn)
+		}
+		if fn == "detect_export_method" {
+			fromRunner = fromRunnerFn
+		}
 	}
 	// Both must refuse a Debug distribution build, whose get-task-allow
 	// entitlement no distribution profile grants, and both must feed the
@@ -252,13 +259,11 @@ func TestExportMethodFollowsProfile(t *testing.T) {
 	wiring := map[string][]string{
 		"ios-build.yml": {
 			`EXPORT_METHOD=$(detect_export_method "$PROFILE_PLIST")`,
-			`"    <string>${EXPORT_METHOD}</string>"`,
-			"plutil -insert manageAppVersionAndBuildNumber -bool NO",
+			"write_export_options ExportOptions.plist",
 		},
 		"runner.sh": {
 			`detect_export_method "$signing_dir/profile.plist"`,
-			`'method': os.environ['EXPORT_METHOD']`,
-			"options['manageAppVersionAndBuildNumber'] = False",
+			`write_export_options "$signing_dir/ExportOptions.plist"`,
 		},
 	}
 	for name, data := range map[string]string{"ios-build.yml": string(workflowTemplate), "runner.sh": string(runner)} {
@@ -268,7 +273,7 @@ func TestExportMethodFollowsProfile(t *testing.T) {
 		if strings.Contains(data, "<string>development</string>") || strings.Contains(data, "'method': 'development'") {
 			t.Errorf("%s: export method still hardcoded", name)
 		}
-		for _, want := range wiring[name] {
+		for _, want := range append(wiring[name], `'method': os.environ['EXPORT_METHOD']`, "options['manageAppVersionAndBuildNumber'] = False") {
 			if !strings.Contains(data, want) {
 				t.Errorf("%s: export options no longer wired to the profile, missing %q", name, want)
 			}
@@ -531,8 +536,14 @@ func TestSigningSettingsOnAppTargetOnly(t *testing.T) {
 	if fromWorkflow != fromRunner {
 		t.Fatalf("templates disagree on apply_signing_to_app_target:\n%s\n---\n%s", fromWorkflow, fromRunner)
 	}
-	if n := strings.Count(fromRunner, "\n"); n > 70 {
+	if n := strings.Count(fromRunner, "\n"); n > 90 {
 		t.Errorf("apply_signing_to_app_target has grown to %d lines", n)
+	}
+	// The runner and the CLI must call the same targets extensions.
+	for _, productType := range xcodeproj.ExtensionProductTypes {
+		if !strings.Contains(fromRunner, "'"+productType+"'") {
+			t.Errorf("apply_signing_to_app_target does not treat %s as an extension", productType)
+		}
 	}
 
 	call := `apply_signing_to_app_target "$PROFILE_BUNDLE_ID"`
@@ -577,10 +588,12 @@ func TestSigningSettingsOnAppTargetOnly(t *testing.T) {
 	}
 	script := "set -euo pipefail\nfail() { echo \"$*\" >&2; exit 1; }\n" + fromRunner + "\ncd \"$1\"\napply_signing_to_app_target \"$2\"\n"
 	want := map[string]string{"CODE_SIGN_STYLE": "Manual", "DEVELOPMENT_TEAM": "ABCDE12345", "PROVISIONING_PROFILE_SPECIFIER": "Builder store run.mobai.flicker", "CODE_SIGN_IDENTITY": "Apple Distribution"}
-	run := func(t *testing.T, dir, appID string) (string, error) {
+	// run applies the settings for the app id; extra is more environment,
+	// such as the EXTENSION_PROFILES map the signing step installs.
+	run := func(t *testing.T, dir, appID string, extra ...string) (string, error) {
 		t.Helper()
 		cmd := exec.Command("bash", "-c", script, "bash", dir, appID)
-		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "DEVELOPMENT_TEAM=" + want["DEVELOPMENT_TEAM"], "PROVISIONING_PROFILE_NAME=" + want["PROVISIONING_PROFILE_SPECIFIER"], "CODE_SIGN_IDENTITY=" + want["CODE_SIGN_IDENTITY"]}
+		cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "DEVELOPMENT_TEAM=" + want["DEVELOPMENT_TEAM"], "PROVISIONING_PROFILE_NAME=" + want["PROVISIONING_PROFILE_SPECIFIER"], "CODE_SIGN_IDENTITY=" + want["CODE_SIGN_IDENTITY"]}, extra...)
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
@@ -595,12 +608,16 @@ func TestSigningSettingsOnAppTargetOnly(t *testing.T) {
 		}
 		return path
 	}
-	// signed asserts the four settings on both configurations of a target and
-	// that nothing conditional is left to override them.
-	signed := func(t *testing.T, settings map[string]map[string]string, target string) {
+	// signedWith asserts the four settings, with the given profile, on both
+	// configurations of a target and that nothing conditional is left to
+	// override them; signed is the app's own profile.
+	signedWith := func(t *testing.T, settings map[string]map[string]string, target, profile string) {
 		t.Helper()
 		for _, config := range []string{"Debug", "Release"} {
 			for k, v := range want {
+				if k == "PROVISIONING_PROFILE_SPECIFIER" {
+					v = profile
+				}
 				if got := settings[config][k]; got != v {
 					t.Errorf("%s %s: %s = %q, want %q", target, config, k, got, v)
 				}
@@ -611,6 +628,10 @@ func TestSigningSettingsOnAppTargetOnly(t *testing.T) {
 				}
 			}
 		}
+	}
+	signed := func(t *testing.T, settings map[string]map[string]string, target string) {
+		t.Helper()
+		signedWith(t, settings, target, want["PROVISIONING_PROFILE_SPECIFIER"])
 	}
 	untouched := func(t *testing.T, settings map[string]map[string]string, target string) {
 		t.Helper()
@@ -627,7 +648,7 @@ func TestSigningSettingsOnAppTargetOnly(t *testing.T) {
 
 	t.Run("app target only", func(t *testing.T) {
 		dir := t.TempDir()
-		project := write(t, dir, "App.xcodeproj", app, kit, widget)
+		project := write(t, dir, "App.xcodeproj", app, kit)
 		// The pods project sits a level down and is never a candidate.
 		pods := write(t, filepath.Join(dir, "Pods"), "Pods.xcodeproj", pbxTarget{"FirebaseCore", "com.apple.product-type.framework", "org.cocoapods.FirebaseCore", nil})
 		before, _ := os.ReadFile(filepath.Join(pods, "project.pbxproj"))
@@ -641,7 +662,6 @@ func TestSigningSettingsOnAppTargetOnly(t *testing.T) {
 		settings := pbxSettings(t, project)
 		signed(t, settings["App"], "App")
 		untouched(t, settings["Kit"], "Kit")
-		untouched(t, settings["Widget"], "Widget")
 		after, _ := os.ReadFile(filepath.Join(pods, "project.pbxproj"))
 		if !bytes.Equal(before, after) {
 			t.Error("Pods.xcodeproj was rewritten")
@@ -655,6 +675,46 @@ func TestSigningSettingsOnAppTargetOnly(t *testing.T) {
 			if out, err := exec.Command("xcodebuild", "-project", project, "-list", "-json").CombinedOutput(); err != nil || !strings.Contains(string(out), `"App"`) {
 				t.Errorf("xcodebuild cannot read the rewritten project: %s %v", out, err)
 			}
+		}
+	})
+	t.Run("extension targets get their own profiles", func(t *testing.T) {
+		// A wildcard entry covers the extensions under it, but an exact entry
+		// is the more specific one and wins; the app keeps its own profile.
+		dir := t.TempDir()
+		share := pbxTarget{"Share", "com.apple.product-type.app-extension", "run.mobai.flicker.share", nil}
+		project := write(t, dir, "App.xcodeproj", app, widget, share, kit)
+		profiles := `{"run.mobai.flicker.widget": "Builder store run.mobai.flicker.widget", "run.mobai.flicker.*": "Wildcard extensions"}`
+		out, err := run(t, dir, "run.mobai.flicker", "EXTENSION_PROFILES="+profiles)
+		if err != nil {
+			t.Fatalf("%s %v", out, err)
+		}
+		if !strings.Contains(out, "target Widget in App.xcodeproj: Debug, Release (profile Builder store run.mobai.flicker.widget)") {
+			t.Errorf("log does not say what changed: %s", out)
+		}
+		settings := pbxSettings(t, project)
+		signed(t, settings["App"], "App")
+		signedWith(t, settings["Widget"], "Widget", "Builder store run.mobai.flicker.widget")
+		signedWith(t, settings["Share"], "Share", "Wildcard extensions")
+		untouched(t, settings["Kit"], "Kit")
+	})
+	t.Run("extension target without a profile", func(t *testing.T) {
+		// The error names the target and its bundle id, says where to list it
+		// and which setup to run; the project stays as it was.
+		dir := t.TempDir()
+		project := write(t, dir, "App.xcodeproj", app, widget)
+		for _, env := range [][]string{nil, {"EXTENSION_PROFILES={}"}, {`EXTENSION_PROFILES={"run.mobai.other.widget": "Other"}`}} {
+			out, err := run(t, dir, "run.mobai.flicker", append(env, "DISTRIBUTION=store")...)
+			if err == nil {
+				t.Fatalf("%v: accepted: %s", env, out)
+			}
+			for _, want := range []string{"Widget in App.xcodeproj (run.mobai.flicker.widget)", "ios.extensions", "builder signing setup --distribution store"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("%v: error does not say %q: %s", env, want, out)
+				}
+			}
+		}
+		if data, _ := os.ReadFile(filepath.Join(project, "project.pbxproj")); !strings.HasPrefix(string(data), "// !$*UTF8*$!") {
+			t.Error("project rewritten although the archive cannot be signed")
 		}
 	})
 	t.Run("several apps: the one the profile covers", func(t *testing.T) {
@@ -768,7 +828,7 @@ func TestSigningSetSelection(t *testing.T) {
 		t.Error("SIGNING_SET is not derived from the distribution")
 	}
 	for _, set := range []string{"DEVELOPMENT", "AD_HOC", "STORE", "ENTERPRISE"} {
-		for _, secret := range []string{"IOS_CERTIFICATE_", "IOS_CERTIFICATE_PASSWORD_", "IOS_PROVISIONING_PROFILE_"} {
+		for _, secret := range []string{"IOS_CERTIFICATE_", "IOS_CERTIFICATE_PASSWORD_", "IOS_PROVISIONING_PROFILE_", "IOS_EXTENSION_PROFILES_"} {
 			if line := secret + set + ": ${{ secrets." + secret + set + " }}"; !strings.Contains(string(workflowTemplate), line) {
 				t.Errorf("ios-build.yml does not pass %s%s to the signing step", secret, set)
 			}
@@ -782,7 +842,7 @@ func TestSigningSetSelection(t *testing.T) {
 	script := "set -euo pipefail\nfail() { echo \"$*\" >&2; exit 1; }\n" + shared +
 		"SIGNING_SET=$(signing_set \"$DISTRIBUTION\") || fail \"bad distribution $DISTRIBUTION\"\n" +
 		"select_signing_set\ncheck_signing_set \"$METHOD\"\n" +
-		"printf '%s|%s|%s|%s' \"$IOS_CERTIFICATE\" \"$IOS_CERTIFICATE_PASSWORD\" \"$IOS_PROVISIONING_PROFILE\" \"$SIGNING_SET_USED\"\n"
+		"printf '%s|%s|%s|%s|%s' \"$IOS_CERTIFICATE\" \"$IOS_CERTIFICATE_PASSWORD\" \"$IOS_PROVISIONING_PROFILE\" \"$IOS_EXTENSION_PROFILES\" \"$SIGNING_SET_USED\"\n"
 	run := func(env map[string]string) (string, error) {
 		cmd := exec.Command("bash", "-c", script)
 		// A bare environment: none of the secrets can leak in from the host.
@@ -812,10 +872,13 @@ func TestSigningSetSelection(t *testing.T) {
 		want string // "" expects a failure whose message holds wantErr
 		errs []string
 	}{
-		{"suffixed set present", with(legacy, store, map[string]string{"DISTRIBUTION": "store", "METHOD": "app-store"}), "store-cert|store-pw|store-profile|STORE", nil},
-		{"internal reads the ad-hoc set", with(adHoc, map[string]string{"DISTRIBUTION": "internal", "METHOD": "ad-hoc"}), "adhoc-cert|adhoc-pw|adhoc-profile|AD_HOC", nil},
-		{"only legacy, no distribution, any profile type", with(legacy, map[string]string{"DISTRIBUTION": "", "METHOD": "ad-hoc"}), "legacy-cert|legacy-pw|legacy-profile|legacy", nil},
-		{"only legacy without a password", map[string]string{"IOS_CERTIFICATE": "legacy-cert", "IOS_PROVISIONING_PROFILE": "legacy-profile", "DISTRIBUTION": "", "METHOD": "development"}, "legacy-cert||legacy-profile|legacy", nil},
+		// The extension profiles follow the set and are optional: an app
+		// without extension targets has no such secret.
+		{"suffixed set present", with(legacy, store, map[string]string{"IOS_EXTENSION_PROFILES": "legacy-ext", "IOS_EXTENSION_PROFILES_STORE": "store-ext", "DISTRIBUTION": "store", "METHOD": "app-store"}), "store-cert|store-pw|store-profile|store-ext|STORE", nil},
+		{"suffixed set without extension profiles", with(legacy, store, map[string]string{"IOS_EXTENSION_PROFILES": "legacy-ext", "DISTRIBUTION": "store", "METHOD": "app-store"}), "store-cert|store-pw|store-profile||STORE", nil},
+		{"internal reads the ad-hoc set", with(adHoc, map[string]string{"DISTRIBUTION": "internal", "METHOD": "ad-hoc"}), "adhoc-cert|adhoc-pw|adhoc-profile||AD_HOC", nil},
+		{"only legacy, no distribution, any profile type", with(legacy, map[string]string{"IOS_EXTENSION_PROFILES": "legacy-ext", "DISTRIBUTION": "", "METHOD": "ad-hoc"}), "legacy-cert|legacy-pw|legacy-profile|legacy-ext|legacy", nil},
+		{"only legacy without a password", map[string]string{"IOS_CERTIFICATE": "legacy-cert", "IOS_PROVISIONING_PROFILE": "legacy-profile", "DISTRIBUTION": "", "METHOD": "development"}, "legacy-cert||legacy-profile||legacy", nil},
 		{"no distribution ignores the suffixed sets", with(store, map[string]string{"IOS_CERTIFICATE_DEVELOPMENT": "dev-cert", "IOS_CERTIFICATE_PASSWORD_DEVELOPMENT": "dev-pw", "IOS_PROVISIONING_PROFILE_DEVELOPMENT": "dev-profile", "DISTRIBUTION": "", "METHOD": "development"}), "", []string{"ios.signing needs IOS_CERTIFICATE", "IOS_*_<SET>"}},
 		{"requested set absent, legacy present", with(legacy, map[string]string{"DISTRIBUTION": "ad-hoc", "METHOD": "ad-hoc"}), "", []string{"Signing set AD_HOC for distribution ad-hoc is missing IOS_CERTIFICATE_AD_HOC, IOS_CERTIFICATE_PASSWORD_AD_HOC, IOS_PROVISIONING_PROFILE_AD_HOC", "--distribution ad-hoc"}},
 		{"suffixed set missing its profile", with(legacy, map[string]string{"IOS_CERTIFICATE_STORE": "store-cert", "IOS_CERTIFICATE_PASSWORD_STORE": "store-pw", "DISTRIBUTION": "store", "METHOD": "app-store"}), "", []string{"missing IOS_PROVISIONING_PROFILE_STORE.", "--distribution store"}},
@@ -842,6 +905,154 @@ func TestSigningSetSelection(t *testing.T) {
 				if !strings.Contains(out, want) {
 					t.Errorf("error does not mention %q:\n%s", want, out)
 				}
+			}
+		})
+	}
+}
+
+// TestExtensionProfilesInstalled holds both templates to one
+// install_extension_profiles and runs it on the IOS_EXTENSION_PROFILES secret
+// builder signing setup writes: every profile lands next to the app's, and
+// the printed map (bundle id to profile name) is what the build reads.
+func TestExtensionProfilesInstalled(t *testing.T) {
+	workflowTemplate, err := GetWorkflowTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := GetTemplate("runner.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromWorkflow := shellFunc(t, string(workflowTemplate), "install_extension_profiles")
+	fromRunner := shellFunc(t, string(runner), "install_extension_profiles")
+	if fromWorkflow != fromRunner {
+		t.Fatalf("templates disagree on install_extension_profiles:\n%s\n---\n%s", fromWorkflow, fromRunner)
+	}
+	// The map reaches the build step, right after the app's profile is installed.
+	for name, data := range map[string]string{"ios-build.yml": string(workflowTemplate), "runner.sh": string(runner)} {
+		data = strings.ReplaceAll(data, "\r\n", "\n") // Windows checkouts
+		if !strings.Contains(data, "EXTENSION_PROFILES=$(install_extension_profiles ") {
+			t.Errorf("%s: the extension profiles are not installed", name)
+		}
+	}
+	if !strings.Contains(string(workflowTemplate), `echo "EXTENSION_PROFILES=$EXTENSION_PROFILES" >> $GITHUB_ENV`) || !strings.Contains(string(runner), "export EXTENSION_PROFILES") {
+		t.Error("EXTENSION_PROFILES does not reach the build")
+	}
+
+	if runtime.GOOS != "darwin" {
+		t.Skip("plutil is macOS only")
+	}
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq unavailable")
+	}
+	// A stub security prints the file as it is: the fixtures are bare plists,
+	// not CMS blobs.
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "security"), []byte("#!/bin/bash\n[ \"$1\" = cms ] || exit 2\ncat \"$4\"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	profile := func(name, uuid string) string {
+		return `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Name</key><string>` + name + `</string><key>UUID</key><string>` + uuid + `</string></dict></plist>`
+	}
+	secret := signing.EncodeExtensionProfiles(map[string][]byte{
+		"run.mobai.flicker.widget": []byte(profile("Builder store run.mobai.flicker.widget", "11111111-2222")),
+		"run.mobai.flicker.share":  []byte(profile("Builder store run.mobai.flicker.share", "33333333-4444")),
+	})
+	home := filepath.Join(dir, "home")
+	script := "set -euo pipefail\nfail() { echo \"$*\" >&2; exit 1; }\n" + fromRunner + "\ninstall_extension_profiles \"$1\"\n"
+	run := func(secret string) (string, error) {
+		cmd := exec.Command("bash", "-c", script, "bash", filepath.Join(dir, "extensions"))
+		cmd.Env = []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), "HOME=" + home, "IOS_EXTENSION_PROFILES=" + secret, "SIGNING_SET=STORE"}
+		out, err := cmd.Output()
+		return string(out), err
+	}
+	out, err := run(secret)
+	if err != nil {
+		t.Fatalf("%s %v", out, err)
+	}
+	var got map[string]string
+	if err := json.Unmarshal([]byte(out), &got); err != nil || got["run.mobai.flicker.widget"] != "Builder store run.mobai.flicker.widget" || got["run.mobai.flicker.share"] != "Builder store run.mobai.flicker.share" || len(got) != 2 {
+		t.Errorf("map = %s, %v", out, err)
+	}
+	for _, uuid := range []string{"11111111-2222", "33333333-4444"} {
+		if _, err := os.Stat(filepath.Join(home, "Library", "MobileDevice", "Provisioning Profiles", uuid+".mobileprovision")); err != nil {
+			t.Errorf("profile %s not installed: %v", uuid, err)
+		}
+	}
+	// No extensions, or no secret at all, is an empty map; a value that is
+	// not an object is refused by name.
+	for _, empty := range []string{"{}", ""} {
+		if out, err := run(empty); err != nil || out != "{}" {
+			t.Errorf("secret %q: %q, %v", empty, out, err)
+		}
+	}
+	cmd := exec.Command("bash", "-c", script, "bash", filepath.Join(dir, "extensions"))
+	cmd.Env = []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), "HOME=" + home, "IOS_EXTENSION_PROFILES=[1]", "SIGNING_SET=STORE"}
+	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "IOS_EXTENSION_PROFILES_STORE must be a JSON object") {
+		t.Errorf("bad secret: %s %v", out, err)
+	}
+}
+
+// TestExportOptionsIncludeExtensions: the export maps the app's real bundle
+// id to its profile as before, plus one entry per extension.
+func TestExportOptionsIncludeExtensions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell test")
+	}
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 unavailable")
+	}
+	runner, err := GetTemplate("runner.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "set -euo pipefail\n" + shellFunc(t, string(runner), "write_export_options") + "\nwrite_export_options \"$1\"\n"
+	for _, tc := range []struct {
+		name, method, extensions string
+		want                     map[string]string
+		manage                   bool
+	}{
+		{"app only", "development", "", map[string]string{"run.mobai.flicker": "Builder development run.mobai.flicker"}, false},
+		{"with extensions", "app-store", `{"run.mobai.flicker.widget": "Builder store run.mobai.flicker.widget"}`, map[string]string{"run.mobai.flicker": "Builder development run.mobai.flicker", "run.mobai.flicker.widget": "Builder store run.mobai.flicker.widget"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "ExportOptions.plist")
+			cmd := exec.Command("bash", "-c", script, "bash", path)
+			cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "EXPORT_METHOD=" + tc.method, "DEVELOPMENT_TEAM=ABCDE12345", "APP_BUNDLE_ID=run.mobai.flicker", "PROVISIONING_PROFILE_NAME=Builder development run.mobai.flicker"}
+			if tc.extensions != "" {
+				cmd.Env = append(cmd.Env, "EXTENSION_PROFILES="+tc.extensions)
+			}
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("%s %v", out, err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var options struct {
+				Method   string            `plist:"method"`
+				Style    string            `plist:"signingStyle"`
+				Team     string            `plist:"teamID"`
+				Profiles map[string]string `plist:"provisioningProfiles"`
+				Manage   *bool             `plist:"manageAppVersionAndBuildNumber"`
+			}
+			if _, err := plist.Unmarshal(data, &options); err != nil {
+				t.Fatal(err)
+			}
+			if options.Method != tc.method || options.Style != "manual" || options.Team != "ABCDE12345" || len(options.Profiles) != len(tc.want) {
+				t.Errorf("options = %+v", options)
+			}
+			for id, name := range tc.want {
+				if options.Profiles[id] != name {
+					t.Errorf("provisioningProfiles[%s] = %q, want %q", id, options.Profiles[id], name)
+				}
+			}
+			if (options.Manage != nil && !*options.Manage) != tc.manage {
+				t.Errorf("manageAppVersionAndBuildNumber = %v, want set to false: %v", options.Manage, tc.manage)
 			}
 		})
 	}
