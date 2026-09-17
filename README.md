@@ -584,8 +584,8 @@ the IPA in `./dist/`.
 You need:
 
 - A paid [Apple Developer Program](https://developer.apple.com/programs/)
-  membership and an app record in App Store Connect (My Apps → +) with your
-  bundle ID
+  membership and an app record in App Store Connect for your bundle ID (step 2
+  below; the API cannot create it)
 - An IPA signed with an **Apple Distribution** certificate and an **App Store**
   provisioning profile: `builder signing setup --distribution store` creates
   both, stores them as the `STORE` signing set and writes a `store` build
@@ -605,10 +605,26 @@ You need:
 Flags you leave out are prompted for; Builder verifies the key against App
 Store Connect before storing it.
 
-### 2. Upload the build
+### 2. Create the app record
+
+App Store Connect only accepts uploads for an app it already knows, and the API
+cannot create one. Once, in the browser:
+
+1. Register the bundle ID first: `builder signing setup --distribution store`
+   does it (or **Certificates, Identifiers & Profiles → Identifiers → +** on
+   the developer portal).
+2. Open [App Store Connect → My Apps](https://appstoreconnect.apple.com/apps),
+   press **+ → New App**, pick **iOS**, a name, the primary language, your
+   bundle ID from the list, and any SKU (an internal string, e.g. the bundle
+   ID). Press **Create**.
+
+Nothing else on the record is needed for TestFlight. App Store review needs the
+rest of the metadata (screenshots, description, privacy policy) filled in there.
+
+### 3. Upload the build
 
 ```bash
-builder ios build            # produces a signed dist/*.ipa
+builder ios build --profile store   # produces a signed dist/*.ipa
 builder ios upload --wait
 ```
 
@@ -629,7 +645,7 @@ Two things Apple checks on every upload:
   automatically; otherwise pass `--no-encryption` (here or to `submit`) when
   your app only uses standard iOS encryption.
 
-### 3. Distribute to TestFlight
+### 4. Distribute to TestFlight
 
 ```bash
 builder ios submit --testflight --group "Beta Testers" --notes "New login flow"
@@ -641,7 +657,7 @@ groups get the build immediately; the first external group triggers Apple's
 beta review, which Builder submits for you (`--wait` follows the decision). Run
 it without `--group` to see the build and the groups the app has.
 
-### 4. Submit to the App Store
+### 5. Submit to the App Store
 
 ```bash
 builder ios submit --app-store --release after-approval
@@ -658,7 +674,7 @@ with [asc-cli](https://github.com/tddworks/asc-cli), whose production use of
 the `buildUploads` API also proved that the Mac-free upload path works and
 served as the reference for Builder's implementation.
 
-### 5. Or all of it in one command: release
+### 6. Or all of it in one command: release
 
 ```bash
 builder ios release --profile store --group "Beta Testers" --notes "New login flow"
@@ -666,7 +682,7 @@ builder ios release --profile store --app-store --release after-approval
 builder ios build --profile store --submit     # TestFlight release with no groups
 ```
 
-`release` runs steps 2 to 4 back to back: build, download, upload, wait for
+`release` runs steps 3 to 5 back to back: build, download, upload, wait for
 processing, then TestFlight (default) or `--app-store`, with the same flags as
 `submit`. It builds with a [build profile](#build-profiles) (`--profile`, or
 `defaultProfile`) that must have `"distribution": "store"` — TestFlight and the
