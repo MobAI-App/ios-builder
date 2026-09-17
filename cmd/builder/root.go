@@ -573,6 +573,7 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(iosCmd)
+	rootCmd.AddCommand(ascCmd)
 	rootCmd.AddCommand(authCmd)
 	rootCmd.AddCommand(signingCmd)
 	rootCmd.AddCommand(devCmd)

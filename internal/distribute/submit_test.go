@@ -68,29 +68,109 @@ func TestSubmitTestFlightUpdatesExistingNotesAndSkipsReviewForInternal(t *testin
 
 func TestSubmitTestFlightListsGroupsWithoutGroupFlag(t *testing.T) {
 	f := newFake(t)
-	res, err := SubmitTestFlight(context.Background(), f.client(t), &TestFlightOptions{BundleID: "com.example.app"})
+	var log bytes.Buffer
+	res, err := SubmitTestFlight(context.Background(), f.client(t), &TestFlightOptions{BundleID: "com.example.app", Log: &log})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(res.AvailableGroups) != 2 || len(res.Groups) != 0 || f.called("POST /v1/builds/build-9/relationships/betaGroups") {
 		t.Errorf("result = %+v", res)
 	}
+	if !strings.Contains(log.String(), "Available groups:\n  Team (internal)\n  Beta Testers (external)") {
+		t.Errorf("log = %q", log.String())
+	}
+	f.noGroups = true
+	log.Reset()
+	if _, err := SubmitTestFlight(context.Background(), f.client(t), &TestFlightOptions{BundleID: "com.example.app", Log: &log}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(log.String(), "Available groups: (none)") {
+		t.Errorf("log = %q", log.String())
+	}
+}
+
+func TestSubmitTestFlightCreatesMissingGroup(t *testing.T) {
+	f := newFake(t)
+	var log bytes.Buffer
+	res, err := SubmitTestFlight(context.Background(), f.client(t), &TestFlightOptions{BundleID: "com.example.app", Groups: []string{"Nightly", "team"}, NoEncryption: true, Log: &log})
+	if err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	if len(res.Groups) != 2 || !res.Groups[0].Created || !res.Groups[0].Internal || res.Groups[0].ID != "g-new-1" || res.Groups[1].Created || res.Groups[1].ID != "g-int" {
+		t.Errorf("groups = %+v", res.Groups)
+	}
+	create := obj(t, f.body("POST /v1/betaGroups"), "data")
+	attrs := obj(t, create, "attributes")
+	if attrs["name"] != "Nightly" || attrs["isInternalGroup"] != true || attrs["hasAccessToAllBuilds"] != false || obj(t, create, "relationships", "app", "data")["id"] != "app-1" {
+		t.Errorf("create body = %v", create)
+	}
+	if !strings.Contains(log.String(), "Created TestFlight group Nightly (internal)") {
+		t.Errorf("log = %q", log.String())
+	}
+	links := arr(t, f.body("POST /v1/builds/build-9/relationships/betaGroups"), "data")
+	if len(links) != 2 || obj(t, links[0])["id"] != "g-new-1" || obj(t, links[1])["id"] != "g-int" {
+		t.Errorf("linkage = %v", links)
+	}
+	if f.called("POST /v1/betaAppReviewSubmissions") {
+		t.Error("internal groups need no beta review")
+	}
+
+	// --external creates an external group, which goes through beta review.
+	f = newFake(t)
+	res, err = SubmitTestFlight(context.Background(), f.client(t), &TestFlightOptions{BundleID: "com.example.app", Groups: []string{"Public"}, External: true, NoEncryption: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attrs = obj(t, f.body("POST /v1/betaGroups"), "data", "attributes")
+	if attrs["isInternalGroup"] != false || res.Groups[0].Internal || res.BetaReview == nil || !f.called("POST /v1/betaAppReviewSubmissions") {
+		t.Errorf("attrs = %v, result = %+v", attrs, res)
+	}
+	if _, has := attrs["hasAccessToAllBuilds"]; has {
+		t.Errorf("external groups take no hasAccessToAllBuilds: %v", attrs)
+	}
+}
+
+func TestSubmitTestFlightSkipsAutomaticDistributionGroups(t *testing.T) {
+	f := newFake(t)
+	f.autoGroup = true
+	var log bytes.Buffer
+	res, err := SubmitTestFlight(context.Background(), f.client(t), &TestFlightOptions{BundleID: "com.example.app", Groups: []string{"Everyone"}, NoEncryption: true, Log: &log})
+	if err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	if len(res.Groups) != 1 || !res.Groups[0].AutoBuilds || f.called("POST /v1/builds/build-9/relationships/betaGroups") {
+		t.Errorf("result = %+v, calls = %v (adding to such a group is a 422)", res, f.calls)
+	}
+	if !strings.Contains(log.String(), "Everyone is an internal group with automatic distribution: every processed build is already available to its testers") {
+		t.Errorf("log = %q", log.String())
+	}
+
+	// Mixed with a manual group, only the manual one is linked.
+	f = newFake(t)
+	f.autoGroup = true
+	res, err = SubmitTestFlight(context.Background(), f.client(t), &TestFlightOptions{BundleID: "com.example.app", Groups: []string{"Everyone", "Team"}, NoEncryption: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := arr(t, f.body("POST /v1/builds/build-9/relationships/betaGroups"), "data")
+	if len(links) != 1 || obj(t, links[0])["id"] != "g-int" || len(res.Groups) != 2 || res.Groups[1].AutoBuilds {
+		t.Errorf("linkage = %v, groups = %+v", links, res.Groups)
+	}
 }
 
 func TestSubmitTestFlightErrors(t *testing.T) {
 	f := newFake(t)
 	c := f.client(t)
-	_, err := SubmitTestFlight(context.Background(), c, &TestFlightOptions{BundleID: "com.example.app", Groups: []string{"Nobody"}, NoEncryption: true})
-	if err == nil || !strings.Contains(err.Error(), "Nobody") || !strings.Contains(err.Error(), "Beta Testers") {
-		t.Errorf("unknown group: %v", err)
-	}
-	f.mu.Lock()
-	f.buildEncryption = nil // the call above answered it
-	f.mu.Unlock()
-	_, err = SubmitTestFlight(context.Background(), c, &TestFlightOptions{BundleID: "com.example.app", Groups: []string{"Team"}})
+	_, err := SubmitTestFlight(context.Background(), c, &TestFlightOptions{BundleID: "com.example.app", Groups: []string{"Team"}})
 	if err == nil || !strings.Contains(err.Error(), "export compliance") {
 		t.Errorf("missing compliance: %v", err)
 	}
+	f.dupGroup = true
+	_, err = SubmitTestFlight(context.Background(), c, &TestFlightOptions{BundleID: "com.example.app", Groups: []string{"BETA TESTERS"}, NoEncryption: true})
+	if err == nil || !strings.Contains(err.Error(), "2 TestFlight groups match BETA TESTERS") || f.called("POST /v1/betaGroups") || f.called("POST /v1/builds/build-9/relationships/betaGroups") {
+		t.Errorf("an ambiguous group name must neither create nor add: %v, calls = %v", err, f.calls)
+	}
+	f.dupGroup = false
 	f.buildState = "PROCESSING"
 	_, err = SubmitTestFlight(context.Background(), c, &TestFlightOptions{BundleID: "com.example.app", BuildNumber: "7"})
 	if err == nil || !strings.Contains(err.Error(), "PROCESSING") {

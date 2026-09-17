@@ -2,44 +2,8 @@ package asc
 
 import (
 	"context"
-	"net/url"
 	"time"
 )
-
-// BetaGroup is a TestFlight tester group.
-type BetaGroup struct {
-	ID                string
-	Name              string
-	Internal          bool
-	PublicLinkEnabled bool
-}
-
-type betaGroupAttributes struct {
-	Name                 string `json:"name,omitempty"`
-	IsInternalGroup      *bool  `json:"isInternalGroup,omitempty"`
-	PublicLinkEnabled    *bool  `json:"publicLinkEnabled,omitempty"`
-	HasAccessToAllBuilds *bool  `json:"hasAccessToAllBuilds,omitempty"`
-}
-
-// ListBetaGroups lists the app's TestFlight groups.
-func (c *Client) ListBetaGroups(ctx context.Context, appID string) ([]BetaGroup, error) {
-	rs, err := getAll[betaGroupAttributes](ctx, c, "/v1/betaGroups", url.Values{"filter[app]": {appID}})
-	if err != nil {
-		return nil, err
-	}
-	groups := make([]BetaGroup, 0, len(rs))
-	for _, r := range rs {
-		g := BetaGroup{ID: r.ID, Name: r.Attributes.Name}
-		if r.Attributes.IsInternalGroup != nil {
-			g.Internal = *r.Attributes.IsInternalGroup
-		}
-		if r.Attributes.PublicLinkEnabled != nil {
-			g.PublicLinkEnabled = *r.Attributes.PublicLinkEnabled
-		}
-		groups = append(groups, g)
-	}
-	return groups, nil
-}
 
 // BetaBuildLocalization is the "What to Test" text of a build in one locale.
 type BetaBuildLocalization struct {

@@ -215,10 +215,25 @@ builder ios build --profile store --submit    # Short for: ios release (TestFlig
 builder ios upload --wait     # Upload ./dist/*.ipa to App Store Connect and wait for processing
 builder ios submit --testflight --group "Beta Testers" --notes "What to test"
 builder ios submit --app-store --release after-approval  # Submit the version for App Review
+
+# App Store Connect management (needs builder auth apple)
+builder asc apps              # Apps the API key can see
+builder asc builds            # Builds of the newest version, with their TestFlight groups
+builder asc builds expire --build-number 42 --yes
+builder asc groups            # TestFlight groups with tester counts
+builder asc groups create Nightly             # Internal group (add --external for external)
+builder asc groups add-build Nightly          # Newest VALID build (or --build-number)
+builder asc groups delete Nightly --yes
+builder asc testers --group Nightly           # With each tester's state
+builder asc testers add a@example.com --group Nightly --first Ann --last Lee
+builder asc testers invite a@example.com      # Send or resend the TestFlight email
+builder asc testers remove a@example.com --group Nightly
+builder asc users             # Team members and whether they can test internally
+builder asc users invite dev@example.com --role DEVELOPER --first Dee --last Vee
 ```
 
-Every `release`/`upload`/`submit` command takes `--json` for machine-readable
-output and never prompts, so agents and CI jobs can drive them.
+Every `release`/`upload`/`submit`/`asc` command takes `--json` for
+machine-readable output and never prompts, so agents and CI jobs can drive them.
 
 ## Configuration
 
@@ -652,10 +667,12 @@ builder ios submit --testflight --group "Beta Testers" --notes "New login flow"
 ```
 
 This takes the newest processed build (or `--build-number N`), sets the *What
-to Test* notes and adds it to the named groups (`--group` repeats). Internal
-groups get the build immediately; the first external group triggers Apple's
-beta review, which Builder submits for you (`--wait` follows the decision). Run
-it without `--group` to see the build and the groups the app has.
+to Test* notes and adds it to the named groups (`--group` repeats). A group
+that does not exist yet is created — internal by default, external with
+`--external`. Internal groups get the build immediately; the first external
+group triggers Apple's beta review, which Builder submits for you (`--wait`
+follows the decision). Run it without `--group` to see the build and the
+groups the app has.
 
 ### 5. Submit to the App Store
 
@@ -713,6 +730,57 @@ up before this feature need `builder init` once more and a push to the default
 branch. `--timeout` bounds the build and then the App Store Connect wait
 separately; `--json` prints one object with the build ID, App Store Connect
 build ID, version, build number and groups.
+
+## Managing TestFlight
+
+`builder asc` covers the App Store Connect housekeeping around TestFlight, so
+nothing needs the website: apps, builds, groups, testers and team members.
+Every command takes `--json` (the result on stdout, progress on stderr),
+never prompts, and finds the app through `--bundle-id`, then `ios.bundleId`
+in `builder.json`, then the newest IPA in `./dist/`.
+
+```bash
+builder asc builds                       # newest version's builds and their groups
+builder asc groups create Nightly        # internal group; --external for outsiders
+builder asc groups add-build Nightly     # same as ios submit --testflight --group
+builder asc testers add a@example.com b@example.com --group Nightly
+builder asc testers                      # every tester with their state
+builder asc testers invite a@example.com # send or resend the TestFlight email
+builder asc testers remove a@example.com --group Nightly
+builder asc builds expire --build-number 42 --yes
+```
+
+Two things about internal groups:
+
+- **Internal groups take team members only.** `asc testers add` on an internal
+  group adds a member's tester record to the group; a stranger is invited to
+  the App Store Connect team first (`--role`, default `CUSTOMER_SUPPORT`, with
+  only this app visible; `--first` and `--last` are required). They must accept
+  that email before a build can reach them, so rerun the command afterwards.
+  `asc users` shows who is on the team and who already has TestFlight access;
+  `asc users invite` sends a team invitation on its own.
+- **Automatic distribution.** An internal group created in App Store Connect
+  with "automatic distribution" (or by `asc groups create` without
+  `--no-auto-builds`) receives every processed build by itself, and Apple
+  refuses to add builds to it by hand. It only sees builds uploaded after it
+  was created, and the first such upload also sends the pending invites, so
+  after creating one, upload a new build. `asc groups` marks such groups
+  `internal, all builds`; `ios submit --group` and `asc groups add-build` skip
+  them with a note instead of failing.
+
+A tester whose state is `NOT_INVITED` has never received an email: that is
+how a team member added to an internal group in App Store Connect shows up.
+`asc testers` points this out, `asc testers invite` sends the invitation (or
+resends it while `INVITED`), and `asc testers add` does so by itself when the
+record it added is still `NOT_INVITED`, so adding someone always ends in an
+email.
+
+External groups take anyone by email; a tester the team already has is added
+to the group rather than created again. The destructive commands print what
+they are about to remove and need `--yes`: `asc groups delete` always, and
+`asc testers remove` without `--group`, which deletes the tester from
+TestFlight for the whole team. Group names match case-insensitively; when
+two groups differ only by case, the command refuses and lists both.
 
 ## Installing the IPA
 
