@@ -311,6 +311,28 @@ internal/
   `--out-dir`. Without an ASC key the error names `builder auth apple` and `signing setup --certificate
   ... --profile ...`, before anything is pushed. Codemagic/Bitrise skip the check (no secrets API).
 - **Flutter Detection**: Auto-detects Flutter projects, runs `flutter pub get`, uses `Runner` scheme
+- **Expo Detection**: an `expo` dependency in `package.json` (the CLI parses the dependency maps;
+  the runners grep `'"expo"'`) with no `.xcodeproj`/`.xcworkspace` anywhere and no `pubspec.yaml` is
+  a managed project. `detectIOSPath` still returns `ios`, because that is where `expo prebuild` puts
+  the project on the runner; nothing is generated locally, and managed projects gitignore `ios/`
+  so the snapshot carries none. All three runners (`ios-build.yml`, `ios-share.yml`, `runner.sh`)
+  prebuild with `CI=1` after the node install and before the Pods step, skip it when the iOS path
+  already holds an Xcode project (ejected), and fail with a named error when the app config has no
+  `ios.bundleIdentifier` — without one `expo prebuild` prompts and the job would hang. The steps
+  that walk the iOS path before that (XcodeGen, base-configuration check) skip a missing directory.
+- **JS Package Manager**: React Native and Expo dependencies install with the manager the
+  project declares — `packageManager` in `package.json` first, then the lockfile
+  (`pnpm-lock.yaml`, `yarn.lock`, `bun.lock`/`bun.lockb`, `package-lock.json`), else npm.
+  pnpm and yarn come from `corepack` (installed with npm where Node 25+ or a provider image
+  lacks it), bun from its installer, and `expo prebuild` and the other `npx` calls run
+  through the same manager (`pnpm exec`/`yarn`/`bunx`/`npx`). Running
+  `npm install` on a pnpm or yarn workspace fails with `EUNSUPPORTEDPROTOCOL Unsupported URL
+  Type "workspace:"`, so the guess is not free. The Node version is `.nvmrc`/`.node-version`
+  (as `node-version-file`), else `engines.node` with the range prefix stripped, else 22;
+  `with:` cannot be conditional per key, so a `Resolve JS toolchain` step computes both and
+  setup-node ignores the empty one. The shell for all of this is one block between
+  `# >>> js toolchain` and `# <<< js toolchain`, repeated verbatim in `ios-build.yml` (twice),
+  `ios-share.yml` (twice) and `runner.sh`; `TestJSToolchainBlockIdentical` fails on drift.
 - **DerivedData Caching**: `restore` keys on `github.run_id` and only the prefix in `restore-keys`
   ever hits, so every run must pair with a `cache/save` step or later builds stay cold. `ios-share`
   saves before it shares the simulator, since that step blocks until the session ends.
