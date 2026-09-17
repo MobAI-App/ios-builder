@@ -215,8 +215,9 @@ builder asc groups            # TestFlight groups with tester counts
 builder asc groups create Nightly             # Internal group (add --external for external)
 builder asc groups add-build Nightly          # Newest VALID build (or --build-number)
 builder asc groups delete Nightly --yes
-builder asc testers --group Nightly
+builder asc testers --group Nightly           # With each tester's state
 builder asc testers add a@example.com --group Nightly --first Ann --last Lee
+builder asc testers invite a@example.com      # Send or resend the TestFlight email
 builder asc testers remove a@example.com --group Nightly
 builder asc users             # Team members and whether they can test internally
 builder asc users invite dev@example.com --role DEVELOPER --first Dee --last Vee
@@ -463,15 +464,17 @@ served as the reference for Builder's implementation.
 
 `builder asc` covers the App Store Connect housekeeping around TestFlight, so
 nothing needs the website: apps, builds, groups, testers and team members.
-Every command takes `--json`, never prompts, and finds the app through
-`--bundle-id`, then `ios.bundleId` in `builder.json`, then the newest IPA in
-`./dist/`.
+Every command takes `--json` (the result on stdout, progress on stderr),
+never prompts, and finds the app through `--bundle-id`, then `ios.bundleId`
+in `builder.json`, then the newest IPA in `./dist/`.
 
 ```bash
 builder asc builds                       # newest version's builds and their groups
 builder asc groups create Nightly        # internal group; --external for outsiders
 builder asc groups add-build Nightly     # same as ios submit --testflight --group
 builder asc testers add a@example.com b@example.com --group Nightly
+builder asc testers                      # every tester with their state
+builder asc testers invite a@example.com # send or resend the TestFlight email
 builder asc testers remove a@example.com --group Nightly
 builder asc builds expire --build-number 42 --yes
 ```
@@ -492,10 +495,19 @@ Two things about internal groups:
   `internal, all builds`; `ios submit --group` and `asc groups add-build` skip
   them with a note instead of failing.
 
+A tester whose state is `NOT_INVITED` has never received an email: that is
+how a team member added to an internal group in App Store Connect shows up.
+`asc testers` points this out, `asc testers invite` sends the invitation (or
+resends it while `INVITED`), and `asc testers add` does so by itself when the
+record it added is still `NOT_INVITED`, so adding someone always ends in an
+email.
+
 External groups take anyone by email; a tester the team already has is added
-to the group rather than created again. `asc testers remove` without `--group`
-deletes the tester from TestFlight for the whole team, so it needs `--yes`;
-`asc groups delete` likewise needs `--yes` once the group has testers.
+to the group rather than created again. The destructive commands print what
+they are about to remove and need `--yes`: `asc groups delete` always, and
+`asc testers remove` without `--group`, which deletes the tester from
+TestFlight for the whole team. Group names match case-insensitively; when
+two groups differ only by case, the command refuses and lists both.
 
 ## Installing the IPA
 

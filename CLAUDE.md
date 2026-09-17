@@ -37,7 +37,8 @@ go install ./cmd/builder
 ./builder asc apps|builds|groups|testers|users                   # App Store Connect listings (--json)
 ./builder asc groups create <name> [--external]                  # also: groups delete, groups add-build
 ./builder asc testers add <email>... --group <name>              # also: testers remove, users invite
-./builder asc builds expire --build-number N --yes
+./builder asc testers invite <email>...                          # send/resend the TestFlight email
+./builder asc builds expire --build-number N --yes               # groups delete needs --yes too
 ```
 
 ## Architecture
@@ -243,12 +244,29 @@ internal/
   [username]`, then the member's tester record joins the group, or a stranger gets
   `POST userInvitations` (`CUSTOMER_SUPPORT`, `visibleApps` = this app) and the status
   `team_invite_sent`/`team_invite_pending`; the build reaches them only after they accept and the
-  command reruns. Apple's email/username filters are substring matches, so `Find*` compare exactly.
+  command reruns. Apple's email/username filters are substring matches, so `Find*` compare exactly;
+  `filter[email]` is sent lowercased because ASC stores addresses that way.
+- **NOT_INVITED Testers**: a team member put into an internal group (in the UI or by the API)
+  keeps `state: NOT_INVITED` and gets no email until `POST betaTesterInvitations` (relationships
+  `app` + `betaTester`; the response has no attributes, so the state is read back with
+  `GET betaTesters/{id}`). `AddTester` re-reads the state after a group add and invites when it is
+  still NOT_INVITED; `asc testers invite` (`distribute.InviteTester`) does it on demand for
+  NOT_INVITED/INVITED records and leaves ACCEPTED/INSTALLED alone.
+- **Group Name Matching**: `asc.MatchBetaGroup` is the only name lookup (command layer and
+  `findOrCreateGroup`): case-insensitive, nil when absent, and an error listing the candidates when
+  several groups fold to the same name, so nothing is created, deleted or linked on a guess.
+- **Destructive asc Commands**: `groups delete`, `testers remove` without `--group` and
+  `builds expire` resolve everything first, print a "Will ..." line naming exactly what goes, and
+  then need `--yes`; `testers remove` looks every address up before the first deletion.
 - **asc Command Layer**: `cmd/builder/asc.go` is thin cobra over `asc` and `distribute`. The app is
-  resolved once by `resolveBundleID` (`--bundle-id` → `ios.bundleId` in builder.json → newest
-  `dist/*.ipa`); `getASCClient` is a package var so command tests point it at an httptest server.
-  Listings are `[]row` structs with snake_case JSON tags and `text/tabwriter` columns; builds use
-  `include=preReleaseVersion,betaGroups` and the `included` block (`collect`/`includedAttr`).
+  resolved once by `resolveApp` (`--bundle-id` → `--ipa` → `ios.bundleId` in builder.json → newest
+  `dist/*.ipa`), shared with `ios submit`, which takes the marketing version from the IPA only
+  when one was read; `runTestFlight` is the submit-and-print step `ios submit --testflight` and
+  `asc groups add-build` share. `getASCClient` is a package var so command tests point it at an
+  httptest server; `run` in the tests resets every cobra flag first, since values persist on the
+  shared command tree. Listings are `[]row` structs with snake_case JSON tags and `text/tabwriter`
+  columns; builds use `include=preReleaseVersion,betaGroups` and the `included` block
+  (`collect`/`includedAttr`).
 - **Extension Points**: a future `ios release` (upload + TestFlight, automatic build numbers)
   composes `distribute.Upload` and `distribute.SubmitTestFlight` and reads `asc.Client.ListBuilds`
   for the latest build number; the `pkg/` wrappers do not expose `asc` yet.
