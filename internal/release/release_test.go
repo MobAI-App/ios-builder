@@ -357,8 +357,8 @@ func TestRunPreflight(t *testing.T) {
 		{&config.Config{Profiles: map[string]config.Profile{"prod": {Distribution: "store", Configuration: "Release"}}}, "prod"},
 		{&config.Config{Profiles: profiles, DefaultProfile: "development"}, "store"},
 	} {
-		if err := Preflight(tc.cfg, tc.profile); err != nil {
-			t.Errorf("Preflight(%q) = %v", tc.profile, err)
+		if got, err := Preflight(tc.cfg, tc.profile, nil); err != nil || got != tc.profile {
+			t.Errorf("Preflight(%q) = %q, %v", tc.profile, got, err)
 		}
 	}
 	f := newFake(t)
@@ -369,6 +369,94 @@ func TestRunPreflight(t *testing.T) {
 	}
 	if len(f.calls) != 0 {
 		t.Errorf("validation reached the network: %v", f.calls)
+	}
+}
+
+// TestPreflightPicksTheOnlyStoreProfile covers what `signing setup
+// --distribution store` leaves behind: one App Store profile in builder.json
+// and nothing selecting it, since defaultProfile is not touched.
+func TestPreflightPicksTheOnlyStoreProfile(t *testing.T) {
+	store := config.Profile{Distribution: "store"}
+	dev := config.Profile{Distribution: "development"}
+	for name, tc := range map[string]struct {
+		cfg     *config.Config
+		profile string
+		want    string   // the profile the build must use
+		logged  bool     // the selection is announced
+		errWant []string // non-empty when Preflight must refuse
+	}{
+		"the only store profile": {
+			cfg:  &config.Config{Profiles: map[string]config.Profile{"store": store, "dev": dev}},
+			want: "store", logged: true,
+		},
+		"the only store profile, non-store default": {
+			cfg:  &config.Config{DefaultProfile: "dev", Profiles: map[string]config.Profile{"beta": store, "dev": dev}},
+			want: "beta", logged: true,
+		},
+		"two store profiles": {
+			cfg:     &config.Config{Profiles: map[string]config.Profile{"beta": store, "prod": store, "dev": dev}},
+			errWant: []string{"more than one App Store profile: beta, prod", "--profile"},
+		},
+		"no store profile": {
+			cfg:     &config.Config{Profiles: map[string]config.Profile{"dev": dev}},
+			errWant: []string{"no App Store build profile selected", "signing setup --distribution store"},
+		},
+		"--profile is not second-guessed": {
+			cfg:     &config.Config{Profiles: map[string]config.Profile{"store": store, "dev": dev}},
+			profile: "dev",
+			errWant: []string{`profile "dev" has distribution development`},
+		},
+		"--profile beats the only store profile": {
+			cfg:     &config.Config{Profiles: map[string]config.Profile{"beta": store, "prod": store, "dev": dev}},
+			profile: "prod",
+			want:    "prod",
+		},
+		"defaultProfile is a store profile": {
+			cfg:  &config.Config{DefaultProfile: "prod", Profiles: map[string]config.Profile{"beta": store, "prod": store}},
+			want: "",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var log bytes.Buffer
+			got, err := Preflight(tc.cfg, tc.profile, &log)
+			if len(tc.errWant) > 0 {
+				if err == nil {
+					t.Fatalf("Preflight = %q, want an error", got)
+				}
+				for _, want := range tc.errWant {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("err = %v\nwant %q", err, want)
+					}
+				}
+				if log.Len() != 0 {
+					t.Errorf("refused, but announced a profile: %s", log.String())
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("Preflight = %q, %v; want %q", got, err, tc.want)
+			}
+			if logged := strings.Contains(log.String(), "Using profile "+tc.want+" (the only App Store profile)"); logged != tc.logged {
+				t.Errorf("announced = %v, want %v; log = %q", logged, tc.logged, log.String())
+			}
+		})
+	}
+
+	// The selected profile reaches the build, not the empty one Run was given.
+	f := newFake(t)
+	b := &fakeBuilder{t: t}
+	cfg := &config.Config{Project: "App", IOS: config.IOSConfig{BundleID: bundleID}, Profiles: map[string]config.Profile{"beta": store, "dev": dev}}
+	var log bytes.Buffer
+	if _, err := Run(context.Background(), cfg, b, f.client(t), &Options{
+		Build: build.BuildOptions{OutputDir: filepath.Join(t.TempDir(), "dist")}, PollInterval: time.Millisecond, Log: &log,
+	}); err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	if b.opts.Profile != "beta" {
+		t.Errorf("built with profile %q, want beta", b.opts.Profile)
+	}
+	if !strings.Contains(log.String(), "Using profile beta (the only App Store profile)") {
+		t.Errorf("selection not logged:\n%s", log.String())
 	}
 }
 

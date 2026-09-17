@@ -29,8 +29,9 @@ holds for the app, so every release uploads; --build-number overrides it and
 ios.bundleId in builder.json, or the newest IPA in the output directory.
 
 Needs an App Store Connect API key (builder auth apple) and a builder.json
-profile with "distribution": "store" (--profile, or defaultProfile), built in
-Release; builder signing setup --distribution store writes the "store" profile.
+profile with "distribution": "store" (--profile, or defaultProfile, or the
+only App Store profile there is), built in Release; builder signing setup
+--distribution store writes the "store" profile.
 Missing STORE signing secrets on GitHub are provisioned first, as ios build
 --profile does.`,
 	Args: cobra.NoArgs,
@@ -117,15 +118,25 @@ func runRelease(cmd *cobra.Command, cfg *config.Config, opts *release.Options) e
 	if err != nil {
 		return err
 	}
-	if err := release.Preflight(cfg, opts.Build.Profile); err != nil {
+	out := newOutput(cmd)
+	opts.Log = out.log
+	// Preflight may select the only App Store profile; the build and the
+	// signing set it provisions have to be that one, so keep what it chose.
+	opts.Build.Profile, err = release.Preflight(cfg, opts.Build.Profile, out.log)
+	if err != nil {
+		return err
+	}
+	// That profile may name a provider of its own, so settle the provider
+	// against it: the client and the signing set must match what will build.
+	providerFlag, _ := cmd.Flags().GetString("provider")
+	opts.Build.Provider, err = effectiveProvider(cfg, opts.Build.Profile, providerFlag)
+	if err != nil {
 		return err
 	}
 	ghClient, err := clientForProvider(cfg, opts.Build.Provider)
 	if err != nil {
 		return err
 	}
-	out := newOutput(cmd)
-	opts.Log = out.log
 	ctx, cancel := commandContext(cmd, false)
 	defer cancel()
 

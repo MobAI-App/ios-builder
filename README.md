@@ -713,7 +713,11 @@ be `Release` (the default for `store`; an explicit `Debug` is refused). Before
 dispatching anything it checks that an API key is saved and the profile fits,
 and reports the first thing missing; without a store profile the message names
 `builder signing setup --distribution store`, which writes the `store` profile,
-and `--profile store`. On GitHub a missing `STORE` signing set is provisioned
+and `--profile store`. When neither `--profile` nor `defaultProfile` names an
+App Store profile and `builder.json` has exactly one, that profile is used and
+the log says so (`Using profile store (the only App Store profile)`); with
+more than one the error lists them so you can pick with `--profile`. On GitHub
+a missing `STORE` signing set is provisioned
 first, as `ios build --profile` does. `--unsigned` is refused with `--submit`.
 
 It also solves the build-number problem. Builder asks App Store Connect for the

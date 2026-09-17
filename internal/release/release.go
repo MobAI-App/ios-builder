@@ -75,28 +75,66 @@ var versionRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+){0,2}$`)
 // profile (--profile, else defaultProfile) produces what App Store Connect
 // accepts: an archive signed with an App Store profile (distribution store)
 // and built in Release. TestFlight takes nothing else either.
-func Preflight(cfg *config.Config, profile string) error {
+//
+// It returns the profile the release must build with: the one passed, except
+// when nothing selects an App Store profile and builder.json holds exactly
+// one, which Preflight then names and logs. That is what `signing setup
+// --distribution store` leaves behind — it writes the store profile without
+// touching defaultProfile — so the common setup needs no --profile. With
+// several App Store profiles only the caller knows which to release.
+func Preflight(cfg *config.Config, profile string, log io.Writer) (string, error) {
 	s, err := cfg.ResolveProfile(profile)
 	if err != nil {
-		return err
+		return "", err
 	}
-	switch s.Distribution {
-	case config.DistributionStore:
-	case "":
-		return fmt.Errorf("no App Store build profile selected; TestFlight and the App Store need one with \"distribution\": \"store\". Run builder signing setup --distribution store, which writes the \"store\" profile to builder.json, then release with --profile store")
-	default:
-		return fmt.Errorf("profile %q has distribution %s; TestFlight and the App Store need an App Store profile (\"distribution\": \"store\"). Run builder signing setup --distribution store, which writes the \"store\" profile to builder.json, then release with --profile store", s.Profile, s.Distribution)
+	if s.Distribution != config.DistributionStore {
+		store := storeProfiles(cfg)
+		switch {
+		case profile != "" || len(store) == 0:
+			return "", notStoreProfileErr(&s)
+		case len(store) > 1:
+			return "", fmt.Errorf("%w. builder.json has more than one App Store profile: %s — pass --profile with the one to release", notStoreProfileErr(&s), strings.Join(store, ", "))
+		}
+		profile = store[0]
+		if s, err = cfg.ResolveProfile(profile); err != nil {
+			return "", err
+		}
+		logf(log, "Using profile %s (the only App Store profile)", profile)
 	}
 	if s.Configuration != "Release" {
-		return fmt.Errorf("profile %q builds %s; App Store Connect rejects Debug archives. Remove \"configuration\" from the profile (it defaults to Release for store) or set it to \"Release\"", s.Profile, s.Configuration)
+		return "", fmt.Errorf("profile %q builds %s; App Store Connect rejects Debug archives. Remove \"configuration\" from the profile (it defaults to Release for store) or set it to \"Release\"", s.Profile, s.Configuration)
 	}
-	return nil
+	return profile, nil
+}
+
+// notStoreProfileErr says why the selected settings cannot be released, and
+// how to get a profile that can.
+func notStoreProfileErr(s *config.BuildSettings) error {
+	if s.Distribution == "" {
+		return fmt.Errorf("no App Store build profile selected; TestFlight and the App Store need one with \"distribution\": \"store\". Run builder signing setup --distribution store, which writes the \"store\" profile to builder.json, then release with --profile store")
+	}
+	return fmt.Errorf("profile %q has distribution %s; TestFlight and the App Store need an App Store profile (\"distribution\": \"store\"). Run builder signing setup --distribution store, which writes the \"store\" profile to builder.json, then release with --profile store", s.Profile, s.Distribution)
+}
+
+// storeProfiles names the profiles in builder.json that build for the App
+// Store, sorted. Profiles that do not resolve (an unknown distribution, a
+// reserved env name) are left out: they could not be released anyway, and the
+// error belongs to whoever names them.
+func storeProfiles(cfg *config.Config) []string {
+	var names []string
+	for _, name := range cfg.ProfileNames() {
+		if s, err := cfg.ResolveProfile(name); err == nil && s.Distribution == config.DistributionStore {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // Run builds, uploads and submits. A partial Result comes back with the error
 // so callers can show how far it got.
 func Run(ctx context.Context, cfg *config.Config, builder Builder, client *asc.Client, opts *Options) (*Result, error) {
-	if err := Preflight(cfg, opts.Build.Profile); err != nil {
+	profile, err := Preflight(cfg, opts.Build.Profile, opts.Log)
+	if err != nil {
 		return nil, err
 	}
 	if opts.BuildNumber != "" && !versionRe.MatchString(opts.BuildNumber) {
@@ -130,7 +168,7 @@ func Run(ctx context.Context, cfg *config.Config, builder Builder, client *asc.C
 	}
 
 	bo := opts.Build
-	bo.OutputDir, bo.BuildNumber, bo.Unsigned = outputDir, buildNumberInput(res.BuildNumber, opts.Version), false
+	bo.OutputDir, bo.BuildNumber, bo.Unsigned, bo.Profile = outputDir, buildNumberInput(res.BuildNumber, opts.Version), false, profile
 	built, err := builder.Build(ctx, &bo)
 	if err != nil {
 		return res, err
