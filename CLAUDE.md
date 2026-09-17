@@ -336,47 +336,36 @@ internal/
 - **Signing Identity Follows The Profile Type**: `signing_identity` picks `CODE_SIGN_IDENTITY` from
   `security find-identity` right after import: `Apple Development`/`iPhone Developer` for development,
   `Apple Distribution`/`iPhone Distribution` otherwise; without it Xcode keeps the project's default
-- **Group Auto-Create**: `SubmitTestFlight` creates any `--group` name the app lacks (internal,
-  or external with `External`/`--external`); existing groups keep their type. `GroupRef.Created`
-  marks them in the JSON result. `asc groups add-build` reuses `SubmitTestFlight`, so it inherits
-  this and the beta-review step.
+- **Group Auto-Create**: `SubmitTestFlight` creates any `--group` name the app lacks (internal, or
+  external with `External`/`--external`) and marks it `GroupRef.Created`; existing groups keep
+  their type. `asc groups add-build` reuses it, so it inherits the beta-review step too.
 - **Automatic Distribution Groups**: an internal group with `hasAccessToAllBuilds: true` gets every
-  build by itself and `POST builds/{id}/relationships/betaGroups` answers 422 for it. The add-build
-  path skips such groups with a note (`GroupRef.AutoBuilds`, exit 0); `asc groups create` sends
-  `hasAccessToAllBuilds: true` for internal groups unless `--no-auto-builds`.
-- **Internal Testers**: internal groups take team members only. `distribute.AddTester` routes by
-  group type: external → `asc.Client.AddBetaTester` (POST `betaTesters` with the group, 409 → find
-  by email → POST `betaGroups/{id}/relationships/betaTesters`); internal → `GET users?filter
-  [username]`, then the member's tester record joins the group, or a stranger gets
-  `POST userInvitations` (`CUSTOMER_SUPPORT`, `visibleApps` = this app) and the status
-  `team_invite_sent`/`team_invite_pending`; the build reaches them only after they accept and the
-  command reruns. Apple's email/username filters are substring matches, so `Find*` compare exactly;
-  `filter[email]` is sent lowercased because ASC stores addresses that way.
-- **NOT_INVITED Testers**: a team member put into an internal group (in the UI or by the API)
-  keeps `state: NOT_INVITED` and gets no email until `POST betaTesterInvitations` (relationships
-  `app` + `betaTester`; the response has no attributes, so the state is read back with
-  `GET betaTesters/{id}`). `AddTester` re-reads the state after a group add and invites when it is
-  still NOT_INVITED; `asc testers invite` (`distribute.InviteTester`) does it on demand for
-  NOT_INVITED/INVITED records and leaves ACCEPTED/INSTALLED alone. While none of the tester's
-  groups has a build, the POST answers 409 `STATE_ERROR.TESTER_INVITE.NO_INSTALLABLE_BUILDS`
-  (`asc.CodeNoInstallableBuilds`, matched with `asc.HasCode`): `InviteTester` turns it into a
-  `noBuildError` naming `asc groups add-build`, and `AddTester` treats it as "added, invite goes
-  out once the group has a build" (status `added`, state NOT_INVITED) rather than failing.
+  build by itself, so `POST builds/{id}/relationships/betaGroups` answers 422 and the add-build path
+  skips it (`GroupRef.AutoBuilds`, exit 0). `asc groups create` sets it unless `--no-auto-builds`.
+- **Internal Testers**: internal groups take team members only, so `distribute.AddTester` routes by
+  group type — external creates the tester in the group (409 → find by email → add), internal joins
+  the member's record or `POST userInvitations` for a stranger, who must accept first.
+- **ASC Filters Are Substrings**: Apple's `filter[email]`/`filter[username]` match substrings, so
+  `FindBetaTester`/`FindUser` compare the address exactly; `filter[email]` goes lowercased because
+  ASC stores addresses that way.
+- **NOT_INVITED Testers**: a team member put into an internal group stays `NOT_INVITED` with no
+  email until `POST betaTesterInvitations`, so `AddTester` re-reads the state after a group add and
+  `asc testers invite` sends it on demand (ACCEPTED/INSTALLED are left alone).
+- **No Installable Build**: while no group of a tester's has a build, `betaTesterInvitations`
+  answers 409 `asc.CodeNoInstallableBuilds`: `InviteTester` turns it into a `noBuildError` naming
+  `asc groups add-build`, and `AddTester` into a plain "added" rather than a failure.
 - **Group Name Matching**: `asc.MatchBetaGroup` is the only name lookup (command layer and
   `findOrCreateGroup`): case-insensitive, nil when absent, and an error listing the candidates when
   several groups fold to the same name, so nothing is created, deleted or linked on a guess.
 - **Destructive asc Commands**: `groups delete`, `testers remove` without `--group` and
   `builds expire` resolve everything first, print a "Will ..." line naming exactly what goes, and
   then need `--yes`; `testers remove` looks every address up before the first deletion.
-- **asc Command Layer**: `cmd/builder/asc.go` is thin cobra over `asc` and `distribute`. The app is
-  resolved once by `resolveApp` (`--bundle-id` → `--ipa` → `ios.bundleId` in builder.json → newest
-  `dist/*.ipa`), shared with `ios submit`, which takes the marketing version from the IPA only
-  when one was read; `runTestFlight` is the submit-and-print step `ios submit --testflight` and
-  `asc groups add-build` share. `getASCClient` is a package var so command tests point it at an
-  httptest server; `run` in the tests resets every cobra flag first, since values persist on the
-  shared command tree. Listings are `[]row` structs with snake_case JSON tags and `text/tabwriter`
-  columns; builds use `include=preReleaseVersion,betaGroups` and the `included` block
-  (`collect`/`includedAttr`).
+- **asc Command Layer**: `cmd/builder/asc.go` is thin cobra over `asc` and `distribute`;
+  `resolveApp` (`--bundle-id` → `--ipa` → `ios.bundleId` → newest `dist/*.ipa`) and `runTestFlight`
+  are shared with `ios submit`, and builds list with `include=preReleaseVersion,betaGroups`.
+- **asc Command Tests**: `getASCClient` is a package var so tests can point it at an httptest
+  server, and their `run` helper resets every flag first, since cobra keeps flag values on the
+  shared command tree.
 - **Signing Settings Live In The pbxproj**: `apply_signing_to_app_target` (both templates, right before
   each signed archive, after `pod install`/`expo prebuild`/`flutter build ios`) writes the four manual
   settings into app targets only via `plutil`; on the command line every Pods target would inherit them

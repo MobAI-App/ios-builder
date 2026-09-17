@@ -69,18 +69,14 @@ type fake struct {
 	openSubmission   bool
 	submitStatus     int
 	betaReviewExists bool
-	// noGroups empties the group list; autoGroup adds an internal group with
-	// automatic distribution; dupGroup adds a second "beta testers" group;
-	// created collects groups made through the API.
+	// autoGroup adds an internal group with automatic distribution, dupGroup a
+	// second "beta testers"; created collects groups made through the API.
 	noGroups  bool
 	autoGroup bool
 	dupGroup  bool
 	created   []map[string]any
-	// users are team members by email; testers maps tester emails to IDs and
-	// testerStates IDs to states (default ACCEPTED, INVITED once an invitation
-	// is posted); pendingInvite makes every invitation lookup find one;
-	// noBuilds is a group without a build: new records stay NOT_INVITED and
-	// invitations are refused.
+	// testerStates defaults to ACCEPTED, flipping to INVITED once an
+	// invitation is posted; noBuilds makes those invitations fail instead.
 	users         map[string]bool
 	testers       map[string]string
 	testerStates  map[string]string

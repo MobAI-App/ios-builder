@@ -16,9 +16,9 @@ type TestFlightOptions struct {
 	// Version and BuildNumber narrow the build; empty picks the newest VALID build.
 	Version     string
 	BuildNumber string
-	// Groups are TestFlight group names (case-insensitive). Empty adds the
-	// build nowhere and reports the available groups instead. A name the app
-	// has no group for is created: internal, or external with External.
+	// Groups are TestFlight group names (case-insensitive); an unknown name is
+	// created, internal or external with External. Empty adds the build
+	// nowhere and reports the available groups instead.
 	Groups   []string
 	External bool
 	// Notes is the "What to Test" text; Locale defaults to the app's primary locale.
@@ -120,7 +120,7 @@ func SubmitTestFlight(ctx context.Context, client *asc.Client, opts *TestFlightO
 		return res, nil
 	}
 
-	var ids []string
+	var ids, names []string
 	var external bool
 	for _, name := range opts.Groups {
 		g, err := findOrCreateGroup(ctx, client, opts.Log, app.ID, groups, name, !opts.External)
@@ -133,6 +133,7 @@ func SubmitTestFlight(ctx context.Context, client *asc.Client, opts *TestFlightO
 			continue
 		}
 		ids = append(ids, g.ID)
+		names = append(names, g.Name)
 		external = external || !g.Internal
 	}
 	if res.Compliance == "pending" {
@@ -163,7 +164,7 @@ func SubmitTestFlight(ctx context.Context, client *asc.Client, opts *TestFlightO
 	if err := client.AddBuildToBetaGroups(ctx, build.ID, ids); err != nil {
 		return res, fmt.Errorf("add build to groups: %w", err)
 	}
-	logf(opts.Log, "Added build %s to %s", build.BuildNumber, strings.Join(opts.Groups, ", "))
+	logf(opts.Log, "Added build %s to %s", build.BuildNumber, strings.Join(names, ", "))
 
 	if opts.Wait && res.BetaReview != nil {
 		review, err := client.WaitForBetaAppReview(ctx, res.BetaReview.ID, pollInterval(opts.PollInterval), func(r *asc.BetaAppReviewSubmission) {

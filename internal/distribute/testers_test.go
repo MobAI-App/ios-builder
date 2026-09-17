@@ -49,9 +49,8 @@ func TestAddTesterExternalGroup(t *testing.T) {
 }
 
 func TestAddTesterGroupWithoutBuild(t *testing.T) {
-	// A tester created in a group that has no build stays NOT_INVITED and
-	// App Store Connect refuses to send the email: the add is reported as
-	// such, not as an invitation, and is not an error.
+	// A group with no build keeps the record NOT_INVITED and App Store Connect
+	// refuses the email, which is an "added", not an error.
 	f := newFake(t)
 	f.noBuilds = true
 	var log bytes.Buffer

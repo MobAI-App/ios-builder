@@ -145,16 +145,20 @@ func TestSubmitTestFlightSkipsAutomaticDistributionGroups(t *testing.T) {
 		t.Errorf("log = %q", log.String())
 	}
 
-	// Mixed with a manual group, only the manual one is linked.
+	// Mixed with a manual group, only the manual one is linked and reported.
 	f = newFake(t)
 	f.autoGroup = true
-	res, err = SubmitTestFlight(context.Background(), f.client(t), &TestFlightOptions{BundleID: "com.example.app", Groups: []string{"Everyone", "Team"}, NoEncryption: true})
+	log.Reset()
+	res, err = SubmitTestFlight(context.Background(), f.client(t), &TestFlightOptions{BundleID: "com.example.app", Groups: []string{"Everyone", "Team"}, NoEncryption: true, Log: &log})
 	if err != nil {
 		t.Fatal(err)
 	}
 	links := arr(t, f.body("POST /v1/builds/build-9/relationships/betaGroups"), "data")
 	if len(links) != 1 || obj(t, links[0])["id"] != "g-int" || len(res.Groups) != 2 || res.Groups[1].AutoBuilds {
 		t.Errorf("linkage = %v, groups = %+v", links, res.Groups)
+	}
+	if !strings.Contains(log.String(), "Added build 7 to Team\n") {
+		t.Errorf("log names the skipped group as added: %q", log.String())
 	}
 }
 
