@@ -139,6 +139,21 @@ func IsStatus(err error, status int) bool {
 	return errors.As(err, &e) && e.StatusCode == status
 }
 
+// HasCode reports whether err is an App Store Connect error carrying the
+// given error code (STATE_ERROR.TESTER_INVITE.NO_INSTALLABLE_BUILDS, ...).
+func HasCode(err error, code string) bool {
+	var e *Error
+	if !errors.As(err, &e) {
+		return false
+	}
+	for _, d := range e.Errors {
+		if d.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 // Get performs a GET. path is relative to the base URL ("/v1/apps") or an
 // absolute URL such as a pagination link; query is appended when non-nil.
 func (c *Client) Get(ctx context.Context, path string, query url.Values, out any) error {

@@ -30,6 +30,10 @@ type Build struct {
 	// UsesNonExemptEncryption is nil while the export compliance question is
 	// unanswered ("Missing Compliance" in TestFlight).
 	UsesNonExemptEncryption *bool
+	// Version (marketing version) and BetaGroups (TestFlight group names) are
+	// only filled in when BuildFilter.Details asked for them.
+	Version    string
+	BetaGroups []string
 }
 
 type buildAttributes struct {
@@ -73,11 +77,17 @@ type BuildFilter struct {
 	ExcludeExpired bool
 	// Limit caps the result to the newest N builds; 0 returns every match.
 	Limit int
+	// Details also fetches each build's marketing version and TestFlight groups.
+	Details bool
 }
 
 // ListBuilds lists builds, newest first.
 func (c *Client) ListBuilds(ctx context.Context, f *BuildFilter) ([]Build, error) {
 	q := url.Values{"sort": {"-uploadedDate"}}
+	if f.Details {
+		q.Set("include", "preReleaseVersion,betaGroups")
+		q.Set("limit[betaGroups]", "50")
+	}
 	if f.AppID != "" {
 		q.Set("filter[app]", f.AppID)
 	}
@@ -96,22 +106,49 @@ func (c *Client) ListBuilds(ctx context.Context, f *BuildFilter) ([]Build, error
 	if f.ExcludeExpired {
 		q.Set("filter[expired]", "false")
 	}
-	var rs []Resource[buildAttributes]
-	var err error
-	if f.Limit > 0 {
+	// One page covers the limit; larger limits fetch everything and cut.
+	follow := f.Limit <= 0 || f.Limit > pageLimit
+	if !follow {
 		q.Set("limit", strconv.Itoa(f.Limit))
-		rs, err = getPage[buildAttributes](ctx, c, "/v1/builds", q)
-	} else {
-		rs, err = getAll[buildAttributes](ctx, c, "/v1/builds", q)
 	}
+	rs, included, err := collect[buildAttributes](ctx, c, "/v1/builds", q, follow)
 	if err != nil {
 		return nil, err
 	}
+	if f.Limit > 0 && len(rs) > f.Limit {
+		rs = rs[:f.Limit]
+	}
 	builds := make([]Build, 0, len(rs))
 	for _, r := range rs {
-		builds = append(builds, toBuild(r))
+		b := toBuild(r)
+		if f.Details {
+			if pre, ok := r.Relationships.One("preReleaseVersion"); ok {
+				b.Version = includedAttr(included, "preReleaseVersions", pre.ID, "version")
+			}
+			b.BetaGroups = []string{}
+			for _, g := range r.Relationships.Many("betaGroups") {
+				name := includedAttr(included, "betaGroups", g.ID, "name")
+				if name == "" {
+					name = g.ID
+				}
+				b.BetaGroups = append(b.BetaGroups, name)
+			}
+		}
+		builds = append(builds, b)
 	}
 	return builds, nil
+}
+
+// ExpireBuild removes the build from TestFlight for good.
+func (c *Client) ExpireBuild(ctx context.Context, buildID string) (*Build, error) {
+	expired := true
+	req := Resource[buildAttributes]{Type: "builds", ID: buildID, Attributes: buildAttributes{Expired: &expired}}
+	r, err := patch[buildAttributes, buildAttributes](ctx, c, "/v1/builds/"+buildID, req)
+	if err != nil {
+		return nil, err
+	}
+	b := toBuild(*r)
+	return &b, nil
 }
 
 // GetBuild fetches one build.

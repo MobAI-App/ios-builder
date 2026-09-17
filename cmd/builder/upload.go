@@ -45,7 +45,9 @@ func init() {
 	iosCmd.AddCommand(iosUploadCmd)
 }
 
-func getASCClient() (*asc.Client, error) {
+// getASCClient builds an App Store Connect client from the saved Apple login
+// or the ASC_* environment variables. Tests point it at a fake server.
+var getASCClient = func() (*asc.Client, error) {
 	creds, _, err := auth.GetAppleCredentials()
 	if err != nil {
 		if errors.Is(err, auth.ErrNotAuthenticated) {

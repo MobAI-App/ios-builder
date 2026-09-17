@@ -1,12 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"github.com/MobAI-App/ios-builder/internal/asc"
 	"github.com/MobAI-App/ios-builder/internal/distribute"
-	"github.com/MobAI-App/ios-builder/internal/ipa"
 	"github.com/spf13/cobra"
 )
 
@@ -17,15 +17,17 @@ var iosSubmitCmd = &cobra.Command{
 
   --testflight   adds the build to the named TestFlight groups (--group, repeatable),
                  sets the "What to Test" notes (--notes) and, for external groups,
-                 submits the build for beta review. Without --group it reports the
-                 build and lists the available groups.
+                 submits the build for beta review. A group that does not exist is
+                 created (internal, or external with --external). Without --group
+                 it reports the build and lists the available groups.
   --app-store    finds or creates the App Store version for the marketing version,
                  attaches the build, sets the release type and submits it for review.
                  The version's metadata (description, screenshots, pricing, privacy)
                  must already be complete in App Store Connect.
 
-The app is identified by the IPA in ./dist (or --ipa), or by --bundle-id. The
-newest VALID build is used unless --build-number is given.`,
+The app is identified by --bundle-id, else --ipa, else ios.bundleId in
+builder.json, else the newest IPA in ./dist. The newest VALID build is used
+unless --build-number is given.`,
 	Args: cobra.NoArgs,
 	RunE: runIOSSubmit,
 }
@@ -36,8 +38,9 @@ func init() {
 	iosSubmitCmd.Flags().String("ipa", "", "IPA whose bundle ID and version identify the app (default: newest .ipa in ./dist)")
 	iosSubmitCmd.Flags().String("bundle-id", "", "App bundle ID, instead of reading an IPA")
 	iosSubmitCmd.Flags().String("build-number", "", "Build number (CFBundleVersion) to use (default: newest VALID build)")
-	iosSubmitCmd.Flags().String("version", "", "Marketing version (default: from the IPA; required with --app-store and --bundle-id)")
-	iosSubmitCmd.Flags().StringArray("group", nil, "TestFlight group name to add the build to (repeatable)")
+	iosSubmitCmd.Flags().String("version", "", "Marketing version (default: from the IPA; required with --app-store when no IPA is read)")
+	iosSubmitCmd.Flags().StringArray("group", nil, "TestFlight group name to add the build to (repeatable; created if missing)")
+	iosSubmitCmd.Flags().Bool("external", false, "Create missing --group names as external groups (default: internal)")
 	iosSubmitCmd.Flags().String("notes", "", "What to Test notes for the build")
 	iosSubmitCmd.Flags().String("locale", "", "Locale for --notes (default: the app's primary locale)")
 	iosSubmitCmd.Flags().String("release", "", "App Store release: manual or after-approval")
@@ -58,21 +61,13 @@ func runIOSSubmit(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	bundleID, _ := cmd.Flags().GetString("bundle-id")
+	bundleID, ipaVersion, err := resolveApp(cmd)
+	if err != nil {
+		return err
+	}
 	version, _ := cmd.Flags().GetString("version")
-	if bundleID == "" {
-		ipaPath, _ := cmd.Flags().GetString("ipa")
-		if ipaPath, err = resolveIPA(ipaPath); err != nil {
-			return fmt.Errorf("%w (or pass --bundle-id)", err)
-		}
-		info, err := ipa.ReadInfo(ipaPath)
-		if err != nil {
-			return err
-		}
-		bundleID = info.BundleID
-		if version == "" && appStore {
-			version = info.Version
-		}
+	if version == "" && appStore {
+		version = ipaVersion
 	}
 	buildNumber, _ := cmd.Flags().GetString("build-number")
 	noEncryption, _ := cmd.Flags().GetBool("no-encryption")
@@ -83,19 +78,12 @@ func runIOSSubmit(cmd *cobra.Command, _ []string) error {
 
 	if testflight {
 		groups, _ := cmd.Flags().GetStringArray("group")
+		external, _ := cmd.Flags().GetBool("external")
 		notes, _ := cmd.Flags().GetString("notes")
 		locale, _ := cmd.Flags().GetString("locale")
-		res, err := distribute.SubmitTestFlight(ctx, client, &distribute.TestFlightOptions{
-			BundleID: bundleID, Version: version, BuildNumber: buildNumber, Groups: groups, Notes: notes, Locale: locale,
+		return runTestFlight(ctx, cmd, client, out, &distribute.TestFlightOptions{
+			BundleID: bundleID, Version: version, BuildNumber: buildNumber, Groups: groups, External: external, Notes: notes, Locale: locale,
 			NoEncryption: noEncryption, Wait: wait, Log: out.log,
-		})
-		return finish(out, cmd, res, err, func() {
-			fmt.Println()
-			fmt.Printf("Build ID: %s (build %s)\n", res.Build.ID, res.Build.BuildNumber)
-			if res.BetaReview != nil {
-				fmt.Printf("Beta review: %s\n", res.BetaReview.State)
-			}
-			fmt.Printf("Link:     %s\n", res.Link)
 		})
 	}
 
@@ -113,6 +101,21 @@ func runIOSSubmit(cmd *cobra.Command, _ []string) error {
 		fmt.Printf("Build ID:   %s (build %s)\n", res.Build.ID, res.Build.BuildNumber)
 		fmt.Printf("Submission: %s (%s)\n", res.Submission.ID, res.Submission.State)
 		fmt.Printf("Link:       %s\n", res.Link)
+	})
+}
+
+// runTestFlight hands the build to TestFlight and prints the outcome; ios
+// submit --testflight and asc groups add-build share it.
+func runTestFlight(ctx context.Context, cmd *cobra.Command, client *asc.Client, out output, opts *distribute.TestFlightOptions) error {
+	res, err := distribute.SubmitTestFlight(ctx, client, opts)
+	return finish(out, cmd, res, err, func() {
+		w := cmd.OutOrStdout()
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "Build ID: %s (build %s)\n", res.Build.ID, res.Build.BuildNumber)
+		if res.BetaReview != nil {
+			fmt.Fprintf(w, "Beta review: %s\n", res.BetaReview.State)
+		}
+		fmt.Fprintf(w, "Link:     %s\n", res.Link)
 	})
 }
 
