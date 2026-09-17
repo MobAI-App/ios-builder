@@ -500,7 +500,11 @@ how a team member added to an internal group in App Store Connect shows up.
 `asc testers` points this out, `asc testers invite` sends the invitation (or
 resends it while `INVITED`), and `asc testers add` does so by itself when the
 record it added is still `NOT_INVITED`, so adding someone always ends in an
-email.
+email — unless the group has no build yet: App Store Connect refuses to invite
+anyone into a group with nothing to install, so `asc testers add` reports
+"Added ... (invite goes out once the group has a build)" and `asc testers
+invite` says to run `asc groups add-build` first (an external group's build
+must also pass Beta App Review).
 
 External groups take anyone by email; a tester the team already has is added
 to the group rather than created again. The destructive commands print what

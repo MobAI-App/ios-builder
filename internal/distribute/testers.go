@@ -88,10 +88,8 @@ func AddTester(ctx context.Context, client *asc.Client, opts *TesterOptions) (*T
 // created record is INVITED by App Store Connect itself, but a record added
 // to an internal group stays NOT_INVITED until an invitation is sent.
 func finishTester(ctx context.Context, client *asc.Client, opts *TesterOptions, res *TesterResult, tester *asc.BetaTester, created bool) (*TesterResult, error) {
-	if created {
-		res.Status = TesterInvited
-		logf(opts.Log, "Invited %s to %s", tester.Email, res.Group)
-	} else {
+	res.Status = TesterInvited
+	if !created {
 		res.Status = TesterAdded
 		logf(opts.Log, "Added existing tester %s to %s", tester.Email, res.Group)
 		// The group add itself may have moved the state; read it back.
@@ -101,11 +99,19 @@ func finishTester(ctx context.Context, client *asc.Client, opts *TesterOptions, 
 		}
 		tester = updated
 	}
-	if tester.State == asc.BetaTesterNotInvited {
-		var err error
-		if tester, err = InviteTester(ctx, client, opts.Log, opts.AppID, tester); err != nil {
-			return nil, err
+	if tester.State != asc.BetaTesterNotInvited {
+		if created {
+			logf(opts.Log, "Invited %s to %s", tester.Email, res.Group)
 		}
+	} else if invited, err := InviteTester(ctx, client, opts.Log, opts.AppID, tester); asc.HasCode(err, asc.CodeNoInstallableBuilds) {
+		// A group without a build: App Store Connect keeps the record
+		// NOT_INVITED and sends the email itself once a build is added.
+		res.Status = TesterAdded
+		logf(opts.Log, "Added %s to %s (invite goes out once the group has a build)", tester.Email, res.Group)
+	} else if err != nil {
+		return nil, err
+	} else {
+		tester = invited
 	}
 	res.ID, res.Email, res.State = tester.ID, tester.Email, tester.State
 	return res, nil
@@ -115,6 +121,9 @@ func finishTester(ctx context.Context, client *asc.Client, opts *TesterOptions, 
 // and returns the record with its new state.
 func InviteTester(ctx context.Context, client *asc.Client, log io.Writer, appID string, tester *asc.BetaTester) (*asc.BetaTester, error) {
 	if err := client.InviteBetaTester(ctx, appID, tester.ID); err != nil {
+		if asc.HasCode(err, asc.CodeNoInstallableBuilds) {
+			return nil, &noBuildError{email: tester.Email, err: err}
+		}
 		return nil, fmt.Errorf("invite %s: %w", tester.Email, err)
 	}
 	updated, err := client.GetBetaTester(ctx, tester.ID)
@@ -124,6 +133,19 @@ func InviteTester(ctx context.Context, client *asc.Client, log io.Writer, appID 
 	logf(log, "Sent TestFlight invitation to %s (%s)", updated.Email, updated.State)
 	return updated, nil
 }
+
+// noBuildError is App Store Connect's refusal to invite a tester whose groups
+// have no build, said in terms of what to do; the ASC error stays unwrappable.
+type noBuildError struct {
+	email string
+	err   error
+}
+
+func (e *noBuildError) Error() string {
+	return fmt.Sprintf("%s has no installable build yet: add one to the group first (builder asc groups add-build <group>); external groups also need the build to pass Beta App Review", e.email)
+}
+
+func (e *noBuildError) Unwrap() error { return e.err }
 
 func inviteToTeam(ctx context.Context, client *asc.Client, opts *TesterOptions, res *TesterResult) (*TesterResult, error) {
 	if inv, err := client.FindUserInvitation(ctx, opts.Email); err != nil {

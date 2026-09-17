@@ -32,8 +32,10 @@ type ascFake struct {
 	bodies map[string]map[string]any
 	// dupGroup adds a second group whose name folds to "beta testers".
 	dupGroup bool
-	// quietState is the NOT_INVITED tester's state; an invitation flips it.
+	// quietState is the NOT_INVITED tester's state; an invitation flips it,
+	// unless noBuilds (no group has a build) makes App Store Connect refuse.
 	quietState string
+	noBuilds   bool
 }
 
 func newASCFake(t *testing.T) *ascFake {
@@ -123,6 +125,10 @@ func newASCFake(t *testing.T) *ascFake {
 	})
 	handle("DELETE /v1/betaTesters/{id}", func(w http.ResponseWriter, r *http.Request, _ map[string]any) { w.WriteHeader(204) })
 	handle("POST /v1/betaTesterInvitations", func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		if f.noBuilds {
+			writeJSON(w, 409, map[string]any{"errors": []map[string]any{{"status": "409", "code": "STATE_ERROR.TESTER_INVITE.NO_INSTALLABLE_BUILDS", "title": "The request cannot be fulfilled because of the state of another resource."}}})
+			return
+		}
 		if obj(t, body, "data", "relationships", "betaTester", "data")["id"] == "t-quiet" {
 			f.quietState = "INVITED"
 		}
@@ -312,6 +318,13 @@ func TestASCTestersInvite(t *testing.T) {
 	f = newASCFake(t)
 	if _, _, err := run(t, "asc", "testers", "invite", "nobody@example.com", "--bundle-id", "com.example.app"); err == nil || !strings.Contains(err.Error(), "no TestFlight tester nobody@example.com") || f.called("POST /v1/betaTesterInvitations") {
 		t.Errorf("err = %v, calls = %v", err, f.calls)
+	}
+
+	// A group without a build: Apple's 409 becomes what to do next.
+	f = newASCFake(t)
+	f.noBuilds = true
+	if _, _, err := run(t, "asc", "testers", "invite", "quiet@example.com", "--bundle-id", "com.example.app"); err == nil || !strings.Contains(err.Error(), "quiet@example.com has no installable build yet: add one to the group first (builder asc groups add-build <group>)") || strings.Contains(err.Error(), "STATE_ERROR") {
+		t.Errorf("err = %v", err)
 	}
 }
 
