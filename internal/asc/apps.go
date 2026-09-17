@@ -28,8 +28,8 @@ func toApp(r Resource[appAttributes]) App {
 
 // AppByBundleID finds the app record for a bundle identifier.
 func (c *Client) AppByBundleID(ctx context.Context, bundleID string) (*App, error) {
-	q := url.Values{"filter[bundleId]": {bundleID}, "limit": {"2"}}
-	apps, err := getPage[appAttributes](ctx, c, "/v1/apps", q)
+	// The filter may match more than the exact ID, so page through and compare.
+	apps, err := getAll[appAttributes](ctx, c, "/v1/apps", url.Values{"filter[bundleId]": {bundleID}})
 	if err != nil {
 		return nil, err
 	}
