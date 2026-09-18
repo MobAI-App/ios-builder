@@ -8,8 +8,10 @@ mode="${1:-build}"
 export IOS_PATH="${IOS_PATH:-.}" SCHEME="${SCHEME:-}" CONFIGURATION="${CONFIGURATION:-Debug}"
 export USE_SIGNING="${USE_SIGNING:-false}" JDK_VERSION="${JDK_VERSION:-17}"
 # From the selected builder.json profile: DISTRIBUTION (canonical, so internal
-# arrives as ad-hoc) picks the signing set, BUILD_ENV is a JSON object prepare() exports.
-export DISTRIBUTION="${DISTRIBUTION:-}" BUILD_ENV="${BUILD_ENV:-}"
+# arrives as ad-hoc) picks the signing set, BUILD_ENV is a JSON object prepare() exports,
+# BUILD_PROFILE is the profile's name and BUILD_HOOKS a JSON object of the preBuild
+# and postBuild commands (top level and profile already merged) build_ipa runs.
+export DISTRIBUTION="${DISTRIBUTION:-}" BUILD_ENV="${BUILD_ENV:-}" BUILD_PROFILE="${BUILD_PROFILE:-}" BUILD_HOOKS="${BUILD_HOOKS:-}"
 # Codemagic sets BUILD_NUMBER itself (its build counter), so the CLI sends
 # the CFBundleVersion to stamp as BUILDER_BUILD_NUMBER; empty means none.
 export BUILD_NUMBER="${BUILDER_BUILD_NUMBER:-}"
@@ -29,6 +31,42 @@ export_build_env() {
     echo "env: $name"
   done < <(jq -r 'to_entries[] | "\(.key | @base64) \(.value | tostring | @base64)"' <<< "$BUILD_ENV")
 }
+
+# Checked once jq is there, before anything is built; hook_command reads the
+# commands out for build_ipa (empty when unset or blank).
+check_build_hooks() {
+  [ -n "$BUILD_HOOKS" ] || return 0
+  if [ "$(jq -r 'type' <<< "$BUILD_HOOKS" 2>/dev/null)" != "object" ]; then echo "BUILD_HOOKS must be a JSON object of preBuild and postBuild commands" >&2; exit 1; fi
+  echo "hooks: $(jq -r '[to_entries[] | select(.value | type == "string" and test("\\S")) | .key] | join(", ")' <<< "$BUILD_HOOKS")"
+}
+
+hook_command() {
+  [ -n "$BUILD_HOOKS" ] || return 0
+  jq -r --arg hook "$1" '.[$hook] // empty | select(type == "string" and test("\\S"))' <<< "$BUILD_HOOKS"
+}
+
+# >>> build hooks (keep identical across ios-build.yml and runner.sh)
+# Runs the builder.json hook $1 (preBuild or postBuild) with the command
+# $2 from the repository root, as `bash -eo pipefail -c` so a multi-line
+# script stops at its first failure; a failing hook fails the job. The
+# profile's env is already exported, the BUILDER_* variables describe
+# the build, and $3 is the IPA a postBuild hook gets as BUILDER_IPA.
+run_hook() {
+  local hook="$1" command="$2" ipa="${3:-}" status=0
+  [ -n "$command" ] || return 0
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::group::$hook hook"; else echo "== $hook hook =="; fi
+  (
+    cd "${GITHUB_WORKSPACE:-$BUILDER_WORKSPACE}" || exit 1
+    export BUILDER_HOOK="$hook" BUILDER_BUILD_ID="${BUILD_ID:-}" BUILDER_PROFILE="${BUILD_PROFILE:-}"
+    export BUILDER_CONFIGURATION="${CONFIGURATION:-}" BUILDER_DISTRIBUTION="${DISTRIBUTION:-}"
+    export BUILDER_IOS_PATH="${IOS_PATH:-}" BUILDER_PROJECT_TYPE="${PROJECT_TYPE:-}" BUILDER_BUILD_NUMBER="${BUILD_NUMBER:-}"
+    if [ -n "$ipa" ]; then export BUILDER_IPA="$ipa"; fi
+    exec bash -eo pipefail -c "$command"
+  ) || status=$?
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::endgroup::"; fi
+  [ "$status" -eq 0 ] || fail "$hook hook failed (exit $status)"
+}
+# <<< build hooks
 
 snapshot_checkout() {
   case "${SNAPSHOT_REF:-}" in
@@ -209,8 +247,10 @@ prepare() {
     project_type=native
   fi
   echo "Project type: $project_type"
+  export PROJECT_TYPE="$project_type" # for the hooks, as the GitHub workflow names it
   if ! command -v jq >/dev/null; then brew install jq; fi
   export_build_env
+  check_build_hooks
 
   # Match the GitHub workflows' committed xcconfig-template convention.
   find . -path ./DerivedData -prune -o -type f \
@@ -609,6 +649,10 @@ apply_build_number() {
 }
 
 build_ipa() {
+  # Every dependency is in place (prepare ran pub get, node_modules, expo
+  # prebuild, XcodeGen, pod install); nothing is signed, stamped or built yet.
+  # Not in prepare: a simulator build shares that and never runs the hooks.
+  run_hook preBuild "$(hook_command preBuild)"
   # Before the compile, so a profile/configuration mismatch fails without
   # waiting for the archive.
   if [ "$USE_SIGNING" = true ]; then install_signing; fi
@@ -656,6 +700,8 @@ build_ipa() {
     rm -rf "$payload_dir"
   fi
   echo "Created build/$BUILD_ID.ipa"
+  # The IPA exists and the provider has not collected it yet.
+  run_hook postBuild "$(hook_command postBuild)" "$BUILDER_WORKSPACE/build/$BUILD_ID.ipa"
 }
 
 build_simulator() {

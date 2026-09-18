@@ -100,10 +100,12 @@ const profiledBuilderJSON = `{
   "project": "App", "github": {"owner": "o", "repo": "r"},
   "ios": {"path": "ios", "scheme": "Top", "signing": true, "configuration": "Debug"},
   "defaultProfile": "preview",
+  "hooks": {"preBuild": "./scripts/prebuild.sh", "postBuild": "echo top"},
   "profiles": {
     "preview": {"distribution": "internal",
                 "env": {"API_URL": "https://staging.example.com", "NOTES": "line one\n__BUILDER_ENV__\nline \"two\""}},
-    "dev": {"distribution": "development"},
+    "dev": {"distribution": "development",
+            "hooks": {"preBuild": "  \n", "postBuild": "echo \"dev\"\n__BUILDER_HOOK__\nexit 0"}},
     "debug-store": {"configuration": "Debug", "distribution": "store"},
     "unsigned": {"scheme": "Other"}
   }
@@ -136,6 +138,29 @@ func TestResolveParametersApplyProfiles(t *testing.T) {
 		}
 		if r.env["API_URL"] != "https://staging.example.com" || r.env["NOTES"] != "line one\n__BUILDER_ENV__\nline \"two\"" {
 			t.Fatalf("env not exported verbatim: %q\n%s", r.env, r.log)
+		}
+		// A profile without hooks of its own runs the top-level ones.
+		if r.env["BUILDER_HOOK_PRE_BUILD"] != "./scripts/prebuild.sh" || r.env["BUILDER_HOOK_POST_BUILD"] != "echo top" || !strings.Contains(r.log, "hooks: preBuild, postBuild") {
+			t.Fatalf("top-level hooks not exported: %q\n%s", r.env, r.log)
+		}
+	})
+
+	t.Run("tag build lays the profile's hooks over the top-level ones", func(t *testing.T) {
+		withDefault := strings.Replace(profiledBuilderJSON, `"defaultProfile": "preview"`, `"defaultProfile": "dev"`, 1)
+		r := runResolve(t, build, withDefault, map[string]string{"GITHUB_EVENT_NAME": "push"})
+		if r.err != nil {
+			t.Fatalf("%v\n%s", r.err, r.log)
+		}
+		// dev's blank preBuild keeps the top-level one; its multi-line
+		// postBuild replaces the top-level one verbatim.
+		if r.env["BUILDER_HOOK_PRE_BUILD"] != "./scripts/prebuild.sh" || r.env["BUILDER_HOOK_POST_BUILD"] != "echo \"dev\"\n__BUILDER_HOOK__\nexit 0" {
+			t.Fatalf("hooks: %q\n%s", r.env, r.log)
+		}
+		// Top-level hooks apply with no profile at all, and blank ones are none.
+		plain := `{"hooks": {"preBuild": "make generate", "postBuild": "   "}}`
+		r = runResolve(t, build, plain, map[string]string{"GITHUB_EVENT_NAME": "push"})
+		if r.err != nil || r.outputs["profile"] != "" || r.env["BUILDER_HOOK_PRE_BUILD"] != "make generate" || len(r.env) != 1 || !strings.Contains(r.log, "hooks: preBuild\n") {
+			t.Fatalf("hooks without a profile: %v %v %v\n%s", r.err, r.outputs, r.env, r.log)
 		}
 	})
 
@@ -183,11 +208,33 @@ func TestResolveParametersApplyProfiles(t *testing.T) {
 			r.outputs["profile"] != "production" || r.outputs["distribution"] != "store" || r.outputs["signing_set"] != "STORE" || r.env["API_URL"] != "https://api.example.com" {
 			t.Fatalf("outputs %v env %v\n%s", r.outputs, r.env, r.log)
 		}
+		// The input carries no hooks, so builder.json's on disk must not run.
+		if len(r.env) != 1 {
+			t.Fatalf("a dispatch read hooks from builder.json: %v\n%s", r.env, r.log)
+		}
 		// Without a selected profile the input carries its default.
 		env["IN_PROFILE"] = "{}"
 		r = runResolve(t, build, "", env)
 		if r.err != nil || r.outputs["profile"] != "" || r.outputs["distribution"] != "" || r.outputs["signing_set"] != "" || len(r.env) != 0 {
 			t.Fatalf("default profile input: %v %v %v\n%s", r.err, r.outputs, r.env, r.log)
+		}
+		// The hooks come from the input, multi-line and quoted values intact.
+		env["IN_PROFILE"] = `{"name":"production","env":{},"distribution":"store","hooks":{"preBuild":"echo \"pre\"\n__BUILDER_HOOK__\nexit 0","postBuild":"./scripts/notify.sh"}}`
+		r = runResolve(t, build, "", env)
+		if r.err != nil || r.env["BUILDER_HOOK_PRE_BUILD"] != "echo \"pre\"\n__BUILDER_HOOK__\nexit 0" || r.env["BUILDER_HOOK_POST_BUILD"] != "./scripts/notify.sh" || !strings.Contains(r.log, "hooks: preBuild, postBuild") {
+			t.Fatalf("hooks from the input: %v %v\n%s", r.err, r.env, r.log)
+		}
+		// Top-level hooks with no profile travel under an empty name.
+		env["IN_PROFILE"] = `{"name":"","env":{},"distribution":"","hooks":{"postBuild":"echo done"}}`
+		r = runResolve(t, build, "", env)
+		if r.err != nil || r.outputs["profile"] != "" || r.outputs["signing_set"] != "" || r.env["BUILDER_HOOK_POST_BUILD"] != "echo done" || len(r.env) != 1 {
+			t.Fatalf("hooks without a profile: %v %v %v\n%s", r.err, r.outputs, r.env, r.log)
+		}
+		// Blank commands and other keys are not hooks.
+		env["IN_PROFILE"] = `{"name":"p","hooks":{"preBuild":" \n","postBuild":null,"postbuild":"typo"}}`
+		r = runResolve(t, build, "", env)
+		if r.err != nil || len(r.env) != 0 || strings.Contains(r.log, "hooks:") {
+			t.Fatalf("blank hooks: %v %v\n%s", r.err, r.env, r.log)
 		}
 	})
 
@@ -202,6 +249,9 @@ func TestResolveParametersApplyProfiles(t *testing.T) {
 			"bad env name":           {``, map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_PROFILE": `{"name":"p","env":{"A B":"x"}}`}},
 			"env not an object":      {``, map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_PROFILE": `{"name":"p","env":"A=x"}`}},
 			"profile not JSON":       {``, map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_PROFILE": `preview`}},
+			"hooks not an object":    {``, map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_PROFILE": `{"name":"p","hooks":"./scripts/prebuild.sh"}`}},
+			"top-level hooks string": {`{"hooks": "./scripts/prebuild.sh"}`, map[string]string{"GITHUB_EVENT_NAME": "push"}},
+			"profile hooks a list":   {`{"defaultProfile": "p", "profiles": {"p": {"hooks": ["./scripts/prebuild.sh"]}}}`, map[string]string{"GITHUB_EVENT_NAME": "push"}},
 		} {
 			if r := runResolve(t, build, tt.json, tt.env); r.err == nil {
 				t.Errorf("%s accepted:\n%s", name, r.log)

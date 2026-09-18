@@ -178,13 +178,33 @@ fi
 		// Codemagic's own build counter, which a plain build must not stamp
 		// on the app.
 		buildEnv := `{"API_URL":"https://staging.example.com","NOTES":"line one\nline \"two\""}`
+		// The hooks arrive merged as one JSON object; each records the
+		// BUILDER_* variables it sees, preBuild before any xcodebuild call
+		// and postBuild with the IPA.
+		hookLog := filepath.Join(dir, "hook.log")
+		buildHooks := `{"preBuild":"printf 'pre|%s|%s|%s|%s|%s\\n' \"$BUILDER_HOOK\" \"$BUILDER_PROJECT_TYPE\" \"$BUILDER_PROFILE\" \"$API_URL\" \"$(ls \"$SCHEME_LOG\" 2>/dev/null)\" >> \"$HOOK_LOG\"\ntest \"$PWD\" = \"$BUILDER_WORKSPACE\"",` +
+			`"postBuild":"printf 'post|%s|%s|%s\\n' \"$BUILDER_HOOK\" \"$BUILDER_IPA\" \"$BUILDER_BUILD_NUMBER\" >> \"$HOOK_LOG\"\ntest -f \"$BUILDER_IPA\""}`
 		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "SNAPSHOT_REF="+ref, "SNAPSHOT_SHA="+sha, "BUILD_ID=abcdef12", "IOS_PATH=.", "USE_SIGNING=false", "CONFIGURATION=Debug", "BUILD_NUMBER=17", "SCHEME="+scheme, "SCHEME_LOG="+filepath.Join(dir, "scheme.log"), "BUILDER_CI_DIR="+filepath.Join(dir, "state"),
-			"BUILD_ENV="+buildEnv, "DISTRIBUTION=ad-hoc", "ENV_LOG="+filepath.Join(dir, "env.log"))
+			"BUILD_ENV="+buildEnv, "DISTRIBUTION=ad-hoc", "ENV_LOG="+filepath.Join(dir, "env.log"),
+			"BUILD_PROFILE=preview", "BUILD_HOOKS="+buildHooks, "HOOK_LOG="+hookLog,
+			// A GitHub-hosted test run must not point the hooks at its own checkout.
+			"GITHUB_WORKSPACE=", "GITHUB_ACTIONS=")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("runner: %s %v", out, err)
 		}
 		if data, err := os.ReadFile(filepath.Join(dir, "env.log")); err != nil || string(data) != "https://staging.example.com|line one\nline \"two\"|ad-hoc" {
 			t.Fatalf("profile env did not reach the build: %q %v", data, err)
+		}
+		// preBuild saw no scheme.log yet (xcodebuild had not run), the
+		// profile's env and name; postBuild got the IPA and no build number.
+		// BUILDER_WORKSPACE is $(pwd) after the checkout, so macOS's /var symlink is resolved.
+		realClone, err := filepath.EvalSymlinks(clone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantHooks := "pre|preBuild|native|preview|https://staging.example.com|\npost|postBuild|" + filepath.Join(realClone, "build", "abcdef12.ipa") + "|\n"
+		if data, err := os.ReadFile(hookLog); err != nil || string(data) != wantHooks {
+			t.Fatalf("hooks did not run as expected: %q %v, want %q", data, err, wantHooks)
 		}
 		if _, err := os.Stat(filepath.Join(dir, "scheme.log.stamped")); !os.IsNotExist(err) {
 			t.Fatal("the provider's BUILD_NUMBER was stamped on a plain build")

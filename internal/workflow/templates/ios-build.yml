@@ -53,7 +53,7 @@ on:
       # One input for the profile fields that are not inputs of their own, so
       # the workflow stays under the ten-input limit of workflow_dispatch.
       profile:
-        description: 'Selected builder.json profile as JSON: {"name": "...", "env": {...}, "distribution": "..."}'
+        description: 'Selected builder.json profile as JSON: {"name": "...", "env": {...}, "distribution": "...", "hooks": {"preBuild": "...", "postBuild": "..."}}; an empty name with hooks means the top-level hooks without a profile'
         required: false
         type: string
         default: '{}'
@@ -138,11 +138,17 @@ jobs:
           param build_number     "$IN_BUILD_NUMBER" '""' ''
 
           # The rest of the profile: name, distribution (selects the signing
-          # set) and env, exported from here on so dependency installs see it.
+          # set), env, exported from here on so dependency installs see it, and
+          # the build hooks. A tag build merges the hooks the way the CLI does:
+          # the profile's non-blank commands over the top-level ones.
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             PROFILE_JSON="$IN_PROFILE"
           elif [ -f builder.json ]; then
-            PROFILE_JSON=$(jq -c --arg p "$PROFILE" '{name: $p, env: (.profiles[$p].env // {}), distribution: (.profiles[$p].distribution // "")}' builder.json)
+            if [ "$(jq -r --arg p "$PROFILE" '[.hooks // {}, .profiles[$p].hooks // {}] | all(type == "object")' builder.json)" != "true" ]; then
+              echo "::error::hooks in builder.json must be an object of preBuild and postBuild commands"; exit 1
+            fi
+            PROFILE_JSON=$(jq -c --arg p "$PROFILE" '{name: $p, env: (.profiles[$p].env // {}), distribution: (.profiles[$p].distribution // ""),
+              hooks: ((.hooks // {}) + (.profiles[$p].hooks // {} | with_entries(select(.value | type == "string" and test("\\S")))))}' builder.json)
           fi
           [ -n "${PROFILE_JSON:-}" ] || PROFILE_JSON='{}'
           PROFILE=$(jq -r '.name // ""' <<< "$PROFILE_JSON")
@@ -190,6 +196,30 @@ jobs:
             } >> "$GITHUB_ENV"
             echo "env: $name"
           done < <(jq -r '.env // {} | to_entries[] | "\(.key | @base64) \(.value | tostring | @base64)"' <<< "$PROFILE_JSON")
+          # The hooks go the same way, as BUILDER_HOOK_PRE_BUILD and
+          # BUILDER_HOOK_POST_BUILD, for the build step to run; a blank
+          # command is no hook. Only ever from here, never from builder.json
+          # on a dispatch, so the CLI is the source of truth.
+          if [ "$(jq -r '.hooks // {} | type' <<< "$PROFILE_JSON")" != "object" ]; then
+            echo "::error::the profile's hooks must be a JSON object of preBuild and postBuild commands"; exit 1
+          fi
+          HOOKS=""
+          while IFS=' ' read -r hook encoded; do
+            case "$hook" in
+              preBuild) name=BUILDER_HOOK_PRE_BUILD ;;
+              postBuild) name=BUILDER_HOOK_POST_BUILD ;;
+              *) continue ;;
+            esac
+            delim="BUILDER_HOOK_${RANDOM}${RANDOM}${RANDOM}"
+            {
+              echo "$name<<$delim"
+              printf '%s' "$encoded" | base64 --decode
+              echo
+              echo "$delim"
+            } >> "$GITHUB_ENV"
+            HOOKS="${HOOKS:+$HOOKS, }$hook"
+          done < <(jq -r '.hooks // {} | to_entries[] | select(.value | type == "string" and test("\\S")) | "\(.key) \(.value | @base64)"' <<< "$PROFILE_JSON")
+          [ -z "$HOOKS" ] || echo "hooks: $HOOKS"
 
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1
@@ -868,6 +898,7 @@ jobs:
           CONFIGURATION: ${{ steps.params.outputs.configuration }}
           BUILD_NUMBER: ${{ steps.params.outputs.build_number }}
           DISTRIBUTION: ${{ steps.params.outputs.distribution }}
+          BUILD_PROFILE: ${{ steps.params.outputs.profile }}
         run: |
           set -e
           fail() { echo "::error::$*" >&2; exit 1; }
@@ -1005,6 +1036,29 @@ jobs:
           PY
           }
 
+          # >>> build hooks (keep identical across ios-build.yml and runner.sh)
+          # Runs the builder.json hook $1 (preBuild or postBuild) with the command
+          # $2 from the repository root, as `bash -eo pipefail -c` so a multi-line
+          # script stops at its first failure; a failing hook fails the job. The
+          # profile's env is already exported, the BUILDER_* variables describe
+          # the build, and $3 is the IPA a postBuild hook gets as BUILDER_IPA.
+          run_hook() {
+            local hook="$1" command="$2" ipa="${3:-}" status=0
+            [ -n "$command" ] || return 0
+            if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::group::$hook hook"; else echo "== $hook hook =="; fi
+            (
+              cd "${GITHUB_WORKSPACE:-$BUILDER_WORKSPACE}" || exit 1
+              export BUILDER_HOOK="$hook" BUILDER_BUILD_ID="${BUILD_ID:-}" BUILDER_PROFILE="${BUILD_PROFILE:-}"
+              export BUILDER_CONFIGURATION="${CONFIGURATION:-}" BUILDER_DISTRIBUTION="${DISTRIBUTION:-}"
+              export BUILDER_IOS_PATH="${IOS_PATH:-}" BUILDER_PROJECT_TYPE="${PROJECT_TYPE:-}" BUILDER_BUILD_NUMBER="${BUILD_NUMBER:-}"
+              if [ -n "$ipa" ]; then export BUILDER_IPA="$ipa"; fi
+              exec bash -eo pipefail -c "$command"
+            ) || status=$?
+            if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::endgroup::"; fi
+            [ "$status" -eq 0 ] || fail "$hook hook failed (exit $status)"
+          }
+          # <<< build hooks
+
           # Navigate to iOS project
           cd "$IOS_PATH"
 
@@ -1068,6 +1122,10 @@ jobs:
               exit 1
             fi
           fi
+
+          # Every dependency is in place (pub get, node_modules, expo prebuild,
+          # XcodeGen, pod install); nothing has been built or stamped yet.
+          run_hook preBuild "${BUILDER_HOOK_PRE_BUILD:-}"
 
           # Use custom DerivedData path for caching
           DERIVED_DATA_PATH="${GITHUB_WORKSPACE}/DerivedData"
@@ -1270,6 +1328,9 @@ jobs:
             rm -rf Payload
             echo "Created unsigned IPA: build/$BUILD_ID.ipa"
           fi
+
+          # The IPA exists and is not yet an artifact.
+          run_hook postBuild "${BUILDER_HOOK_POST_BUILD:-}" "$GITHUB_WORKSPACE/build/$BUILD_ID.ipa"
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v7
