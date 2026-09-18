@@ -199,7 +199,7 @@ func deleteTokenFile() error {
 func requestDeviceCode(ctx context.Context) (*DeviceCode, error) {
 	data := url.Values{
 		"client_id": {clientID},
-		"scope":     {"repo workflow"},
+		"scope":     {"repo workflow gist"},
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", "https://github.com/login/device/code", strings.NewReader(data.Encode()))

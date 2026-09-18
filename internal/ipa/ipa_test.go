@@ -2,6 +2,7 @@ package ipa
 
 import (
 	"archive/zip"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -62,6 +63,38 @@ func TestReadInfo(t *testing.T) {
 	}
 	if got := BundleID(path); got != "com.example.app" {
 		t.Errorf("BundleID = %q", got)
+	}
+}
+
+func TestReadProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Signed.ipa")
+	writeIPA(t, path, map[string]string{
+		"Payload/App.app/Info.plist":                                        appPlist,
+		"Payload/App.app/Frameworks/Lib.framework/embedded.mobileprovision": "framework profile",
+		"Payload/App.app/embedded.mobileprovision":                          "app profile",
+	})
+	data, err := ReadProfile(path)
+	if err != nil || string(data) != "app profile" {
+		t.Errorf("ReadProfile = %q, %v", data, err)
+	}
+	unsigned := filepath.Join(t.TempDir(), "Unsigned.ipa")
+	writeIPA(t, unsigned, map[string]string{"Payload/App.app/Info.plist": appPlist})
+	if _, err := ReadProfile(unsigned); !errors.Is(err, ErrUnsigned) {
+		t.Errorf("unsigned: err = %v", err)
+	}
+	if _, err := ReadProfile(filepath.Join(t.TempDir(), "missing.ipa")); err == nil || errors.Is(err, ErrUnsigned) {
+		t.Errorf("missing: err = %v", err)
+	}
+}
+
+func TestInfoName(t *testing.T) {
+	for _, tc := range []struct{ display, bundle, want string }{
+		{"Tap Dash", "TapDash", "Tap Dash"}, {"", "TapDash", "TapDash"}, {"", "", "com.example.app"},
+	} {
+		info := &Info{BundleID: "com.example.app", DisplayName: tc.display, BundleName: tc.bundle}
+		if got := info.Name(); got != tc.want {
+			t.Errorf("Name(%q, %q) = %q, want %q", tc.display, tc.bundle, got, tc.want)
+		}
 	}
 }
 

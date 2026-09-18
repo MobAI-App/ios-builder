@@ -55,6 +55,26 @@ func TestProfileType(t *testing.T) {
 	}
 }
 
+func TestProfileDevices(t *testing.T) {
+	two := "<key>ProvisionedDevices</key><array><string>00008030-001</string><string>00008030-002</string></array>"
+	for name, tc := range map[string]struct {
+		body string
+		want int
+	}{
+		"two devices": {two, 2},
+		"store":       {"<key>Entitlements</key><dict/>", 0},
+		"empty list":  {"<key>ProvisionedDevices</key><array/>", 0},
+	} {
+		got, err := ProfileDevices(mobileprovision(tc.body))
+		if err != nil || got != tc.want {
+			t.Errorf("%s: ProfileDevices = %d, %v; want %d", name, got, err, tc.want)
+		}
+	}
+	if _, err := ProfileDevices([]byte("not a profile")); err == nil {
+		t.Error("garbage accepted")
+	}
+}
+
 func TestParseType(t *testing.T) {
 	for in, want := range map[string]Type{
 		"development": TypeDevelopment, "ad-hoc": TypeAdHoc, "internal": TypeAdHoc, "store": TypeStore, "enterprise": TypeEnterprise,

@@ -40,6 +40,13 @@ func NewClient(token string) *Client {
 	}
 }
 
+// NewClientWithBaseURL is NewClient against another API host (tests).
+func NewClientWithBaseURL(token, baseURL string) *Client {
+	c := NewClient(token)
+	c.baseURL = baseURL
+	return c
+}
+
 // request performs an HTTP request to the GitHub API
 func (c *Client) request(ctx context.Context, method, path string, body any) (*http.Response, error) {
 	var bodyReader io.Reader
@@ -73,12 +80,22 @@ func (c *Client) request(ctx context.Context, method, path string, body any) (*h
 
 // do performs a GET request and decodes the response into result
 func (c *Client) do(ctx context.Context, path string, result any) error {
-	resp, err := c.request(ctx, "GET", path, nil)
+	return c.call(ctx, "GET", path, nil, result)
+}
+
+// call sends body as JSON and decodes a 2xx response into result; a 4xx/5xx
+// is returned as an *APIError.
+func (c *Client) call(ctx context.Context, method, path string, body, result any) error {
+	resp, err := c.request(ctx, method, path, body)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	return decodeResponse(resp, result)
+}
 
+// decodeResponse reads a response into result; a 4xx/5xx becomes an *APIError.
+func decodeResponse(resp *http.Response, result any) error {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("failed to read response: %w", err)

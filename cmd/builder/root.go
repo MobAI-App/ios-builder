@@ -20,6 +20,7 @@ import (
 	"github.com/MobAI-App/ios-builder/internal/build"
 	"github.com/MobAI-App/ios-builder/internal/config"
 	"github.com/MobAI-App/ios-builder/internal/github"
+	"github.com/MobAI-App/ios-builder/internal/otainstall"
 	"github.com/MobAI-App/ios-builder/internal/release"
 	"github.com/MobAI-App/ios-builder/internal/update"
 	"github.com/MobAI-App/ios-builder/internal/workflow"
@@ -549,11 +550,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	if buildErr == nil {
 		fmt.Println()
-		return runBuild(context.Background(), cfg, &build.BuildOptions{
+		_, err := runBuild(context.Background(), cfg, &build.BuildOptions{
 			OutputDir: "dist",
 			Timeout:   build.DefaultTimeout,
 			Remote:    remoteName,
 		})
+		return err
 	}
 
 	fmt.Println()
@@ -671,11 +673,27 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 	}
 	opts.Unsigned, _ = cmd.Flags().GetBool("unsigned")
 	submit, _ := cmd.Flags().GetBool("submit")
+	distribute, _ := cmd.Flags().GetBool("distribute")
+	if submit && distribute {
+		return fmt.Errorf("pass only one of --submit (TestFlight) or --distribute (over-the-air install)")
+	}
 	if submit {
 		if opts.Unsigned {
 			return fmt.Errorf("--submit uploads to App Store Connect, which needs a signed build; drop --unsigned")
 		}
 		return runRelease(cmd, cfg, &release.Options{Build: opts})
+	}
+	if distribute {
+		if opts.Unsigned {
+			return fmt.Errorf("--distribute installs on a device, which needs a signed build; drop --unsigned")
+		}
+		s, err := cfg.ResolveProfile(opts.Profile)
+		if err != nil {
+			return err
+		}
+		if err := otainstall.CheckDistribution(&s); err != nil {
+			return err
+		}
 	}
 
 	ctx := cmd.Context()
@@ -692,7 +710,11 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 		ctx, stop = signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer stop()
 	}
-	return runBuild(ctx, cfg, &opts)
+	result, err := runBuild(ctx, cfg, &opts)
+	if err != nil || !distribute {
+		return err
+	}
+	return runDistribute(cmd, cfg, result.IPAPath)
 }
 
 func runIOSShare(cmd *cobra.Command, args []string) error {
@@ -750,16 +772,16 @@ func runIOSShare(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runBuild(ctx context.Context, cfg *config.Config, opts *build.BuildOptions) error {
+func runBuild(ctx context.Context, cfg *config.Config, opts *build.BuildOptions) (*build.BuildResult, error) {
 	ghClient, err := clientForProvider(cfg, opts.Provider)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// A GitHub build with a distribution needs its signing set in the
 	// repository; ensureSigningSecrets leaves Codemagic and Bitrise alone.
 	if ghClient != nil && !opts.Unsigned {
 		if err := ensureSigningSecrets(ctx, cfg, ghClient, getASCClient, opts.Profile, opts.Provider, os.Stdout); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -767,11 +789,11 @@ func runBuild(ctx context.Context, cfg *config.Config, opts *build.BuildOptions)
 
 	result, err := coordinator.Build(ctx, opts)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	fmt.Printf("IPA: %s\n", result.IPAPath)
 	fmt.Printf("Workflow: %s\n", result.WorkflowURL)
 
-	return nil
+	return result, nil
 }

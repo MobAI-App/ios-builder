@@ -15,6 +15,7 @@ Builder is a CLI tool for iOS development without a Mac. It uses GitHub Actions 
 - **Simple setup**: One command to add the workflow to your repo
 - **Code signing**: Optional signing with your certificate and provisioning profile
 - **TestFlight and App Store**: Upload builds and submit them for review through the App Store Connect API, from any platform
+- **Install on a device**: Scan a QR code and iOS installs the build over the air, no TestFlight
 - **Device integration**: Install and run apps via MobAI
 
 ## How It Works
@@ -250,6 +251,12 @@ builder ios upload --wait     # Upload ./dist/*.ipa to App Store Connect and wai
 builder ios submit --testflight --group "Beta Testers" --notes "What to test"
 builder ios submit --app-store --release after-approval  # Submit the version for App Review
 
+# Install on a device over the air (development, ad-hoc or enterprise build)
+builder ios build --profile development --distribute  # Build, then print an install link + QR code
+builder ios distribute        # Same for the newest IPA in ./dist/ (or --ipa)
+builder ios distribute --once # One link, no refresh, uploads left in place
+builder ios distribute --cleanup  # Remove uploads earlier sessions left behind
+
 # App Store Connect management (needs builder auth apple)
 builder asc apps              # Apps the API key can see
 builder asc builds            # Builds of the newest version, with their TestFlight groups
@@ -266,7 +273,7 @@ builder asc users             # Team members and whether they can test internall
 builder asc users invite dev@example.com --role DEVELOPER --first Dee --last Vee
 ```
 
-Every `release`/`upload`/`submit`/`asc` command takes `--json` for
+Every `release`/`upload`/`submit`/`distribute`/`asc` command takes `--json` for
 machine-readable output and never prompts, so agents and CI jobs can drive them.
 
 ## Configuration
@@ -825,9 +832,49 @@ the tester from TestFlight team-wide), print what goes and then need `--yes`.
 Group names match case-insensitively; when two differ only by case, the
 command refuses and lists both.
 
-## Installing the IPA
+## Install on a device (internal distribution)
 
-Use [MobAI](https://mobai.run) to install your IPA directly on your device. It works with both signed and unsigned builds: an unsigned IPA can be re-signed on install with a free Apple ID (MobAI asks for the account).
+```bash
+builder ios build --profile development --distribute
+builder ios distribute                      # the newest IPA in ./dist/, or --ipa
+```
+
+Builder prints an `itms-services://` link and a QR code. Scan it with the
+phone's camera and iOS installs the app, no TestFlight and no cable. Every
+tester on the profile gets the same link.
+
+Requirements:
+
+- A build signed with a **development** or **ad-hoc** profile that lists the
+  phone's UDID, or an **enterprise** profile. `builder signing setup --device
+  <udid>` (or `--devices-from-mobai`) registers devices and writes such a
+  profile; App Store builds are refused, since iOS cannot install them this
+  way. `ios build --distribute` checks the profile before anything is pushed.
+- A GitHub login with the `gist` scope. Logins made before this feature need
+  `builder auth github` once more; the command says so.
+
+Where the files go: the IPA is uploaded as an asset of a **draft release** in
+the project's own repository (no tag, invisible on the repository page, no
+notifications) and the manifest iOS reads first goes into a **secret gist**,
+because the draft asset's download URL is signed and about a thousand
+characters long, too much for a QR code. Both URLs work without
+authentication, for private repositories too, and both uploads are deleted
+when the command ends.
+
+The signed IPA URL lives five minutes, so the command keeps running: it
+re-mints the link a minute before expiry, Enter re-mints it now, `q` or Ctrl-C
+ends the session and removes the uploads (`--timeout`, default one hour, does
+the same). `--once` prints a single link and leaves the uploads in place for
+`builder ios distribute --cleanup` to remove later; `--cleanup` also removes
+what a crashed session left behind. `--json` prints one object per link with
+the manifest and IPA URLs, the expiry and the profile's device count; `--no-qr`
+drops the code, `--qr` prints it off a terminal and `--qr-invert` renders it for
+a dark-on-light one. Codemagic and Bitrise builds work the same way, since the
+uploads always go to the GitHub repository in `builder.json`.
+
+Alternatively, [MobAI](https://mobai.run) installs an IPA over the cable, signed
+or not: an unsigned IPA can be re-signed on install with a free Apple ID (MobAI
+asks for the account).
 
 ## Development on Windows/Linux
 
