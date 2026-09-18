@@ -23,6 +23,7 @@ type (
 	WatchConfig       = config.WatchConfig
 	ReactNativeConfig = config.ReactNativeConfig
 	MobAIConfig       = config.MobAIConfig
+	Hooks             = config.Hooks
 	ValidationError   = config.ValidationError
 	Manager           = config.Manager
 )

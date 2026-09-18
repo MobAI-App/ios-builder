@@ -21,10 +21,22 @@ type Config struct {
 	// Signing records where `signing setup` put the key, .p12 and profile;
 	// nil when it was the working directory.
 	Signing *SigningConfig `json:"signing,omitempty"`
+	// Hooks run on the runner around every build; a profile's hooks override
+	// them field by field.
+	Hooks *Hooks `json:"hooks,omitempty"`
 	// DefaultProfile is used when a command is run without --profile. Tag-triggered
 	// runs have no flags, so it is also the only way they can select a profile.
 	DefaultProfile string             `json:"defaultProfile,omitempty"`
 	Profiles       map[string]Profile `json:"profiles,omitempty"`
+}
+
+// Hooks are shell commands the runner executes around the build, from the
+// repository root with the profile's env exported, as `bash -eo pipefail -c`,
+// so a multi-line script stops at its first failure. A failing hook fails the
+// job. Simulator builds (ios share) never run them.
+type Hooks struct {
+	PreBuild  string `json:"preBuild,omitempty"`  // after every dependency install, before the build number is applied and the archive starts
+	PostBuild string `json:"postBuild,omitempty"` // after the IPA exists (BUILDER_IPA), before it is uploaded as an artifact
 }
 
 // SigningConfig is where the signing material lives on this machine.
@@ -46,6 +58,9 @@ type Profile struct {
 	// ad-hoc or internal, store, enterprise; empty is unsigned): it selects the
 	// signing set and the type the provisioning profile in it must have.
 	Distribution string `json:"distribution,omitempty"`
+	// Hooks override the top-level hooks field by field: a non-empty command
+	// replaces the top-level one, an absent or blank one keeps it.
+	Hooks *Hooks `json:"hooks,omitempty"`
 }
 
 // CIConfig identifies an app already connected to the project's GitHub repository.

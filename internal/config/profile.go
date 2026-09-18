@@ -24,6 +24,43 @@ type BuildSettings struct {
 	// Distribution is the profile's distribution, canonical (internal is
 	// ad-hoc); empty for unsigned builds and the legacy path.
 	Distribution string
+	// Hooks are the top-level hooks with the profile's applied field by
+	// field, trimmed; they apply with no profile too.
+	Hooks Hooks
+}
+
+// Empty reports whether no hook is set.
+func (h Hooks) Empty() bool { return h.PreBuild == "" && h.PostBuild == "" }
+
+// Names lists the hooks that are set, in the order they run.
+func (h Hooks) Names() []string {
+	var names []string
+	if h.PreBuild != "" {
+		names = append(names, "preBuild")
+	}
+	if h.PostBuild != "" {
+		names = append(names, "postBuild")
+	}
+	return names
+}
+
+// resolveHooks lays the profile's hooks over the top-level ones: a non-blank
+// command replaces the one below it, a blank one keeps it. Surrounding
+// whitespace is dropped, so a hook that is only whitespace is absent.
+func resolveHooks(top, profile *Hooks) Hooks {
+	var h Hooks
+	for _, src := range []*Hooks{top, profile} {
+		if src == nil {
+			continue
+		}
+		if v := strings.TrimSpace(src.PreBuild); v != "" {
+			h.PreBuild = v
+		}
+		if v := strings.TrimSpace(src.PostBuild); v != "" {
+			h.PostBuild = v
+		}
+	}
+	return h
 }
 
 // reservedEnv names the variables the runners, the shell and the CI services
@@ -31,7 +68,7 @@ type BuildSettings struct {
 // runner.sh, replace a provider secret, since the env is exported first.
 var reservedEnv = []string{
 	"BUILD_ID", "SNAPSHOT_REF", "SNAPSHOT_SHA", "IOS_PATH", "SCHEME", "CONFIGURATION",
-	"USE_SIGNING", "FLUTTER_VERSION", "JDK_VERSION", "BUILD_ENV", "DISTRIBUTION",
+	"USE_SIGNING", "FLUTTER_VERSION", "JDK_VERSION", "BUILD_ENV", "BUILD_HOOKS", "BUILD_PROFILE", "DISTRIBUTION",
 	"SIGNING_SET", "SIGNING_SET_USED", "DURATION", "PROJECT_TYPE", "EXPORT_METHOD",
 	"BUILD_NUMBER", "CODE_SIGN_IDENTITY", "DEVELOPMENT_TEAM", "PROVISIONING_PROFILE_NAME", "PROFILE_BUNDLE_ID", "EXTENSION_PROFILES",
 	"MOBAI_API_KEY",
@@ -81,6 +118,7 @@ func (c *Config) ResolveProfile(name string) (BuildSettings, error) {
 		Scheme:        c.IOS.Scheme,
 		Signing:       c.IOS.Signing,
 		Provider:      c.Provider,
+		Hooks:         resolveHooks(c.Hooks, nil),
 	}
 	source := "profile"
 	if name == "" {
@@ -128,6 +166,7 @@ func (c *Config) ResolveProfile(name string) (BuildSettings, error) {
 	if len(p.Env) > 0 {
 		s.Env = p.Env
 	}
+	s.Hooks = resolveHooks(c.Hooks, p.Hooks)
 	return s, nil
 }
 
@@ -142,21 +181,39 @@ func (s *BuildSettings) EnvJSON() string {
 	return string(data)
 }
 
-// ProfileInput encodes name, env and distribution as the single `profile`
-// dispatch input, keeping the workflow under GitHub's limit of ten inputs. It
-// is empty when no profile is selected, so older workflow files still work.
+// ProfileInput encodes name, env, distribution and hooks as the single
+// `profile` dispatch input, keeping the workflow under GitHub's limit of ten
+// inputs. It is empty when no profile is selected and no hook is set, so older
+// workflow files still work; top-level hooks without a profile travel with an
+// empty name, which the workflow reads as "no profile".
 func (s *BuildSettings) ProfileInput() string {
-	if s.Profile == "" {
+	if s.Profile == "" && s.Hooks.Empty() {
 		return ""
 	}
 	env := s.Env
 	if env == nil {
 		env = map[string]string{}
 	}
+	var hooks *Hooks
+	if !s.Hooks.Empty() {
+		h := s.Hooks
+		hooks = &h
+	}
 	data, _ := json.Marshal(struct {
 		Name         string            `json:"name"`
 		Env          map[string]string `json:"env"`
 		Distribution string            `json:"distribution"`
-	}{s.Profile, env, s.Distribution})
+		Hooks        *Hooks            `json:"hooks,omitempty"`
+	}{s.Profile, env, s.Distribution, hooks})
+	return string(data)
+}
+
+// HooksJSON encodes the resolved hooks as a JSON object of the commands that
+// are set, for runner.sh's BUILD_HOOKS; empty when there is none.
+func (s *BuildSettings) HooksJSON() string {
+	if s.Hooks.Empty() {
+		return ""
+	}
+	data, _ := json.Marshal(s.Hooks) // two strings cannot fail to marshal
 	return string(data)
 }

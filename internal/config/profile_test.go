@@ -160,7 +160,101 @@ func TestProfileEncodings(t *testing.T) {
 		t.Fatal("profile input must be a single line")
 	}
 	noEnv := BuildSettings{Profile: "development"}
-	if got := noEnv.ProfileInput(); !strings.Contains(got, `"env":{}`) {
-		t.Fatalf("env should be an object even when empty: %s", got)
+	if got := noEnv.ProfileInput(); !strings.Contains(got, `"env":{}`) || strings.Contains(got, "hooks") {
+		t.Fatalf("env should be an object even when empty, and no hooks key without hooks: %s", got)
+	}
+}
+
+func TestResolveHooks(t *testing.T) {
+	cfg := profileConfig()
+	cfg.Hooks = &Hooks{PreBuild: "  ./scripts/prebuild.sh\n", PostBuild: "echo top"}
+	cfg.Profiles["notify"] = Profile{Distribution: "store", Hooks: &Hooks{PostBuild: "echo one\necho two"}}
+	cfg.Profiles["blank"] = Profile{Hooks: &Hooks{PreBuild: " \n\t", PostBuild: ""}}
+	cfg.Profiles["clear"] = Profile{}
+	for _, tt := range []struct {
+		name, profile string
+		want          Hooks
+	}{
+		// Top-level hooks apply with no profile, trimmed.
+		{"no profile", "", Hooks{PreBuild: "./scripts/prebuild.sh", PostBuild: "echo top"}},
+		// A profile replaces the fields it sets and keeps the others.
+		{"per-field override", "notify", Hooks{PreBuild: "./scripts/prebuild.sh", PostBuild: "echo one\necho two"}},
+		// Whitespace-only is absent, so the top-level hook stays.
+		{"blank keeps the top level", "blank", Hooks{PreBuild: "./scripts/prebuild.sh", PostBuild: "echo top"}},
+		{"no hooks on the profile", "clear", Hooks{PreBuild: "./scripts/prebuild.sh", PostBuild: "echo top"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := cfg.ResolveProfile(tt.profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Hooks != tt.want {
+				t.Fatalf("hooks = %+v, want %+v", got.Hooks, tt.want)
+			}
+		})
+	}
+	// Without any hooks nothing is set, and a blank top-level hook is none.
+	cfg.Hooks = &Hooks{PreBuild: "   "}
+	if got, err := cfg.ResolveProfile("clear"); err != nil || !got.Hooks.Empty() || got.Hooks.Names() != nil {
+		t.Fatalf("blank top-level hooks: %+v %v", got.Hooks, err)
+	}
+	if names := (Hooks{PreBuild: "a", PostBuild: "b"}).Names(); strings.Join(names, ",") != "preBuild,postBuild" {
+		t.Fatalf("Names = %v", names)
+	}
+	if names := (Hooks{PostBuild: "b"}).Names(); strings.Join(names, ",") != "postBuild" {
+		t.Fatalf("Names = %v", names)
+	}
+}
+
+func TestHooksEncodings(t *testing.T) {
+	// Top-level hooks without a profile still travel: an empty name with the
+	// hooks, which the workflow reads as "no profile".
+	s := BuildSettings{Hooks: Hooks{PreBuild: "echo \"pre\"\nexit 0"}}
+	var input struct {
+		Name         string
+		Env          map[string]string
+		Distribution string
+		Hooks        map[string]string
+	}
+	if err := json.Unmarshal([]byte(s.ProfileInput()), &input); err != nil || input.Name != "" || input.Env == nil || input.Hooks["preBuild"] != s.Hooks.PreBuild || len(input.Hooks) != 1 {
+		t.Fatalf("profile input without a profile: %q %+v %v", s.ProfileInput(), input, err)
+	}
+	if strings.Contains(s.ProfileInput(), "\n") || strings.Contains(s.ProfileInput(), "postBuild") {
+		t.Fatalf("profile input must be one line and carry only the hooks set: %q", s.ProfileInput())
+	}
+	if got := s.HooksJSON(); got != `{"preBuild":"echo \"pre\"\nexit 0"}` {
+		t.Fatalf("HooksJSON = %q", got)
+	}
+	// With a profile the hooks ride along with name, env and distribution.
+	s = BuildSettings{Profile: "store", Distribution: "store", Hooks: Hooks{PreBuild: "a", PostBuild: "b"}}
+	if err := json.Unmarshal([]byte(s.ProfileInput()), &input); err != nil || input.Name != "store" || input.Distribution != "store" || input.Hooks["preBuild"] != "a" || input.Hooks["postBuild"] != "b" {
+		t.Fatalf("profile input with hooks: %q %v", s.ProfileInput(), err)
+	}
+	if got := s.HooksJSON(); got != `{"preBuild":"a","postBuild":"b"}` {
+		t.Fatalf("HooksJSON = %q", got)
+	}
+	if (&BuildSettings{Profile: "store"}).HooksJSON() != "" {
+		t.Fatal("no hooks must produce no BUILD_HOOKS")
+	}
+}
+
+func TestHooksJSONRoundTrip(t *testing.T) {
+	raw := `{"project":"App","github":{"owner":"o","repo":"r"},
+	  "hooks":{"preBuild":"./scripts/prebuild.sh"},
+	  "profiles":{"store":{"distribution":"store","hooks":{"postBuild":"./scripts/notify.sh"}}}}`
+	var cfg Config
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Hooks == nil || cfg.Hooks.PreBuild != "./scripts/prebuild.sh" || cfg.Profiles["store"].Hooks == nil || cfg.Profiles["store"].Hooks.PostBuild != "./scripts/notify.sh" {
+		t.Fatalf("parsed %+v", cfg)
+	}
+	out, err := json.Marshal(&Config{Project: "App", Profiles: map[string]Profile{"p": {Distribution: "store"}}})
+	if err != nil || strings.Contains(string(out), "hooks") {
+		t.Fatalf("absent hooks should be omitted: %s %v", out, err)
+	}
+	out, err = json.Marshal(Hooks{PostBuild: "x"})
+	if err != nil || string(out) != `{"postBuild":"x"}` {
+		t.Fatalf("hooks encoding: %s %v", out, err)
 	}
 }

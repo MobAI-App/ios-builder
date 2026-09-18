@@ -102,6 +102,9 @@ func (p *Progress) Settings(s *config.BuildSettings, provider string) {
 	if s.Distribution != "" {
 		fmt.Fprintf(p.writer, "   Distribution:  %s\n", s.Distribution)
 	}
+	if names := s.Hooks.Names(); len(names) > 0 {
+		fmt.Fprintf(p.writer, "   Hooks:         %s\n", strings.Join(names, ", "))
+	}
 	fmt.Fprintf(p.writer, "\n")
 }
 

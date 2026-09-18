@@ -121,7 +121,8 @@ func TestRemoteSnapshotLifecycle(t *testing.T) {
 				t.Fatal(err)
 			}
 			p := &fakeProvider{startErr: tt.startErr, cancelErr: tt.cancelErr, failPolling: tt.failPolling, payload: buf.Bytes(), statuses: []ci.Status{{Done: true, Success: true, State: "finished", Artifacts: []ci.Artifact{{Name: "app.ipa"}}}}}
-			cfg := &config.Config{Project: "App", GitHub: config.GitHubConfig{Owner: "owner", Repo: "repo"}, Codemagic: config.CIConfig{AppID: "app", Branch: "main"}}
+			cfg := &config.Config{Project: "App", GitHub: config.GitHubConfig{Owner: "owner", Repo: "repo"}, Codemagic: config.CIConfig{AppID: "app", Branch: "main"},
+				Hooks: &config.Hooks{PostBuild: "echo done"}}
 			c := NewCoordinatorWithProvider(cfg, p, io.Discard)
 			if tt.name == "artifact failure after completion" {
 				c.provider = &failedArtifactProvider{p}
@@ -162,12 +163,19 @@ func TestRemoteSnapshotLifecycle(t *testing.T) {
 			var result *BuildResult
 			if strings.HasSuffix(tt.name, "share") {
 				_, err = c.Share(context.Background(), ShareOptions{})
+				// A simulator build never runs the hooks, so it is not told about them.
+				if v := p.request.Variables; v["BUILD_HOOKS"] != "" {
+					t.Errorf("hooks sent to a simulator build: %v", v)
+				}
 			} else {
 				result, err = c.Build(context.Background(), &BuildOptions{OutputDir: filepath.Join(dir, "dist"), BuildNumber: "1.2.3+42"})
 				// Codemagic defines BUILD_NUMBER itself; the stamp must travel
 				// under Builder's own name.
 				if v := p.request.Variables; v["BUILDER_BUILD_NUMBER"] != "1.2.3+42" || v["BUILD_NUMBER"] != "" {
 					t.Errorf("build number variables: %v", v)
+				}
+				if v := p.request.Variables; v["BUILD_HOOKS"] != `{"postBuild":"echo done"}` {
+					t.Errorf("hooks variable: %v", v)
 				}
 			}
 			if tt.name == "success" || tt.name == "transient poll recovers" {
