@@ -62,8 +62,9 @@ func (c *Coordinator) remote(override string) (ci.Provider, config.CIConfig, err
 }
 
 // inputs are the variables runner.sh reads on Codemagic and Bitrise. The
-// profile's env travels as one JSON object in BUILD_ENV, and DISTRIBUTION
-// selects the signing set; both are only set when the profile provides them.
+// profile's env travels as one JSON object in BUILD_ENV, DISTRIBUTION selects
+// the signing set and BUILD_PROFILE names the profile for the hooks; each is
+// only set when the profile provides it.
 func (c *Coordinator) inputs(buildID, ref, sha string, s *config.BuildSettings) map[string]string {
 	v := map[string]string{"BUILD_ID": buildID, "SNAPSHOT_REF": ref, "SNAPSHOT_SHA": sha,
 		"IOS_PATH": c.config.IOS.Path, "SCHEME": s.Scheme,
@@ -87,6 +88,9 @@ func (c *Coordinator) inputs(buildID, ref, sha string, s *config.BuildSettings) 
 	}
 	if s.Distribution != "" {
 		v["DISTRIBUTION"] = s.Distribution
+	}
+	if s.Profile != "" {
+		v["BUILD_PROFILE"] = s.Profile
 	}
 	return v
 }
@@ -143,6 +147,10 @@ func (c *Coordinator) buildRemote(ctx context.Context, opts *BuildOptions, s *co
 	// and runner.sh must see nothing on a plain build.
 	if opts.BuildNumber != "" {
 		v["BUILDER_BUILD_NUMBER"] = opts.BuildNumber
+	}
+	// The hooks are for IPA builds only; a simulator build never runs them.
+	if hooks := s.HooksJSON(); hooks != "" {
+		v["BUILD_HOOKS"] = hooks
 	}
 	c.progress.Update(PhaseTriggering, "Triggering "+p.Name()+" build...")
 	run, err := p.Start(ctx, ci.Request{Workflow: cfgCI.BuildWorkflow, Variables: v})

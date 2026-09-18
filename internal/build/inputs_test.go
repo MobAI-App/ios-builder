@@ -144,12 +144,47 @@ func TestRemoteInputsMapping(t *testing.T) {
 
 	s, _, _ = c.settings("preview", "", false)
 	got = c.inputs("abcdef12", "ref", "sha", s)
-	if got["USE_SIGNING"] != "true" || got["SCHEME"] != "AppPreview" || got["CONFIGURATION"] != "Release" || got["DISTRIBUTION"] != "ad-hoc" {
+	if got["USE_SIGNING"] != "true" || got["SCHEME"] != "AppPreview" || got["CONFIGURATION"] != "Release" || got["DISTRIBUTION"] != "ad-hoc" || got["BUILD_PROFILE"] != "preview" {
 		t.Fatalf("profile mapping: %v", got)
 	}
 	var env map[string]string
 	if err := json.Unmarshal([]byte(got["BUILD_ENV"]), &env); err != nil || env["API_URL"] != "https://staging.example.com" {
 		t.Fatalf("BUILD_ENV: %q %v", got["BUILD_ENV"], err)
+	}
+	// The hooks are a build-only variable, added by buildRemote; inputs itself
+	// never sends them, since a simulator build shares it.
+	c.config.Hooks = &config.Hooks{PreBuild: "./scripts/prebuild.sh"}
+	s, _, _ = c.settings("preview", "", false)
+	if got = c.inputs("abcdef12", "ref", "sha", s); got["BUILD_HOOKS"] != "" {
+		t.Fatalf("shared inputs carry the hooks: %v", got)
+	}
+}
+
+func TestGitHubInputsCarryHooks(t *testing.T) {
+	cfg := profiledConfig()
+	cfg.Hooks = &config.Hooks{PreBuild: "./scripts/prebuild.sh", PostBuild: "echo top"}
+	p := cfg.Profiles["preview"]
+	p.Hooks = &config.Hooks{PostBuild: "./scripts/notify.sh"}
+	cfg.Profiles["preview"] = p
+	c := NewCoordinatorWithOutput(cfg, nil, io.Discard)
+	var profile struct {
+		Name  string
+		Hooks map[string]string
+	}
+	// Top-level hooks travel without a profile, under an empty name.
+	s, _, _ := c.settings("", "", false)
+	got := c.buildInputs("abcdef12", "ref", s, "")
+	if err := json.Unmarshal([]byte(got["profile"]), &profile); err != nil || profile.Name != "" || profile.Hooks["preBuild"] != "./scripts/prebuild.sh" || profile.Hooks["postBuild"] != "echo top" {
+		t.Fatalf("profile input without a profile: %q %+v %v", got["profile"], profile, err)
+	}
+	s, _, _ = c.settings("preview", "", false)
+	got = c.buildInputs("abcdef12", "ref", s, "")
+	if err := json.Unmarshal([]byte(got["profile"]), &profile); err != nil || profile.Name != "preview" || profile.Hooks["preBuild"] != "./scripts/prebuild.sh" || profile.Hooks["postBuild"] != "./scripts/notify.sh" {
+		t.Fatalf("profile input with a profile: %q %+v %v", got["profile"], profile, err)
+	}
+	// The simulator workflow declares no profile input, hooks or not.
+	if _, ok := c.workflowInputs("abcdef12", "ref", s)["profile"]; ok {
+		t.Fatal("hooks reached the share inputs")
 	}
 }
 
@@ -157,14 +192,24 @@ func TestSettingsPrinted(t *testing.T) {
 	var out bytes.Buffer
 	p := NewProgress(&out)
 	p.Start("abcdef12")
-	p.Settings(&config.BuildSettings{Profile: "preview", Configuration: "Release", Signing: true, Env: map[string]string{"B": "2", "A": "1"}, Distribution: "ad-hoc"}, "github")
-	for _, want := range []string{"Profile:       preview", "Configuration: Release", "Scheme:        (auto-detected)", "Signing:       signed (set AD_HOC)", "Provider:      github", "Env:           A, B", "Distribution:  ad-hoc"} {
+	p.Settings(&config.BuildSettings{Profile: "preview", Configuration: "Release", Signing: true, Env: map[string]string{"B": "2", "A": "1"}, Distribution: "ad-hoc", Hooks: config.Hooks{PreBuild: "./scripts/prebuild.sh", PostBuild: "echo done"}}, "github")
+	for _, want := range []string{"Profile:       preview", "Configuration: Release", "Scheme:        (auto-detected)", "Signing:       signed (set AD_HOC)", "Provider:      github", "Env:           A, B", "Distribution:  ad-hoc", "Hooks:         preBuild, postBuild"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q in:\n%s", want, out.String())
 		}
 	}
-	if strings.Contains(out.String(), "staging") || strings.Contains(out.String(), "=1") {
-		t.Fatal("env values should not be printed, only names")
+	if strings.Contains(out.String(), "staging") || strings.Contains(out.String(), "=1") || strings.Contains(out.String(), "prebuild.sh") {
+		t.Fatal("env values and hook commands should not be printed, only names")
+	}
+	out.Reset()
+	p.Settings(&config.BuildSettings{Hooks: config.Hooks{PostBuild: "echo done"}}, "github")
+	if !strings.Contains(out.String(), "Hooks:         postBuild\n") {
+		t.Errorf("only the hooks set are named:\n%s", out.String())
+	}
+	out.Reset()
+	p.Settings(&config.BuildSettings{}, "github")
+	if strings.Contains(out.String(), "Hooks:") {
+		t.Errorf("no hooks, no line:\n%s", out.String())
 	}
 
 	// Signed without a distribution is the legacy path with the unsuffixed

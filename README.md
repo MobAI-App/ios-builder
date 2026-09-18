@@ -298,6 +298,10 @@ machine-readable output and never prompts, so agents and CI jobs can drive them.
     "development": { "distribution": "development" },
     "store":       { "distribution": "store" }
   },
+  "hooks": {
+    "preBuild": "./scripts/prebuild.sh",
+    "postBuild": "./scripts/upload-symbols.sh"
+  },
   "mobai": {
     "url": "http://localhost:8686",
     "device_id": ""
@@ -374,7 +378,7 @@ the run's inputs and logs. Keep tokens and passwords in the provider's secrets
 (`gh secret set` on GitHub, or the [Codemagic / Bitrise secrets
 guide](docs/provider-secrets.md)); the build reads those as environment
 variables too. Names the runner owns are rejected: its own parameters (`SCHEME`,
-`CONFIGURATION`, `USE_SIGNING`, `BUILD_ENV`, ...), the signing secrets, `PATH`,
+`CONFIGURATION`, `USE_SIGNING`, `BUILD_ENV`, `BUILD_HOOKS`, ...), the signing secrets, `PATH`,
 `HOME`, `DEVELOPER_DIR`, and the `GITHUB_`, `RUNNER_`, `CM_`, `BITRISE_`, `BUILDER_` prefixes.
 
 Selecting a profile, with `--profile` or `defaultProfile`, needs the workflow
@@ -383,6 +387,48 @@ committed workflow rejects the dispatch. Run `builder init` again to refresh
 `.github/workflows/ios-build.yml` (or `builder init --provider ...` for
 `runner.sh`) in a project set up earlier, then commit and push it to the
 default branch.
+
+### Build hooks
+
+Hooks are shell commands the runner executes around the build — to generate
+code, fetch a config file, upload dSYMs, or notify a chat:
+
+```json
+{
+  "hooks": {
+    "preBuild": "./scripts/prebuild.sh",
+    "postBuild": "./scripts/upload-symbols.sh"
+  },
+  "profiles": {
+    "store": { "distribution": "store", "hooks": { "postBuild": "./scripts/notify.sh" } }
+  }
+}
+```
+
+- `preBuild` runs once every dependency is in place (`flutter pub get`,
+  `npm install`, `expo prebuild`, XcodeGen, `pod install`) and before the
+  build number is applied, the signing settings are written and the archive
+  starts. `postBuild` runs once the IPA exists and before it is uploaded as an
+  artifact; `BUILDER_IPA` is its absolute path.
+- Hooks run on the runner, never on your machine, from the repository root of
+  the checkout, as `bash -eo pipefail -c "<command>"`: a multi-line command
+  stops at its first failing line, and a failing hook fails the build (its
+  exit code is in the job log, under a foldable group on GitHub).
+- Each hook sees the profile's `env` plus `BUILDER_HOOK` (`preBuild` or
+  `postBuild`), `BUILDER_BUILD_ID`, `BUILDER_PROFILE` (empty without a
+  profile), `BUILDER_CONFIGURATION`, `BUILDER_DISTRIBUTION` (canonical, so
+  `internal` arrives as `ad-hoc`; empty for unsigned builds and for the legacy
+  `ios.signing` path), `BUILDER_IOS_PATH`, `BUILDER_PROJECT_TYPE` (`flutter`,
+  `expo`, `reactnative`, `kmp` or `native`) and `BUILDER_BUILD_NUMBER` (what
+  `ios release` sent, else empty).
+- Top-level `hooks` apply to every build. A profile's `hooks` override them
+  field by field: a profile's non-empty `preBuild` replaces the top-level
+  `preBuild`, an absent or blank one keeps it. Whitespace-only is absent. Each
+  command is one string; a number or a list fails the build by name.
+- Hooks are for `ios build` (and `ios release`) only; `ios share` and the
+  simulator builds never run them. Like `env`, the commands are stored in
+  `builder.json` and sent to the provider as plain workflow inputs, so keep
+  secrets in the provider's secrets and read them from the hook.
 
 ### MobAI Configuration
 

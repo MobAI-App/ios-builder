@@ -246,12 +246,31 @@ internal/
 - **Build Profiles**: `profiles.<name>` overrides `ios.configuration`/`ios.scheme`/`provider` and adds
   `env` and `distribution` (`config.ResolveProfile`: `--profile`, else `defaultProfile`, else top level
   unchanged). A profile signs iff it has a `distribution`; `ios.signing` is only the no-profile path
-- **Profile Transport**: the `profile` dispatch input is one JSON object (`{"name","env","distribution"}`)
-  to stay under the ten-input limit and is sent only when a profile is selected, since an older
-  workflow rejects unknown inputs (`triggerError`). `runner.sh` reads `BUILD_ENV` and `DISTRIBUTION`
+- **Profile Transport**: the `profile` dispatch input is one JSON object (`{"name","env","distribution","hooks"}`)
+  to stay under the ten-input limit and is sent only when a profile is selected or a hook is set, since an
+  older workflow rejects unknown inputs (`triggerError`). `runner.sh` reads `BUILD_ENV`, `DISTRIBUTION`,
+  `BUILD_PROFILE` and `BUILD_HOOKS`
 - **Profile Env**: entries are base64 per key/value on the runner and the `$GITHUB_ENV` heredoc uses a
   random delimiter; names must match `^[A-Za-z_][A-Za-z0-9_]*$` and not hit `reservedEnv`/
   `reservedEnvPrefixes` (`internal/config/profile.go`), which must track what the runners read
+- **Build Hooks**: `hooks.preBuild`/`hooks.postBuild` (top level, overridden per field by a profile's;
+  `config.resolveHooks`, whitespace-only = absent) run on the runner only, from the checkout root as
+  `bash -eo pipefail -c`, with the profile env plus `BUILDER_{HOOK,BUILD_ID,PROFILE,CONFIGURATION,
+  DISTRIBUTION,IOS_PATH,PROJECT_TYPE,BUILD_NUMBER}` and `BUILDER_IPA` for postBuild. Transport: the
+  `profile` dispatch input gains a `hooks` key (`ProfileInput` sends `{"name":"",...,"hooks":…}` for
+  top-level hooks without a profile), a tag build merges them from builder.json in jq, and runner.sh
+  gets `BUILD_HOOKS` (JSON) and `BUILD_PROFILE` (both reserved). The Resolve step exports them as
+  `BUILDER_HOOK_PRE_BUILD`/`BUILDER_HOOK_POST_BUILD` through the same base64 heredoc as the env.
+  A command must be a string (null = absent): the merge and the export keep only non-blank strings,
+  so the Resolve step and `check_build_hooks` fail a number or list by name first, as the CLI's
+  `json.Unmarshal` into `Hooks` would. `run_hook` runs from `BUILDER_WORKSPACE` (runner.sh's
+  checkout), else `GITHUB_WORKSPACE`, and fails when both are empty, since `cd ""` succeeds silently.
+  Placement: preBuild after `pod install`/project selection and before `apply_build_number`,
+  signing settings and the archive (`Build IPA` step; top of `build_ipa` in runner.sh, not `prepare`,
+  which the simulator mode shares); postBuild after `Created … IPA`, before the artifact upload. The
+  `run_hook` function lives in a `# >>> build hooks` … `# <<< build hooks` block that is byte-identical
+  in `ios-build.yml` and `runner.sh` (`TestBuildHooksBlockIdentical`; `TestRunHook` executes it) and
+  only uses `fail` plus variables both runners set. `ios share`/`runner.sh simulator` never run hooks.
 - **Signing Sets**: one trio per distribution, `IOS_{CERTIFICATE,CERTIFICATE_PASSWORD,PROVISIONING_PROFILE}_<SET>`
   (DEVELOPMENT, AD_HOC, STORE, ENTERPRISE); the unsuffixed names serve only the legacy no-profile path.
   The table lives in `config.SigningSet` and the shell `signing_set` (both templates) and must agree
@@ -436,10 +455,12 @@ internal/
   "github": { "owner": "username", "repo": "my-ios-app" },
   "ios": { "path": "ios", "scheme": "", "bundleId": "com.example.app" },
   "defaultProfile": "development",
+  "hooks": { "preBuild": "./scripts/prebuild.sh", "postBuild": "./scripts/upload-symbols.sh" },
   "profiles": {
     "development": { "distribution": "development" },
     "preview":     { "distribution": "internal", "env": { "API_URL": "https://staging.example.com" } },
-    "production":  { "distribution": "store", "scheme": "MyApp", "provider": "codemagic" }
+    "production":  { "distribution": "store", "scheme": "MyApp", "provider": "codemagic",
+                     "hooks": { "postBuild": "./scripts/notify.sh" } }
   }
 }
 ```
@@ -451,7 +472,8 @@ the first IPA exists. `signing.dir` is the last automatic `signing setup`'s `--o
 
 A profile's fields are `distribution` (`development`, `ad-hoc`/`internal`, `store`, `enterprise`; the
 only signing field, omitted = unsigned), `configuration` (else Debug for development, Release
-otherwise), `scheme`, `provider`, `env`. `runner`/`submit` are planned on `config.Profile`, not read.
+otherwise), `scheme`, `provider`, `env`, `hooks` (`preBuild`/`postBuild`, each overriding the
+top-level one when non-blank). `runner`/`submit` are planned on `config.Profile`, not read.
 
 ## Workflow Features
 
@@ -470,8 +492,8 @@ The embedded workflow template (`internal/workflow/templates/ios-build.yml`):
   `use_signing`, `configuration`, `flutter_version` and `jdk_version` from `builder.json` in the
   tagged tree, applying `defaultProfile` (a tag cannot pick a profile per run; `build_number` is
   always empty there); every later step reads `steps.params.outputs.*`, never `inputs.*`. The same
-  step exports the profile's `env` to `$GITHUB_ENV` and outputs `profile`, `distribution` and
-  `signing_set`. The job deletes
+  step exports the profile's `env` and the merged hooks (`BUILDER_HOOK_PRE_BUILD`/`_POST_BUILD`) to
+  `$GITHUB_ENV` and outputs `profile`, `distribution` and `signing_set`. The job deletes
   the tag when it ends (`permissions: contents: write`). Any other workflow in the repo with an
   unfiltered `on: push` also fires on these tags.
 - Runs on `macos-latest`
