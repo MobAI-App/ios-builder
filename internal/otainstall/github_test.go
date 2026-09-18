@@ -214,6 +214,33 @@ func TestCleanupRemovesOnlyBuilderLeftovers(t *testing.T) {
 	}
 }
 
+// syncBuffer is a bytes.Buffer the session writes while the test reads.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// links counts the install links the session has printed so far. The tests
+// wait on this rather than on the fake server's request log: the server
+// records a request before it answers, so a session interrupted right then
+// sees a canceled request and has nothing to leave behind.
+func (s *syncBuffer) links() int {
+	text := s.String()
+	return strings.Count(text, "Install link (valid until") + strings.Count(text, `{"link":`)
+}
+
 // waitFor polls until cond holds or the test times out.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
@@ -241,7 +268,7 @@ func decodeLinks(t *testing.T, ndjson string) []Links {
 
 func TestSessionJSONRefreshesOnExpiryAndCleansUp(t *testing.T) {
 	gh := newFakeGitHub(t)
-	var log, out bytes.Buffer
+	var log, out syncBuffer
 	var progressCalls int
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -252,7 +279,7 @@ func TestSessionJSONRefreshesOnExpiryAndCleansUp(t *testing.T) {
 		_, err := Run(ctx, opts)
 		done <- err
 	}()
-	waitFor(t, "the automatic refresh", func() bool { return gh.count("POST /gists") >= 2 })
+	waitFor(t, "the automatic refresh", func() bool { return out.links() >= 2 })
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("Run: %v", err)
@@ -293,7 +320,7 @@ func TestSessionJSONRefreshesOnExpiryAndCleansUp(t *testing.T) {
 
 func TestSessionKeysRefreshAndQuit(t *testing.T) {
 	gh := newFakeGitHub(t)
-	var log bytes.Buffer
+	var log syncBuffer
 	stdin, keys := io.Pipe()
 	opts := &Options{App: testApp(t), Backend: NewGitHub(gh.client(), "o", "r"), Log: &log, QR: true, Stdin: stdin, Timeout: time.Minute}
 	done := make(chan error, 1)
@@ -301,11 +328,11 @@ func TestSessionKeysRefreshAndQuit(t *testing.T) {
 		_, err := Run(context.Background(), opts)
 		done <- err
 	}()
-	waitFor(t, "the first link", func() bool { return gh.count("POST /gists") == 1 })
+	waitFor(t, "the first link", func() bool { return log.links() == 1 })
 	if _, err := io.WriteString(keys, "\n"); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the refresh", func() bool { return gh.count("POST /gists") == 2 })
+	waitFor(t, "the refresh", func() bool { return log.links() == 2 })
 	if _, err := io.WriteString(keys, "q\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +410,7 @@ func TestSessionCanceledDuringUploadRemovesTheRelease(t *testing.T) {
 func TestSessionReportsWhatCleanupCouldNotRemove(t *testing.T) {
 	gh := newFakeGitHub(t)
 	gh.gistDeleteFails = true
-	var log bytes.Buffer
+	var log syncBuffer
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	type outcome struct {
@@ -395,7 +422,7 @@ func TestSessionReportsWhatCleanupCouldNotRemove(t *testing.T) {
 		res, err := Run(ctx, &Options{App: testApp(t), Backend: NewGitHub(gh.client(), "o", "r"), Log: &log, Timeout: time.Minute})
 		done <- outcome{res, err}
 	}()
-	waitFor(t, "the first link", func() bool { return gh.count("POST /gists") == 1 })
+	waitFor(t, "the first link", func() bool { return log.links() == 1 })
 	cancel()
 	o := <-done
 	if o.err != nil {
