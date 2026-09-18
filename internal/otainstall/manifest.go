@@ -46,9 +46,13 @@ func Manifest(app *App, ipaURL string) ([]byte, error) {
 	return data, nil
 }
 
+// linkEscaper hides only what would break the outer query string; a fully
+// percent-encoded URL costs a QR version or two.
+var linkEscaper = strings.NewReplacer("%", "%25", "&", "%26", "#", "%23", "?", "%3F", " ", "%20")
+
 // Link is the itms-services URL iOS opens the installer for.
 func Link(manifestURL string) string {
-	return "itms-services://?action=download-manifest&url=" + url.QueryEscape(manifestURL)
+	return "itms-services://?action=download-manifest&url=" + linkEscaper.Replace(manifestURL)
 }
 
 // DefaultTTL is how long a signed release-asset URL lives when the URL does

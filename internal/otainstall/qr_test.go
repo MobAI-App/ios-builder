@@ -6,16 +6,16 @@ import (
 	"unicode/utf8"
 )
 
-// representativeLink is what a real session prints: a gist raw URL pinned to
-// its commit, inside the itms-services wrapper.
-const representativeLink = "itms-services://?action=download-manifest&url=https%3A%2F%2Fgist.githubusercontent.com%2FInterlap01%2F0123456789abcdef0123456789abcdef%2Fraw%2F0123456789abcdef0123456789abcdef01234567%2Fmanifest.plist"
+// representativeLink is what a real session prints: a gist's short raw URL
+// inside the itms-services wrapper.
+const representativeLink = "itms-services://?action=download-manifest&url=https://gist.githubusercontent.com/Interlap01/0123456789abcdef0123456789abcdef/raw"
 
 func TestQRFitsATerminal(t *testing.T) {
 	modules, err := qrModules(representativeLink)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := len(modules); n >= 60 {
+	if n := len(modules); n > 41 {
 		t.Errorf("QR code is %d modules wide; too wide for a terminal", n)
 	}
 }

@@ -31,8 +31,13 @@ func TestManifest(t *testing.T) {
 }
 
 func TestLinkEscapesManifestURL(t *testing.T) {
-	got := Link("https://gist.githubusercontent.com/u/abc/raw/def/manifest.plist")
-	want := "itms-services://?action=download-manifest&url=https%3A%2F%2Fgist.githubusercontent.com%2Fu%2Fabc%2Fraw%2Fdef%2Fmanifest.plist"
+	got := Link("https://gist.githubusercontent.com/u/abc/raw")
+	want := "itms-services://?action=download-manifest&url=https://gist.githubusercontent.com/u/abc/raw"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	got = Link("https://h/x?a=1&b=2#f")
+	want = "itms-services://?action=download-manifest&url=https://h/x%3Fa=1%26b=2%23f"
 	if got != want {
 		t.Errorf("Link = %q, want %q", got, want)
 	}

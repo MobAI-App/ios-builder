@@ -192,7 +192,7 @@ builder ios distribute ──► otainstall.Inspect: Info.plist + embedded.mobil
                                 ▼
                           Mint: GET releases/assets/{id} (Accept octet-stream, no redirect
                             follow) → signed URL (5 min) → manifest.plist → POST /gists
-                            (secret) → itms-services://?action=download-manifest&url=<raw_url>
+                            (secret) → itms-services://?action=download-manifest&url=<gist raw URL>
                                 │
                                 ▼
                           Print link + QR (half blocks); re-mint a minute before expiry
@@ -412,7 +412,9 @@ internal/
   auth; its `jwt` claims put the life at 5 minutes (`Expiry`, which falls back to now + 5 minutes when the
   claim is missing or already past, so a skewed clock cannot spin the loop), so the session re-mints a minute early.
 - **Manifest In A Secret Gist**: the signed asset URL is ~1000 characters, far past a scannable QR, so the
-  manifest goes into an unlisted gist (`GistMarker` description) whose commit-pinned `raw_url` is ~140.
+  manifest goes into an unlisted gist (`GistMarker` description); its `raw_url` is cut after `/raw`
+  (`shortRawURL`, ~80 characters: the only file at its newest revision, and every mint is a new gist) and
+  `Link` percent-encodes only `%&#? `, since full encoding costs a QR version.
   That needs the `gist` OAuth scope (`auth.go` requests `repo workflow gist`); GitHub answers 404 without
   it and `CreateSecretGist` turns that into `ErrGistScope` naming `builder auth github`. No fallback.
 - **Distribute Cleanup**: `Run` closes its own upload on any exit (own context, so Ctrl-C still cleans up;
@@ -422,7 +424,7 @@ internal/
   never does, since that would kill a concurrent session's or a `--once` link.
 - **QR Rendering**: `skip2/go-qrcode` at error-correction Low, Unicode half blocks (two module rows per
   line, 2-module quiet zone), light modules as `█` so it scans on a dark terminal (`--qr-invert` for light);
-  `TestQRFitsATerminal` keeps a representative link under 60 modules. Printed only on a TTY or `--qr`.
+  `TestQRFitsATerminal` pins a representative link at 41 modules (version 6). Printed only on a TTY or `--qr`.
 
 ## Configuration
 

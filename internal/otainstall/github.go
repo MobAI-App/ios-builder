@@ -121,7 +121,7 @@ func (u *githubUpload) Mint(ctx context.Context, build func(ipaURL string) ([]by
 	if err != nil {
 		return nil, err
 	}
-	raw := gist.Files[manifestName].RawURL
+	raw := shortRawURL(gist.Files[manifestName].RawURL)
 	if raw == "" {
 		_ = u.b.client.DeleteGist(ctx, gist.ID)
 		return nil, errors.New("gist created without a raw URL for manifest.plist")
@@ -166,6 +166,16 @@ func (u *githubUpload) Leftovers() []string {
 		out = append(out, "gist "+u.gistID)
 	}
 	return out
+}
+
+// shortRawURL cuts the commit and file name off a gist raw_url: /raw serves
+// the gist's only file at its newest revision, and every mint is a new gist,
+// so nothing can be stale. Forty characters fewer keeps the QR code small.
+func shortRawURL(raw string) string {
+	if i := strings.Index(raw, "/raw/"); i > 0 {
+		return raw[:i+len("/raw")]
+	}
+	return raw
 }
 
 var unsafeName = regexp.MustCompile(`[^A-Za-z0-9._-]+`)

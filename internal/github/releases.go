@@ -37,6 +37,7 @@ type Gist struct {
 }
 
 // GistFile is one file of a gist; RawURL is pinned to the gist's commit.
+// Trimmed to /raw it serves the newest revision of the only file.
 type GistFile struct {
 	RawURL string `json:"raw_url"`
 }

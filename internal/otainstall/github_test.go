@@ -263,7 +263,7 @@ func TestSessionJSONRefreshesOnExpiryAndCleansUp(t *testing.T) {
 		t.Fatalf("want two NDJSON links, got %q", out.String())
 	}
 	first, second := links[0], links[1]
-	if !strings.HasPrefix(first.Link, "itms-services://?action=download-manifest&url=https%3A%2F%2Fgist.githubusercontent.com") {
+	if !strings.HasPrefix(first.Link, "itms-services://?action=download-manifest&url=https://gist.githubusercontent.com/o/") || !strings.HasSuffix(first.ManifestURL, "/raw") {
 		t.Errorf("link = %q", first.Link)
 	}
 	var line struct {
