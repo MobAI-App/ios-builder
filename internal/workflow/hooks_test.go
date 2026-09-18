@@ -200,6 +200,77 @@ echo "recorded"
 			t.Errorf("pipefail: %v\n%s", err, out)
 		}
 	})
+
+	t.Run("the checkout root is BUILDER_WORKSPACE, else GITHUB_WORKSPACE, never the cwd", func(t *testing.T) {
+		// `cd ""` succeeds silently, so without either variable the hook
+		// must not run from wherever the runner happens to be.
+		marker := filepath.Join(t.TempDir(), "reached")
+		out, err := run(t, iosDir, map[string]string{"GITHUB_WORKSPACE": ""}, "preBuild", "touch '"+marker+"'")
+		if err == nil || !strings.Contains(out, "FAIL: preBuild hook: no checkout root") {
+			t.Errorf("no root: %v\n%s", err, out)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Error("the hook ran without a checkout root")
+		}
+		// runner.sh's BUILDER_WORKSPACE wins over a GITHUB_WORKSPACE that is
+		// also set, as when runner.sh itself runs under GitHub Actions.
+		log := filepath.Join(t.TempDir(), "hook.log")
+		out, err = run(t, iosDir, map[string]string{"BUILDER_WORKSPACE": iosDir, "HOOK_LOG": log}, "preBuild", record)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		real, _ := filepath.EvalSymlinks(iosDir)
+		if got := read(t, log)["pwd"]; got != iosDir && got != real {
+			t.Errorf("hook ran in %q, want BUILDER_WORKSPACE %q", got, iosDir)
+		}
+	})
+}
+
+// TestCheckBuildHooks runs runner.sh's BUILD_HOOKS validation and reader the
+// way prepare and build_ipa do: a non-string command fails by name rather
+// than being skipped, blank commands are none, and nothing prints for none.
+func TestCheckBuildHooks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("macOS/Linux shell test")
+	}
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed")
+	}
+	data, err := GetTemplate("runner.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "set -euo pipefail\n" + shellFunc(t, string(data), "check_build_hooks") + "\n" + shellFunc(t, string(data), "hook_command") + `
+check_build_hooks
+printf 'pre=[%s]\n' "$(hook_command preBuild)"
+printf 'post=[%s]\n' "$(hook_command postBuild)"
+`
+	path := filepath.Join(t.TempDir(), "check.sh")
+	if err := os.WriteFile(path, []byte(script), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name, hooks, want string
+		fails             bool
+	}{
+		{"none", ``, "pre=[]\npost=[]\n", false},
+		{"both", `{"preBuild":"echo hi","postBuild":"a\nb"}`, "hooks: preBuild, postBuild\npre=[echo hi]\npost=[a\nb]\n", false},
+		{"blank and null are none", `{"preBuild":"  \n","postBuild":null}`, "pre=[]\npost=[]\n", false},
+		{"empty object", `{}`, "pre=[]\npost=[]\n", false},
+		{"not an object", `["echo hi"]`, "BUILD_HOOKS must be a JSON object of preBuild and postBuild commands\n", true},
+		{"not JSON", `echo hi`, "BUILD_HOOKS must be a JSON object of preBuild and postBuild commands\n", true},
+		{"a number", `{"preBuild":5}`, "BUILD_HOOKS.preBuild must be a string\n", true},
+		{"a list", `{"preBuild":"echo hi","postBuild":["x"]}`, "BUILD_HOOKS.postBuild must be a string\n", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command("bash", path)
+			cmd.Env = append(os.Environ(), "BUILD_HOOKS="+tt.hooks)
+			out, err := cmd.CombinedOutput()
+			if (err != nil) != tt.fails || string(out) != tt.want {
+				t.Errorf("BUILD_HOOKS=%q: err=%v\n%s\nwant:\n%s", tt.hooks, err, out, tt.want)
+			}
+		})
+	}
 }
 
 // TestBuildHooksPlacement pins where the workflow runs the hooks: preBuild

@@ -187,8 +187,10 @@ fi
 		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "SNAPSHOT_REF="+ref, "SNAPSHOT_SHA="+sha, "BUILD_ID=abcdef12", "IOS_PATH=.", "USE_SIGNING=false", "CONFIGURATION=Debug", "BUILD_NUMBER=17", "SCHEME="+scheme, "SCHEME_LOG="+filepath.Join(dir, "scheme.log"), "BUILDER_CI_DIR="+filepath.Join(dir, "state"),
 			"BUILD_ENV="+buildEnv, "DISTRIBUTION=ad-hoc", "ENV_LOG="+filepath.Join(dir, "env.log"),
 			"BUILD_PROFILE=preview", "BUILD_HOOKS="+buildHooks, "HOOK_LOG="+hookLog,
-			// A GitHub-hosted test run must not point the hooks at its own checkout.
-			"GITHUB_WORKSPACE=", "GITHUB_ACTIONS=")
+			// runner.sh's own checkout (BUILDER_WORKSPACE) is the hooks' root
+			// even under GitHub Actions: the preBuild hook above asserts it,
+			// so a GITHUB_WORKSPACE pointing elsewhere must not win.
+			"GITHUB_WORKSPACE="+dir, "GITHUB_ACTIONS=")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("runner: %s %v", out, err)
 		}

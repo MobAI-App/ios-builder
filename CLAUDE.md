@@ -261,6 +261,10 @@ internal/
   top-level hooks without a profile), a tag build merges them from builder.json in jq, and runner.sh
   gets `BUILD_HOOKS` (JSON) and `BUILD_PROFILE` (both reserved). The Resolve step exports them as
   `BUILDER_HOOK_PRE_BUILD`/`BUILDER_HOOK_POST_BUILD` through the same base64 heredoc as the env.
+  A command must be a string (null = absent): the merge and the export keep only non-blank strings,
+  so the Resolve step and `check_build_hooks` fail a number or list by name first, as the CLI's
+  `json.Unmarshal` into `Hooks` would. `run_hook` runs from `BUILDER_WORKSPACE` (runner.sh's
+  checkout), else `GITHUB_WORKSPACE`, and fails when both are empty, since `cd ""` succeeds silently.
   Placement: preBuild after `pod install`/project selection and before `apply_build_number`,
   signing settings and the archive (`Build IPA` step; top of `build_ipa` in runner.sh, not `prepare`,
   which the simulator mode shares); postBuild after `Created … IPA`, before the artifact upload. The

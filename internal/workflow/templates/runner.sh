@@ -37,7 +37,13 @@ export_build_env() {
 check_build_hooks() {
   [ -n "$BUILD_HOOKS" ] || return 0
   if [ "$(jq -r 'type' <<< "$BUILD_HOOKS" 2>/dev/null)" != "object" ]; then echo "BUILD_HOOKS must be a JSON object of preBuild and postBuild commands" >&2; exit 1; fi
-  echo "hooks: $(jq -r '[to_entries[] | select(.value | type == "string" and test("\\S")) | .key] | join(", ")' <<< "$BUILD_HOOKS")"
+  # A command is a string (null is absent); anything else would be skipped
+  # silently by hook_command, so it fails here by name instead.
+  local bad names
+  bad=$(jq -r 'to_entries[] | select(.value != null and (.value | type) != "string") | .key' <<< "$BUILD_HOOKS" | head -1)
+  if [ -n "$bad" ]; then echo "BUILD_HOOKS.$bad must be a string" >&2; exit 1; fi
+  names=$(jq -r '[to_entries[] | select(.value | type == "string" and test("\\S")) | .key] | join(", ")' <<< "$BUILD_HOOKS")
+  [ -z "$names" ] || echo "hooks: $names"
 }
 
 hook_command() {
@@ -52,11 +58,15 @@ hook_command() {
 # profile's env is already exported, the BUILDER_* variables describe
 # the build, and $3 is the IPA a postBuild hook gets as BUILDER_IPA.
 run_hook() {
-  local hook="$1" command="$2" ipa="${3:-}" status=0
+  local hook="$1" command="$2" ipa="${3:-}" status=0 root="${BUILDER_WORKSPACE:-${GITHUB_WORKSPACE:-}}"
   [ -n "$command" ] || return 0
+  # runner.sh sets BUILDER_WORKSPACE at the checkout; the GitHub workflow
+  # only has GITHUB_WORKSPACE. `cd ""` succeeds silently, so an empty root
+  # must fail rather than run the hook from the iOS directory.
+  [ -n "$root" ] || fail "$hook hook: no checkout root (BUILDER_WORKSPACE or GITHUB_WORKSPACE) to run from"
   if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::group::$hook hook"; else echo "== $hook hook =="; fi
   (
-    cd "${GITHUB_WORKSPACE:-$BUILDER_WORKSPACE}" || exit 1
+    cd "$root" || exit 1
     export BUILDER_HOOK="$hook" BUILDER_BUILD_ID="${BUILD_ID:-}" BUILDER_PROFILE="${BUILD_PROFILE:-}"
     export BUILDER_CONFIGURATION="${CONFIGURATION:-}" BUILDER_DISTRIBUTION="${DISTRIBUTION:-}"
     export BUILDER_IOS_PATH="${IOS_PATH:-}" BUILDER_PROJECT_TYPE="${PROJECT_TYPE:-}" BUILDER_BUILD_NUMBER="${BUILD_NUMBER:-}"

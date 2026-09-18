@@ -147,6 +147,13 @@ jobs:
             if [ "$(jq -r --arg p "$PROFILE" '[.hooks // {}, .profiles[$p].hooks // {}] | all(type == "object")' builder.json)" != "true" ]; then
               echo "::error::hooks in builder.json must be an object of preBuild and postBuild commands"; exit 1
             fi
+            # A command is a string (null is absent). The merge below keeps only
+            # strings, so a number or a list must fail here by name, as the CLI
+            # refuses it, instead of vanishing.
+            BAD_HOOK=$(jq -r --arg p "$PROFILE" '[.hooks // {}, .profiles[$p].hooks // {}] | map(to_entries[] | select(.value != null and (.value | type) != "string") | .key) | first // empty' builder.json)
+            if [ -n "$BAD_HOOK" ]; then
+              echo "::error::hooks.$BAD_HOOK in builder.json must be a string"; exit 1
+            fi
             PROFILE_JSON=$(jq -c --arg p "$PROFILE" '{name: $p, env: (.profiles[$p].env // {}), distribution: (.profiles[$p].distribution // ""),
               hooks: ((.hooks // {}) + (.profiles[$p].hooks // {} | with_entries(select(.value | type == "string" and test("\\S")))))}' builder.json)
           fi
@@ -203,8 +210,13 @@ jobs:
           if [ "$(jq -r '.hooks // {} | type' <<< "$PROFILE_JSON")" != "object" ]; then
             echo "::error::the profile's hooks must be a JSON object of preBuild and postBuild commands"; exit 1
           fi
+          BAD_HOOK=$(jq -r '.hooks // {} | to_entries[] | select(.value != null and (.value | type) != "string") | .key' <<< "$PROFILE_JSON" | head -1)
+          if [ -n "$BAD_HOOK" ]; then
+            echo "::error::the profile's hooks.$BAD_HOOK must be a string"; exit 1
+          fi
           HOOKS=""
-          while IFS=' ' read -r hook encoded; do
+          while IFS=' ' read -r key encoded; do
+            hook=$(printf '%s' "$key" | base64 --decode)
             case "$hook" in
               preBuild) name=BUILDER_HOOK_PRE_BUILD ;;
               postBuild) name=BUILDER_HOOK_POST_BUILD ;;
@@ -218,7 +230,7 @@ jobs:
               echo "$delim"
             } >> "$GITHUB_ENV"
             HOOKS="${HOOKS:+$HOOKS, }$hook"
-          done < <(jq -r '.hooks // {} | to_entries[] | select(.value | type == "string" and test("\\S")) | "\(.key) \(.value | @base64)"' <<< "$PROFILE_JSON")
+          done < <(jq -r '.hooks // {} | to_entries[] | select(.value | type == "string" and test("\\S")) | "\(.key | @base64) \(.value | @base64)"' <<< "$PROFILE_JSON")
           [ -z "$HOOKS" ] || echo "hooks: $HOOKS"
 
       - name: Setup Xcode
@@ -1043,11 +1055,15 @@ jobs:
           # profile's env is already exported, the BUILDER_* variables describe
           # the build, and $3 is the IPA a postBuild hook gets as BUILDER_IPA.
           run_hook() {
-            local hook="$1" command="$2" ipa="${3:-}" status=0
+            local hook="$1" command="$2" ipa="${3:-}" status=0 root="${BUILDER_WORKSPACE:-${GITHUB_WORKSPACE:-}}"
             [ -n "$command" ] || return 0
+            # runner.sh sets BUILDER_WORKSPACE at the checkout; the GitHub workflow
+            # only has GITHUB_WORKSPACE. `cd ""` succeeds silently, so an empty root
+            # must fail rather than run the hook from the iOS directory.
+            [ -n "$root" ] || fail "$hook hook: no checkout root (BUILDER_WORKSPACE or GITHUB_WORKSPACE) to run from"
             if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::group::$hook hook"; else echo "== $hook hook =="; fi
             (
-              cd "${GITHUB_WORKSPACE:-$BUILDER_WORKSPACE}" || exit 1
+              cd "$root" || exit 1
               export BUILDER_HOOK="$hook" BUILDER_BUILD_ID="${BUILD_ID:-}" BUILDER_PROFILE="${BUILD_PROFILE:-}"
               export BUILDER_CONFIGURATION="${CONFIGURATION:-}" BUILDER_DISTRIBUTION="${DISTRIBUTION:-}"
               export BUILDER_IOS_PATH="${IOS_PATH:-}" BUILDER_PROJECT_TYPE="${PROJECT_TYPE:-}" BUILDER_BUILD_NUMBER="${BUILD_NUMBER:-}"

@@ -416,13 +416,15 @@ code, fetch a config file, upload dSYMs, or notify a chat:
   exit code is in the job log, under a foldable group on GitHub).
 - Each hook sees the profile's `env` plus `BUILDER_HOOK` (`preBuild` or
   `postBuild`), `BUILDER_BUILD_ID`, `BUILDER_PROFILE` (empty without a
-  profile), `BUILDER_CONFIGURATION`, `BUILDER_DISTRIBUTION` (canonical, empty
-  for unsigned builds), `BUILDER_IOS_PATH`, `BUILDER_PROJECT_TYPE` (`flutter`,
+  profile), `BUILDER_CONFIGURATION`, `BUILDER_DISTRIBUTION` (canonical, so
+  `internal` arrives as `ad-hoc`; empty for unsigned builds and for the legacy
+  `ios.signing` path), `BUILDER_IOS_PATH`, `BUILDER_PROJECT_TYPE` (`flutter`,
   `expo`, `reactnative`, `kmp` or `native`) and `BUILDER_BUILD_NUMBER` (what
   `ios release` sent, else empty).
 - Top-level `hooks` apply to every build. A profile's `hooks` override them
   field by field: a profile's non-empty `preBuild` replaces the top-level
-  `preBuild`, an absent or blank one keeps it. Whitespace-only is absent.
+  `preBuild`, an absent or blank one keeps it. Whitespace-only is absent. Each
+  command is one string; a number or a list fails the build by name.
 - Hooks are for `ios build` (and `ios release`) only; `ios share` and the
   simulator builds never run them. Like `env`, the commands are stored in
   `builder.json` and sent to the provider as plain workflow inputs, so keep

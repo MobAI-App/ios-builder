@@ -242,19 +242,28 @@ func TestResolveParametersApplyProfiles(t *testing.T) {
 		for name, tt := range map[string]struct {
 			json string
 			env  map[string]string
+			want string // in the log
 		}{
-			"unknown defaultProfile": {`{"defaultProfile": "nightly", "profiles": {"preview": {}}}`, map[string]string{"GITHUB_EVENT_NAME": "push"}},
-			"bad distribution":       {`{"defaultProfile": "p", "profiles": {"p": {"distribution": "adhoc"}}}`, map[string]string{"GITHUB_EVENT_NAME": "push"}},
-			"old app-store":          {`{"defaultProfile": "p", "profiles": {"p": {"distribution": "app-store"}}}`, map[string]string{"GITHUB_EVENT_NAME": "push"}},
-			"bad env name":           {``, map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_PROFILE": `{"name":"p","env":{"A B":"x"}}`}},
-			"env not an object":      {``, map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_PROFILE": `{"name":"p","env":"A=x"}`}},
-			"profile not JSON":       {``, map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_PROFILE": `preview`}},
-			"hooks not an object":    {``, map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_PROFILE": `{"name":"p","hooks":"./scripts/prebuild.sh"}`}},
-			"top-level hooks string": {`{"hooks": "./scripts/prebuild.sh"}`, map[string]string{"GITHUB_EVENT_NAME": "push"}},
-			"profile hooks a list":   {`{"defaultProfile": "p", "profiles": {"p": {"hooks": ["./scripts/prebuild.sh"]}}}`, map[string]string{"GITHUB_EVENT_NAME": "push"}},
+			"unknown defaultProfile": {`{"defaultProfile": "nightly", "profiles": {"preview": {}}}`, map[string]string{"GITHUB_EVENT_NAME": "push"}, ""},
+			"bad distribution":       {`{"defaultProfile": "p", "profiles": {"p": {"distribution": "adhoc"}}}`, map[string]string{"GITHUB_EVENT_NAME": "push"}, ""},
+			"old app-store":          {`{"defaultProfile": "p", "profiles": {"p": {"distribution": "app-store"}}}`, map[string]string{"GITHUB_EVENT_NAME": "push"}, ""},
+			"bad env name":           {``, map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_PROFILE": `{"name":"p","env":{"A B":"x"}}`}, ""},
+			"env not an object":      {``, map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_PROFILE": `{"name":"p","env":"A=x"}`}, ""},
+			"profile not JSON":       {``, map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_PROFILE": `preview`}, ""},
+			"hooks not an object":    {``, map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_PROFILE": `{"name":"p","hooks":"./scripts/prebuild.sh"}`}, "hooks must be a JSON object"},
+			"top-level hooks string": {`{"hooks": "./scripts/prebuild.sh"}`, map[string]string{"GITHUB_EVENT_NAME": "push"}, "hooks in builder.json must be an object"},
+			"profile hooks a list":   {`{"defaultProfile": "p", "profiles": {"p": {"hooks": ["./scripts/prebuild.sh"]}}}`, map[string]string{"GITHUB_EVENT_NAME": "push"}, "hooks in builder.json must be an object"},
+			// A non-string command must fail by name, not vanish: the
+			// merge and the export keep only strings.
+			"top-level hook a number": {`{"hooks": {"preBuild": 5}}`, map[string]string{"GITHUB_EVENT_NAME": "push"}, "hooks.preBuild in builder.json must be a string"},
+			"profile hook a list":     {`{"defaultProfile": "p", "profiles": {"p": {"hooks": {"postBuild": ["./scripts/notify.sh"]}}}}`, map[string]string{"GITHUB_EVENT_NAME": "push"}, "hooks.postBuild in builder.json must be a string"},
+			"dispatch hook a bool":    {``, map[string]string{"GITHUB_EVENT_NAME": "workflow_dispatch", "IN_PROFILE": `{"name":"p","hooks":{"preBuild":true}}`}, "hooks.preBuild must be a string"},
 		} {
-			if r := runResolve(t, build, tt.json, tt.env); r.err == nil {
+			r := runResolve(t, build, tt.json, tt.env)
+			if r.err == nil {
 				t.Errorf("%s accepted:\n%s", name, r.log)
+			} else if !strings.Contains(r.log, tt.want) {
+				t.Errorf("%s: log lacks %q:\n%s", name, tt.want, r.log)
 			}
 		}
 	})
