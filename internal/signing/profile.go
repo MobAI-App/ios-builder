@@ -31,6 +31,17 @@ func ProfileType(data []byte) (Type, error) {
 	return TypeStore, nil
 }
 
+// ProfileDevices counts the UDIDs a .mobileprovision lists; 0 for App Store
+// and enterprise profiles, which install on any device.
+func ProfileDevices(data []byte) (int, error) {
+	dict, err := profilePlist(data)
+	if err != nil {
+		return 0, err
+	}
+	devices, _ := dict["ProvisionedDevices"].([]any)
+	return len(devices), nil
+}
+
 // profilePlist is the plist inside a .mobileprovision's CMS signature.
 func profilePlist(data []byte) (map[string]any, error) {
 	start := bytes.Index(data, []byte("<?xml"))

@@ -41,6 +41,8 @@ go install ./cmd/builder
 ./builder ios release --profile store --group <name> --notes <text>  # Build with the next build number, upload, wait, TestFlight
 ./builder ios release --profile store --app-store --release after-approval  # Same, then App Review
 ./builder ios build --profile store --submit                          # Short for: ios release (no groups)
+./builder ios build --profile development --distribute  # Build, then print an over-the-air install link + QR code
+./builder ios distribute [--ipa x.ipa] [--once] [--json]  # Same for an existing IPA; --cleanup removes leftovers
 ./builder asc apps|builds|groups|testers|users                   # App Store Connect listings (--json)
 ./builder asc groups create <name> [--external]                  # also: groups delete, groups add-build
 ./builder asc testers add <email>... --group <name>              # also: testers remove, users invite
@@ -179,6 +181,22 @@ builder ios release ─────► Preflight: API key; --profile/defaultProf
                                 │
                                 ▼
                           distribute.Upload (wait) → SubmitTestFlight | SubmitAppStore
+
+builder ios distribute ──► otainstall.Inspect: Info.plist + embedded.mobileprovision
+                            (unsigned / App Store profile → error naming the alternative)
+                                │
+                                ▼
+                          GitHub (otainstall.GitHub): delete leftover drafts tagged
+                            ios-builder/distribute-*, POST releases (draft) → upload IPA asset
+                                │
+                                ▼
+                          Mint: GET releases/assets/{id} (Accept octet-stream, no redirect
+                            follow) → signed URL (5 min) → manifest.plist → POST /gists
+                            (secret) → itms-services://?action=download-manifest&url=<raw_url>
+                                │
+                                ▼
+                          Print link + QR (half blocks); re-mint a minute before expiry
+                            or on Enter; q / Ctrl-C / --timeout → DELETE gist + release
 ```
 
 ### Module Layout
@@ -195,7 +213,8 @@ internal/
   asc/               # App Store Connect API client (JWT, JSON:API, apps, builds, uploads, TestFlight,
                      #   beta groups, beta testers, team users/invitations, review)
   distribute/        # Upload / TestFlight / App Store / tester flows on top of asc
-  ipa/               # Info.plist reading from .ipa archives
+  ipa/               # Info.plist and embedded.mobileprovision reading from .ipa archives
+  otainstall/        # ios distribute: over-the-air install links (manifest, QR, GitHub draft release + gist backend)
   build/             # Build coordination (snapshot + trigger + poll + download)
   signing/           # CSR generation, .p12 assembly, and Auto (portal-free provisioning on top of asc)
   snapshot/          # Working-tree snapshot as a throwaway commit on a remote ref
@@ -383,6 +402,24 @@ internal/
   with the longest covering entry or fails naming the ids to add; `write_export_options` exports them
 - **Extension Points**: `ios release` composes `distribute.Upload` and
   `distribute.SubmitTestFlight`; the `pkg/` wrappers do not expose `asc`.
+- **OTA Install, Not OTA Updates** (`internal/otainstall`): `ios distribute` serves a whole signed IPA
+  through an `itms-services://` link; iOS installs only development/ad-hoc (device on the profile) or
+  enterprise builds, so `Inspect` refuses unsigned and App Store IPAs and `CheckDistribution` refuses
+  the profile of `ios build --distribute` before the snapshot push. `--distribute` excludes `--submit`.
+- **Draft Releases Create No Tag**: the IPA is an asset of a draft release tagged `ios-builder/distribute-<id>`
+  (nothing in `refs/tags`, nothing on the repo page). `GET releases/assets/{id}` with `Accept:
+  application/octet-stream` and redirects unfollowed (`MintAssetURL`) yields a signed URL that needs no
+  auth; its `jwt` claims put the life at 5 minutes (`Expiry`), so the session re-mints a minute early.
+- **Manifest In A Secret Gist**: the signed asset URL is ~1000 characters, far past a scannable QR, so the
+  manifest goes into an unlisted gist (`GistMarker` description) whose commit-pinned `raw_url` is ~140.
+  That needs the `gist` OAuth scope (`auth.go` requests `repo workflow gist`); GitHub answers 404 without
+  it and `CreateSecretGist` turns that into `ErrGistScope` naming `builder auth github`. No fallback.
+- **Distribute Cleanup**: `Cleanup` (run at session start and by `--cleanup`) deletes every draft with the
+  tag prefix and every gist with the marker whose only file is `manifest.plist`; `Run` closes the upload
+  on any exit (own context, so Ctrl-C still cleans up) unless `--once`, which prints the leftovers instead.
+- **QR Rendering**: `skip2/go-qrcode` at error-correction Low, Unicode half blocks (two module rows per
+  line, 2-module quiet zone), light modules as `█` so it scans on a dark terminal (`--qr-invert` for light);
+  `TestQRFitsATerminal` keeps a representative link under 60 modules. Printed only on a TTY or `--qr`.
 
 ## Configuration
 

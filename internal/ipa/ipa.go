@@ -21,7 +21,50 @@ type Info struct {
 	// UsesNonExemptEncryption is nil when the plist does not declare
 	// ITSAppUsesNonExemptEncryption, in which case App Store Connect asks for
 	// the export compliance answer before a build can be distributed.
-	UsesNonExemptEncryption *bool `plist:"ITSAppUsesNonExemptEncryption"`
+	UsesNonExemptEncryption *bool  `plist:"ITSAppUsesNonExemptEncryption"`
+	DisplayName             string `plist:"CFBundleDisplayName"`
+	BundleName              string `plist:"CFBundleName"`
+}
+
+// Name is the app's display name, else its bundle name, else its bundle ID.
+func (i *Info) Name() string {
+	switch {
+	case i.DisplayName != "":
+		return i.DisplayName
+	case i.BundleName != "":
+		return i.BundleName
+	}
+	return i.BundleID
+}
+
+// ErrUnsigned is returned by ReadProfile for an IPA without an embedded
+// provisioning profile, which is what an unsigned build looks like.
+var ErrUnsigned = errors.New("no embedded.mobileprovision in IPA: the build is unsigned")
+
+// ReadProfile returns the app's embedded.mobileprovision, or ErrUnsigned.
+func ReadProfile(path string) ([]byte, error) {
+	r, err := zip.OpenReader(path)
+	if err != nil {
+		return nil, fmt.Errorf("open IPA: %w", err)
+	}
+	defer func() { _ = r.Close() }()
+
+	for _, f := range r.File {
+		if !strings.HasPrefix(f.Name, "Payload/") || !strings.HasSuffix(f.Name, ".app/embedded.mobileprovision") || strings.Count(f.Name, "/") != 2 {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", f.Name, err)
+		}
+		data, err := io.ReadAll(rc)
+		_ = rc.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", f.Name, err)
+		}
+		return data, nil
+	}
+	return nil, ErrUnsigned
 }
 
 // ReadInfo returns the Info.plist of the app bundle inside the IPA.
