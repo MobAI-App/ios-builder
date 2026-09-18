@@ -22,6 +22,9 @@ const (
 	GistMarker   = "ios-builder distribute"
 	manifestName = "manifest.plist"
 	releaseBody  = "Temporary upload created by builder ios distribute; safe to delete."
+	// cleanupTimeout bounds the deletes that run after the session's context
+	// is gone.
+	cleanupTimeout = 30 * time.Second
 )
 
 // GitHub keeps the IPA as a draft-release asset (its download URL is signed
@@ -64,7 +67,10 @@ func (g *GitHub) Upload(ctx context.Context, app *App, progress func(done, total
 	up := &githubUpload{b: g, app: app, release: rel}
 	asset, err := g.client.UploadReleaseAsset(ctx, rel.UploadURL, assetName(app.Title), f, st.Size(), progress)
 	if err != nil {
-		_ = g.client.DeleteRelease(ctx, g.owner, g.repo, rel.ID)
+		// ctx may be what failed the upload (Ctrl-C), so the draft goes with its own.
+		dctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer cancel()
+		_ = g.client.DeleteRelease(dctx, g.owner, g.repo, rel.ID)
 		return nil, err
 	}
 	up.assetID = asset.ID
@@ -130,19 +136,23 @@ func (u *githubUpload) Mint(ctx context.Context, build func(ipaURL string) ([]by
 	}, nil
 }
 
+// Close removes the gist and the draft; whatever it fails to remove stays in
+// Leftovers.
 func (u *githubUpload) Close(ctx context.Context) error {
 	var errs []error
 	if u.gistID != "" {
 		if err := u.b.client.DeleteGist(ctx, u.gistID); err != nil {
 			errs = append(errs, err)
+		} else {
+			u.gistID = ""
 		}
-		u.gistID = ""
 	}
 	if u.release != nil {
 		if err := u.b.client.DeleteRelease(ctx, u.b.owner, u.b.repo, u.release.ID); err != nil {
 			errs = append(errs, err)
+		} else {
+			u.release = nil
 		}
-		u.release = nil
 	}
 	return errors.Join(errs...)
 }

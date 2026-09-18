@@ -56,7 +56,8 @@ func Link(manifestURL string) string {
 const DefaultTTL = 5 * time.Minute
 
 // Expiry reads the expiry of a signed URL from the exp claim of its jwt query
-// parameter, else now plus DefaultTTL.
+// parameter, else now plus DefaultTTL. A claim already in the past means the
+// clocks disagree, and the fallback keeps the refresh loop from spinning.
 func Expiry(signedURL string, now time.Time) time.Time {
 	fallback := now.Add(DefaultTTL)
 	u, err := url.Parse(signedURL)
@@ -77,5 +78,9 @@ func Expiry(signedURL string, now time.Time) time.Time {
 	if json.Unmarshal(payload, &claims) != nil || claims.Exp == 0 {
 		return fallback
 	}
-	return time.Unix(claims.Exp, 0)
+	exp := time.Unix(claims.Exp, 0)
+	if !exp.After(now) {
+		return fallback
+	}
+	return exp
 }

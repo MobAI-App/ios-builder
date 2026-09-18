@@ -2,14 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/MobAI-App/ios-builder/internal/build"
 	"github.com/MobAI-App/ios-builder/internal/config"
 	"github.com/MobAI-App/ios-builder/internal/ipa"
 	"github.com/MobAI-App/ios-builder/internal/otainstall"
@@ -88,6 +89,9 @@ func runDistributeCleanup(cmd *cobra.Command, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	if out := newOutput(cmd); out.json {
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]int{"removed": n})
+	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Removed %d leftover upload(s).\n", n)
 	return nil
 }
@@ -123,13 +127,7 @@ func runDistribute(cmd *cobra.Command, cfg *config.Config, ipaPath string) error
 		qr, _ := cmd.Flags().GetBool("qr")
 		noQR, _ := cmd.Flags().GetBool("no-qr")
 		opts.QR = !noQR && (qr || isTerminal(cmd.OutOrStdout()))
-		progress := build.NewProgress(out.log)
-		opts.Progress = func(done, total int64) {
-			progress.UpdateDownloadProgress(done, total)
-			if done >= total {
-				fmt.Fprintln(out.log)
-			}
-		}
+		opts.Progress = uploadProgress(out.log)
 	}
 	if opts.Stdin != nil && !isTerminal(opts.Stdin) {
 		opts.Stdin = nil
@@ -151,6 +149,28 @@ func runDistribute(cmd *cobra.Command, cfg *config.Config, ipaPath string) error
 		return fmt.Errorf("cleanup failed; run builder ios distribute --cleanup to remove: %s", strings.Join(res.Leftovers, "; "))
 	}
 	return nil
+}
+
+// uploadProgress draws the IPA upload as a bar on one line, redrawn when the
+// percentage changes, and ends the line when the upload does.
+func uploadProgress(w io.Writer) func(done, total int64) {
+	last := -1
+	return func(done, total int64) {
+		pct := 100
+		if total > 0 {
+			pct = int(done * 100 / total)
+		}
+		if pct == last {
+			return
+		}
+		last = pct
+		filled := pct / 5
+		fmt.Fprintf(w, "\r\033[K⬆️  Upload: [%s%s] %d%% (%.1f/%.1f MB)",
+			strings.Repeat("█", filled), strings.Repeat("░", 20-filled), pct, float64(done)/(1<<20), float64(total)/(1<<20))
+		if done >= total {
+			fmt.Fprintln(w)
+		}
+	}
 }
 
 // isTerminal reports whether w is a terminal (a *os.File that is a tty).

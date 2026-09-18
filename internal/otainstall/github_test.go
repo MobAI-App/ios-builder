@@ -31,7 +31,11 @@ type fakeGitHub struct {
 	log      []string
 	// gistScope false answers POST /gists as GitHub does for a token without it.
 	gistScope bool
-	now       time.Time
+	// gistDeleteFails answers every DELETE /gists/{id} with 500.
+	gistDeleteFails bool
+	// beforeUpload runs when the asset upload arrives; set, the upload then fails with 500.
+	beforeUpload func()
+	now          time.Time
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
@@ -88,6 +92,12 @@ func (f *fakeGitHub) handle(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "POST" && strings.HasPrefix(path, "/upload/"):
 		var rel int64
 		_, _ = fmt.Sscanf(path, "/upload/%d/assets", &rel)
+		if f.beforeUpload != nil {
+			f.beforeUpload()
+			w.WriteHeader(500)
+			fmt.Fprint(w, `{"message":"boom"}`)
+			return
+		}
 		if r.Header.Get("Content-Type") != "application/octet-stream" || r.URL.Query().Get("name") == "" {
 			f.t.Errorf("upload headers: %v %v", r.Header, r.URL.Query())
 		}
@@ -133,6 +143,11 @@ func (f *fakeGitHub) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(list)
 	case r.Method == "DELETE" && strings.HasPrefix(path, "/gists/"):
+		if f.gistDeleteFails {
+			w.WriteHeader(500)
+			fmt.Fprint(w, `{"message":"boom"}`)
+			return
+		}
 		delete(f.gists, strings.TrimPrefix(path, "/gists/"))
 		w.WriteHeader(204)
 	default:
@@ -251,6 +266,12 @@ func TestSessionJSONRefreshesOnExpiryAndCleansUp(t *testing.T) {
 	if !strings.HasPrefix(first.Link, "itms-services://?action=download-manifest&url=https%3A%2F%2Fgist.githubusercontent.com") {
 		t.Errorf("link = %q", first.Link)
 	}
+	var line struct {
+		App *App `json:"app"`
+	}
+	if err := json.Unmarshal([]byte(strings.SplitN(out.String(), "\n", 2)[0]), &line); err != nil || line.App == nil || line.App.Profile.Devices != 2 || line.App.BundleID != "run.mobai.tapdash" {
+		t.Errorf("JSON line lacks the app: %+v, %v", line.App, err)
+	}
 	if first.GistID == second.GistID || first.IPAURL == second.IPAURL {
 		t.Error("refresh did not mint a new gist and IPA URL")
 	}
@@ -332,13 +353,61 @@ func TestSessionOnceLeavesUploadInPlace(t *testing.T) {
 }
 
 func TestSessionWithoutGistScopeRemovesTheRelease(t *testing.T) {
+	for _, once := range []bool{false, true} {
+		gh := newFakeGitHub(t)
+		gh.gistScope = false
+		_, err := Run(context.Background(), &Options{App: testApp(t), Backend: NewGitHub(gh.client(), "o", "r"), Once: once})
+		if err == nil || !strings.Contains(err.Error(), "builder auth github") {
+			t.Fatalf("once %v: err = %v", once, err)
+		}
+		if len(gh.releases) != 0 {
+			t.Errorf("once %v: draft release left behind: %v", once, gh.releases)
+		}
+	}
+}
+
+func TestSessionCanceledDuringUploadRemovesTheRelease(t *testing.T) {
 	gh := newFakeGitHub(t)
-	gh.gistScope = false
-	_, err := Run(context.Background(), &Options{App: testApp(t), Backend: NewGitHub(gh.client(), "o", "r")})
-	if err == nil || !strings.Contains(err.Error(), "builder auth github") {
-		t.Fatalf("err = %v", err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	gh.beforeUpload = cancel
+	res, err := Run(ctx, &Options{App: testApp(t), Backend: NewGitHub(gh.client(), "o", "r")})
+	if err != nil || res == nil || res.Link != "" {
+		t.Fatalf("Run = %+v, %v", res, err)
 	}
 	if len(gh.releases) != 0 {
 		t.Errorf("draft release left behind: %v", gh.releases)
+	}
+}
+
+func TestSessionReportsWhatCleanupCouldNotRemove(t *testing.T) {
+	gh := newFakeGitHub(t)
+	gh.gistDeleteFails = true
+	var log bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type outcome struct {
+		res *Result
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := Run(ctx, &Options{App: testApp(t), Backend: NewGitHub(gh.client(), "o", "r"), Log: &log, Timeout: time.Minute})
+		done <- outcome{res, err}
+	}()
+	waitFor(t, "the first link", func() bool { return gh.count("POST /gists") == 1 })
+	cancel()
+	o := <-done
+	if o.err != nil {
+		t.Fatalf("Run: %v", o.err)
+	}
+	if res := o.res; len(res.Leftovers) != 1 || !strings.HasPrefix(res.Leftovers[0], "gist ") {
+		t.Errorf("leftovers = %v", res.Leftovers)
+	}
+	if len(gh.releases) != 0 || len(gh.gists) != 1 {
+		t.Errorf("releases %v gists %v", gh.releases, gh.gists)
+	}
+	if !strings.Contains(log.String(), "Cleanup failed") {
+		t.Errorf("log: %s", log.String())
 	}
 }

@@ -186,8 +186,8 @@ builder ios distribute ──► otainstall.Inspect: Info.plist + embedded.mobil
                             (unsigned / App Store profile → error naming the alternative)
                                 │
                                 ▼
-                          GitHub (otainstall.GitHub): delete leftover drafts tagged
-                            ios-builder/distribute-*, POST releases (draft) → upload IPA asset
+                          GitHub (otainstall.GitHub): POST releases (draft, tagged
+                            ios-builder/distribute-<id>) → upload IPA asset
                                 │
                                 ▼
                           Mint: GET releases/assets/{id} (Accept octet-stream, no redirect
@@ -409,14 +409,17 @@ internal/
 - **Draft Releases Create No Tag**: the IPA is an asset of a draft release tagged `ios-builder/distribute-<id>`
   (nothing in `refs/tags`, nothing on the repo page). `GET releases/assets/{id}` with `Accept:
   application/octet-stream` and redirects unfollowed (`MintAssetURL`) yields a signed URL that needs no
-  auth; its `jwt` claims put the life at 5 minutes (`Expiry`), so the session re-mints a minute early.
+  auth; its `jwt` claims put the life at 5 minutes (`Expiry`, which falls back to now + 5 minutes when the
+  claim is missing or already past, so a skewed clock cannot spin the loop), so the session re-mints a minute early.
 - **Manifest In A Secret Gist**: the signed asset URL is ~1000 characters, far past a scannable QR, so the
   manifest goes into an unlisted gist (`GistMarker` description) whose commit-pinned `raw_url` is ~140.
   That needs the `gist` OAuth scope (`auth.go` requests `repo workflow gist`); GitHub answers 404 without
   it and `CreateSecretGist` turns that into `ErrGistScope` naming `builder auth github`. No fallback.
-- **Distribute Cleanup**: `Cleanup` (run at session start and by `--cleanup`) deletes every draft with the
-  tag prefix and every gist with the marker whose only file is `manifest.plist`; `Run` closes the upload
-  on any exit (own context, so Ctrl-C still cleans up) unless `--once`, which prints the leftovers instead.
+- **Distribute Cleanup**: `Run` closes its own upload on any exit (own context, so Ctrl-C still cleans up;
+  `Close` keeps what it failed to delete in `Leftovers`, which the command reports with exit 1) unless `--once`
+  has printed its link, which reports the leftovers instead. Only `--cleanup` runs `Cleanup`, which deletes
+  every draft with the tag prefix and every gist with the marker whose only file is `manifest.plist`; a session
+  never does, since that would kill a concurrent session's or a `--once` link.
 - **QR Rendering**: `skip2/go-qrcode` at error-correction Low, Unicode half blocks (two module rows per
   line, 2-module quiet zone), light modules as `█` so it scans on a dark terminal (`--qr-invert` for light);
   `TestQRFitsATerminal` keeps a representative link under 60 modules. Printed only on a TTY or `--qr`.

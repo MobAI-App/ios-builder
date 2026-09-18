@@ -128,7 +128,7 @@ func (c *Client) MintAssetURL(ctx context.Context, owner, repo string, assetID i
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/octet-stream")
 	req.Header.Set("X-GitHub-Api-Version", APIVersion)
-	noRedirect := &http.Client{Transport: c.httpClient.Transport, CheckRedirect: func(*http.Request, []*http.Request) error {
+	noRedirect := &http.Client{Transport: c.httpClient.Transport, Timeout: c.httpClient.Timeout, CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
 	resp, err := noRedirect.Do(req)

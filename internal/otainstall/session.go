@@ -56,24 +56,29 @@ func Run(ctx context.Context, opts *Options) (*Result, error) {
 		timeout = time.Hour
 	}
 	logf(opts.Log, "Uploading %s (%s %s, build %s; profile: %s)", opts.App.Path, opts.App.Title, opts.App.Version, opts.App.Build, opts.App.Profile)
+	res := &Result{App: opts.App}
 	up, err := opts.Backend.Upload(ctx, opts.App, opts.Progress)
 	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return res, nil
+		}
 		return nil, err
 	}
-	res := &Result{App: opts.App}
-	if !opts.Once {
-		defer func() {
-			// The session's context may be what ended it; cleanup gets its own.
-			cctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := up.Close(cctx); err != nil {
-				logf(opts.Log, "Cleanup failed: %v. Run builder ios distribute --cleanup", err)
-				res.Leftovers = up.Leftovers()
-				return
-			}
-			logf(opts.Log, "Removed the upload and the manifest.")
-		}()
-	}
+	keep := false // --once keeps the upload once its link is out
+	defer func() {
+		if keep {
+			return
+		}
+		// The session's context may be what ended it; cleanup gets its own.
+		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer cancel()
+		if err := up.Close(cctx); err != nil {
+			logf(opts.Log, "Cleanup failed: %v. Run builder ios distribute --cleanup", err)
+			res.Leftovers = up.Leftovers()
+			return
+		}
+		logf(opts.Log, "Removed the upload and the manifest.")
+	}()
 
 	mint := func() error {
 		links, err := up.Mint(ctx, func(ipaURL string) ([]byte, error) { return Manifest(opts.App, ipaURL) })
@@ -81,12 +86,16 @@ func Run(ctx context.Context, opts *Options) (*Result, error) {
 			return err
 		}
 		res.Links = *links
-		return opts.print(links)
+		return opts.print(res)
 	}
 	if err := mint(); err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return res, nil
+		}
 		return res, err
 	}
 	if opts.Once {
+		keep = true
 		res.Leftovers = up.Leftovers()
 		logf(opts.Log, "Left in place (remove with builder ios distribute --cleanup): %s", strings.Join(res.Leftovers, "; "))
 		return res, nil
@@ -95,7 +104,9 @@ func Run(ctx context.Context, opts *Options) (*Result, error) {
 	keys := make(chan string)
 	if opts.Stdin != nil && opts.JSON == nil {
 		logf(opts.Log, "Press Enter to refresh the link, q to quit.")
-		go readKeys(opts.Stdin, keys)
+		done := make(chan struct{})
+		defer close(done)
+		go readKeys(opts.Stdin, keys, done)
 	}
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
@@ -138,14 +149,16 @@ func (o *Options) refreshIn(expires time.Time) time.Duration {
 	return d
 }
 
-// print writes one link as JSON or as the human block with the QR code.
-func (o *Options) print(links *Links) error {
+// print writes the current link as JSON (with the app, so the line carries
+// the profile's device count) or as the human block with the QR code.
+func (o *Options) print(res *Result) error {
 	if o.JSON != nil {
-		return json.NewEncoder(o.JSON).Encode(links)
+		return json.NewEncoder(o.JSON).Encode(Result{Links: res.Links, App: res.App})
 	}
 	if o.Log == nil {
 		return nil
 	}
+	links := &res.Links
 	fmt.Fprintln(o.Log)
 	fmt.Fprintf(o.Log, "Install link (valid until %s):\n%s\n", links.ExpiresAt.Local().Format("15:04:05"), links.Link)
 	if o.QR {
@@ -160,16 +173,24 @@ func (o *Options) print(links *Links) error {
 	return nil
 }
 
-// readKeys turns lines on r into "" (refresh) or "q" (quit) until EOF.
-func readKeys(r io.Reader, keys chan<- string) {
+// readKeys turns lines on r into "" (refresh) or "q" (quit) until EOF or
+// done closes; a read blocked on a terminal ends with the process.
+func readKeys(r io.Reader, keys chan<- string, done <-chan struct{}) {
 	sc := bufio.NewScanner(r)
 	for sc.Scan() {
-		line := strings.ToLower(strings.TrimSpace(sc.Text()))
-		if line == "q" || line == "quit" || line == "exit" {
-			keys <- "q"
+		key := ""
+		switch strings.ToLower(strings.TrimSpace(sc.Text())) {
+		case "q", "quit", "exit":
+			key = "q"
+		}
+		select {
+		case keys <- key:
+		case <-done:
 			return
 		}
-		keys <- ""
+		if key == "q" {
+			return
+		}
 	}
 }
 

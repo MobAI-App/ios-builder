@@ -55,6 +55,7 @@ func TestExpiryReadsJWT(t *testing.T) {
 		"bad jwt":     "https://example.com/a?jwt=not.a.jwt",
 		"not base64":  "https://example.com/a?jwt=x.%%%.y",
 		"no exp":      "https://example.com/a?jwt=h." + base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"x"}`)) + ".s",
+		"exp passed":  "https://example.com/a?jwt=" + jwtWithExp(now.Add(-time.Minute).Unix()),
 		"unparseable": "://nope",
 	} {
 		if got := Expiry(u, now); !got.Equal(now.Add(DefaultTTL)) {
