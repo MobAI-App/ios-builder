@@ -74,7 +74,7 @@ builder ios build ───────► Snapshots working tree (git commit-tr
                           Triggers workflow_dispatch with snapshot_ref
                                 │
                                 ▼
-                          GitHub Actions (macos-14)
+                          GitHub Actions (macos-latest)
                             ├─ Checks out the snapshot ref
                             ├─ Detects Flutter/native
                             ├─ Caches DerivedData
@@ -401,7 +401,10 @@ internal/
   name) to `apply_signing_to_app_target`, which signs each extension-type target (`xcodeproj.ExtensionProductTypes`)
   with the longest covering entry or fails naming the ids to add; `write_export_options` exports them
 - **Extension Points**: `ios release` composes `distribute.Upload` and
-  `distribute.SubmitTestFlight`; the `pkg/` wrappers do not expose `asc`.
+  `distribute.SubmitTestFlight`. `pkg/asc`, `pkg/distribute`, `pkg/release`,
+  `pkg/signing` and `pkg/ipa` alias the internal packages so another program
+  (mobai-dev) can drive the same flows; `release.Builder` is the one-method
+  interface a foreign build backend implements.
 - **OTA Install, Not OTA Updates** (`internal/otainstall`): `ios distribute` serves a whole signed IPA
   through an `itms-services://` link; iOS installs only development/ad-hoc (device on the profile) or
   enterprise builds, so `Inspect` refuses unsigned and App Store IPAs and `CheckDistribution` refuses
@@ -425,6 +428,11 @@ internal/
 - **QR Rendering**: `skip2/go-qrcode` at error-correction Low, Unicode half blocks (two module rows per
   line, 2-module quiet zone), light modules as `█` so it scans on a dark terminal (`--qr-invert` for light);
   `TestQRFitsATerminal` pins a representative link at 41 modules (version 6). Printed only on a TTY or `--qr`.
+- **Signing Sets As A Library**: `signing.Setup` and `signing.EnsureSecrets`
+  (internal/signing/sets.go) hold the non-interactive core of `signing setup`
+  and on-demand provisioning; cmd/builder keeps the prompts, the plan and the
+  summary, and forwards to them under its old names. `signing.Commands` lets an
+  embedding CLI name its own verbs in the error messages.
 
 ## Configuration
 

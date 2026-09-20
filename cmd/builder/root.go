@@ -22,6 +22,7 @@ import (
 	"github.com/MobAI-App/ios-builder/internal/github"
 	"github.com/MobAI-App/ios-builder/internal/otainstall"
 	"github.com/MobAI-App/ios-builder/internal/release"
+	"github.com/MobAI-App/ios-builder/internal/signing"
 	"github.com/MobAI-App/ios-builder/internal/update"
 	"github.com/MobAI-App/ios-builder/internal/workflow"
 	"github.com/manifoldco/promptui"
@@ -475,7 +476,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if cfg.IOS.BundleID == "" {
 		cfg.IOS.BundleID = detectBundleID(iosPath)
 	}
-	syncExtensions(cfg, os.Stdout)
+	signing.SyncExtensions(cfg, os.Stdout)
 	if flutterVersion != "" {
 		cfg.Flutter.Version = flutterVersion
 	}

@@ -258,23 +258,8 @@ func isPortalCertificate(path string) bool {
 	return false
 }
 
-// expandPath normalizes a path typed at a prompt. The shell never sees these,
-// so a leading ~ is not expanded, and dragging a file into the terminal can
-// wrap it in quotes and escape spaces.
-func expandPath(path string) string {
-	path = strings.TrimSpace(path)
-	path = strings.Trim(path, `"'`)
-	path = strings.ReplaceAll(path, `\ `, " ")
-
-	if path == "~" || strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return path
-		}
-		path = filepath.Join(home, strings.TrimPrefix(path, "~"))
-	}
-	return path
-}
+// expandPath normalizes a path typed at a prompt (~, quotes, escaped spaces).
+func expandPath(path string) string { return signing.ExpandPath(path) }
 
 func runSigningSetup(cmd *cobra.Command, args []string) error {
 	if certFlag, _ := cmd.Flags().GetString("certificate"); certFlag == "" {
@@ -341,7 +326,7 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(out, "Distribution: %s (read from the profile), signing set %s, build profile %q\n", typ, set, profileName)
 
-	syncExtensions(cfg, out)
+	signing.SyncExtensions(cfg, out)
 	extensionPaths, _ := cmd.Flags().GetStringArray("extension-profile")
 	extensionFiles := make(map[string][]byte, len(extensionPaths))
 	for _, path := range extensionPaths {
