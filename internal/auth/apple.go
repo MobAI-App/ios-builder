@@ -32,7 +32,7 @@ const (
 // (ASC_ISSUER_ID, ASC_KEY_ID and ASC_PRIVATE_KEY or ASC_KEY_PATH) takes
 // precedence over the saved login so CI jobs and agents need no keychain.
 func GetAppleCredentials() (*AppleCredentials, AppleSource, error) {
-	creds, err := appleCredentialsFromEnv()
+	creds, err := AppleCredentialsFromEnv()
 	if err != nil {
 		return nil, "", err
 	}
@@ -50,7 +50,9 @@ func GetAppleCredentials() (*AppleCredentials, AppleSource, error) {
 	return &stored, AppleSourceStored, nil
 }
 
-func appleCredentialsFromEnv() (*AppleCredentials, error) {
+// AppleCredentialsFromEnv reads the ASC_* environment variables: nil and no
+// error when none is set, an error when only some are.
+func AppleCredentialsFromEnv() (*AppleCredentials, error) {
 	issuer := strings.TrimSpace(os.Getenv("ASC_ISSUER_ID"))
 	keyID := strings.TrimSpace(os.Getenv("ASC_KEY_ID"))
 	key := os.Getenv("ASC_PRIVATE_KEY")
