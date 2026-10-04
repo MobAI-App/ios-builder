@@ -8,6 +8,7 @@ import (
 
 	"github.com/MobAI-App/ios-builder/internal/config"
 	"github.com/MobAI-App/ios-builder/internal/dev"
+	"github.com/MobAI-App/ios-builder/internal/exitcode"
 	"github.com/MobAI-App/ios-builder/internal/mobai"
 	"github.com/spf13/cobra"
 )
@@ -34,7 +35,8 @@ func init() {
 	devKMPCmd.Flags().String("mobai-url", mobai.DefaultBaseURL, "MobAI API URL")
 	devKMPCmd.Flags().String("ipa", "", "Path to IPA (default: auto-detect from dist/)")
 	devKMPCmd.Flags().Bool("skip-install", false, "Skip app installation (app must already be installed)")
-	devKMPCmd.Flags().String("bundle-id", "", "Bundle ID (required with --skip-install)")
+	devKMPCmd.Flags().String("bundle-id", "", "Bundle ID (required with --skip-install; else used when MobAI does not report it)")
+	addDevAgentFlags(devKMPCmd)
 	devKMPCmd.Flags().Bool("logs", false, "Show app logs")
 }
 
@@ -55,14 +57,17 @@ func runDevKMP(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	emit, restore := devEvents(cmd)
+	defer restore()
+
 	if skipInstall {
 		if bundleID == "" {
-			return fmt.Errorf("--bundle-id is required when using --skip-install")
+			return exitcode.Usagef("--bundle-id is required when using --skip-install")
 		}
 	} else {
 		if ipaPath == "" {
 			var err error
-			ipaPath, err = dev.FindIPA("dist")
+			ipaPath, err = dev.FindIPA("dist", interactive(cmd))
 			if err != nil {
 				return err
 			}
@@ -79,6 +84,7 @@ func runDevKMP(cmd *cobra.Command, args []string) error {
 	handler := dev.NewKMPHandler(showLogs)
 	session := dev.NewSession(mobaiURL, deviceID, ipaPath, handler)
 	session.SetSkipInstall(skipInstall, bundleID)
+	configureDevSession(cmd, session, emit)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

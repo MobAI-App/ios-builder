@@ -33,7 +33,11 @@ type FlutterHandler struct {
 	watcher     watcher
 	stdinMux    *StdinMux
 	cancelWatch context.CancelFunc
+	emit        func(Event)
 }
+
+// SetEmitter reports the VM Service URL as a "vm_service" event.
+func (h *FlutterHandler) SetEmitter(emit func(Event)) { h.emit = emit }
 
 // NewFlutterHandler creates a new Flutter handler.
 func NewFlutterHandler(mobaiURL string, noAttach, noWatch bool, watchCfg *config.WatchConfig) *FlutterHandler {
@@ -110,6 +114,10 @@ func (h *FlutterHandler) runFlutterAttach(ctx context.Context, deviceID, debugUR
 	fmt.Println()
 	fmt.Printf("VM Service URL (on device): %s\n", debugURL)
 	fmt.Println()
+	if h.emit != nil {
+		h.emit(Event{Event: "vm_service", DeviceID: deviceID, URL: debugURL,
+			Command: fmt.Sprintf("MOBAI_DEVICE_ID=%s flutter attach -d mobai-ios --debug-url=%s", deviceID, debugURL)})
+	}
 
 	go func() {
 		for output := range outputChan {

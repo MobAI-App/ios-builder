@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/MobAI-App/ios-builder/internal/exitcode"
 	"github.com/MobAI-App/ios-builder/internal/ipa"
 	"github.com/MobAI-App/ios-builder/internal/mobai"
 	"github.com/gorilla/websocket"
@@ -37,9 +38,47 @@ type Session struct {
 	debugConn   *websocket.Conn
 	skipInstall bool
 	handler     FrameworkHandler
+	input       Input
+	emit        func(Event)
 }
 
-// NewSession creates a new development session.
+// Input answers the questions a session asks: which device, whether to
+// re-sign and with which Apple ID, and the bundle ID when MobAI does not
+// report it.
+type Input struct {
+	// Interactive allows prompts on the terminal. Without it every question
+	// takes its answer from here or fails naming the flag that gives it.
+	Interactive bool
+	// Yes takes the first device when several are connected.
+	Yes bool
+	// Resign re-signs the IPA on install; nil asks in a terminal, else no.
+	Resign *bool
+	// AppleID and Password are the account to re-sign with.
+	AppleID  string
+	Password string
+}
+
+// Event is one line of a session's NDJSON output (--json): "device",
+// "installed", "launched", then what the handler adds ("vm_service" for
+// Flutter, "metro" for React Native).
+type Event struct {
+	Event      string `json:"event"`
+	DeviceID   string `json:"device_id,omitempty"`
+	DeviceName string `json:"device_name,omitempty"`
+	BundleID   string `json:"bundle_id,omitempty"`
+	Resigned   bool   `json:"resigned,omitempty"`
+	Skipped    bool   `json:"skipped,omitempty"` // installed: --skip-install
+	URL        string `json:"url,omitempty"`
+	Command    string `json:"command,omitempty"`
+}
+
+// emitterSetter is implemented by handlers that report events of their own.
+type emitterSetter interface {
+	SetEmitter(func(Event))
+}
+
+// NewSession creates a new development session. It prompts in the terminal
+// until SetInput says otherwise.
 func NewSession(mobaiURL, deviceID, ipaPath string, h FrameworkHandler) *Session {
 	return &Session{
 		mobai:    mobai.NewClient(mobaiURL),
@@ -47,8 +86,36 @@ func NewSession(mobaiURL, deviceID, ipaPath string, h FrameworkHandler) *Session
 		deviceID: deviceID,
 		ipaPath:  ipaPath,
 		handler:  h,
+		input:    Input{Interactive: true},
+		emit:     func(Event) {},
 	}
 }
+
+// SetInput sets how the session's questions are answered.
+func (s *Session) SetInput(in Input) { s.input = in }
+
+// SetEvents sends the session's events to emit, and the handler's when it
+// reports any.
+func (s *Session) SetEvents(emit func(Event)) {
+	s.emit = emit
+	if h, ok := s.handler.(emitterSetter); ok {
+		h.SetEmitter(emit)
+	}
+}
+
+// InputError is a question a non-interactive session could not ask; Flags
+// name what answers it.
+type InputError struct {
+	What  string
+	Flags []string
+}
+
+func (e *InputError) Error() string {
+	return fmt.Sprintf("%s is needed and there is no terminal to ask on (or --no-input/CI is set); pass %s", e.What, strings.Join(e.Flags, " or "))
+}
+
+// ExitCode makes a missing answer a usage error.
+func (e *InputError) ExitCode() int { return exitcode.Usage }
 
 // SetSkipInstall configures the session to skip installation.
 func (s *Session) SetSkipInstall(skip bool, bundleID string) {
@@ -58,8 +125,9 @@ func (s *Session) SetSkipInstall(skip bool, bundleID string) {
 	}
 }
 
-// FindIPA lists IPAs in distDir and lets user select if multiple.
-func FindIPA(distDir string) (string, error) {
+// FindIPA lists IPAs in distDir and lets user select if multiple; without a
+// terminal it takes the newest, as ios upload and ios distribute do.
+func FindIPA(distDir string, interactive bool) (string, error) {
 	if distDir == "" {
 		distDir = "dist"
 	}
@@ -74,6 +142,9 @@ func FindIPA(distDir string) (string, error) {
 
 	if len(matches) == 1 {
 		return matches[0], nil
+	}
+	if !interactive {
+		return ipa.Newest(distDir)
 	}
 
 	names := make([]string, len(matches))
@@ -113,12 +184,14 @@ func (s *Session) Start(ctx context.Context) error {
 		}
 	} else {
 		fmt.Printf("Skipping install, using bundle ID: %s\n", s.bundleID)
+		s.emit(Event{Event: "installed", DeviceID: s.deviceID, BundleID: s.bundleID, Skipped: true})
 	}
 
 	debugOutput, err := s.launchApp(ctx)
 	if err != nil {
 		return err
 	}
+	s.emit(Event{Event: "launched", DeviceID: s.deviceID, BundleID: s.bundleID})
 
 	if s.handler != nil {
 		return s.handler.Attach(ctx, s.deviceID, debugOutput)
@@ -169,8 +242,14 @@ func (s *Session) connectDevice(ctx context.Context) error {
 		if device == nil {
 			return fmt.Errorf("device %s not found", s.deviceID)
 		}
-	} else if len(devices) == 1 {
+	} else if len(devices) == 1 || s.input.Yes {
 		device = &devices[0]
+	} else if !s.input.Interactive {
+		ids := make([]string, len(devices))
+		for i, d := range devices {
+			ids[i] = fmt.Sprintf("%s (%s)", d.ID, d.Name)
+		}
+		return &InputError{What: "a device (connected: " + strings.Join(ids, ", ") + ")", Flags: []string{"--device <id>", "--yes for the first"}}
 	} else {
 		names := make([]string, len(devices))
 		for i, d := range devices {
@@ -190,7 +269,57 @@ func (s *Session) connectDevice(ctx context.Context) error {
 
 	s.deviceID = device.ID
 	fmt.Printf("Using device: %s\n", device.Name)
-	return s.mobai.Claim(ctx, s.deviceID)
+	if err := s.mobai.Claim(ctx, s.deviceID); err != nil {
+		return err
+	}
+	s.emit(Event{Event: "device", DeviceID: device.ID, DeviceName: device.Name})
+	return nil
+}
+
+// resignRequest settles the re-sign question: the Input answer, else a
+// prompt in a terminal, else no. Missing credentials for a re-sign are
+// prompted for or are an InputError.
+func (s *Session) resignRequest(req *mobai.InstallAppRequest) error {
+	in := s.input
+	resign := false
+	switch {
+	case in.Resign != nil:
+		resign = *in.Resign
+	case in.Interactive && !in.Yes:
+		resignPrompt := promptui.Select{
+			Label: "Resign app",
+			Items: []string{"No", "Yes"},
+		}
+		idx, _, err := resignPrompt.Run()
+		if err != nil {
+			return err
+		}
+		resign = idx == 1
+	}
+	if !resign {
+		return nil
+	}
+	req.Resign, req.AppleID, req.Password = true, in.AppleID, in.Password
+	var err error
+	if req.AppleID == "" {
+		if !in.Interactive {
+			return &InputError{What: "the Apple ID to re-sign with", Flags: []string{"--apple-id"}}
+		}
+		appleIDPrompt := promptui.Prompt{Label: "Apple ID"}
+		if req.AppleID, err = appleIDPrompt.Run(); err != nil {
+			return err
+		}
+	}
+	if req.Password == "" {
+		if !in.Interactive {
+			return &InputError{What: "the Apple ID password to re-sign with", Flags: []string{"BUILDER_APPLE_ID_PASSWORD in the environment"}}
+		}
+		passwordPrompt := promptui.Prompt{Label: "Password", Mask: '*'}
+		if req.Password, err = passwordPrompt.Run(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Session) installApp(ctx context.Context) error {
@@ -205,30 +334,8 @@ func (s *Session) installApp(ctx context.Context) error {
 	absPath = toWindowsPathIfWSL(absPath)
 
 	req := mobai.InstallAppRequest{Path: absPath}
-
-	resignPrompt := promptui.Select{
-		Label: "Resign app",
-		Items: []string{"No", "Yes"},
-	}
-	idx, _, err := resignPrompt.Run()
-	if err != nil {
+	if err := s.resignRequest(&req); err != nil {
 		return err
-	}
-
-	if idx == 1 {
-		req.Resign = true
-
-		appleIDPrompt := promptui.Prompt{Label: "Apple ID"}
-		req.AppleID, err = appleIDPrompt.Run()
-		if err != nil {
-			return err
-		}
-
-		passwordPrompt := promptui.Prompt{Label: "Password", Mask: '*'}
-		req.Password, err = passwordPrompt.Run()
-		if err != nil {
-			return err
-		}
 	}
 
 	fmt.Println("Installing app...")
@@ -237,16 +344,30 @@ func (s *Session) installApp(ctx context.Context) error {
 		return fmt.Errorf("install app: %w", err)
 	}
 
+	// MobAI's answer, else --bundle-id, else a prompt (or the guess without
+	// a terminal).
+	given := s.bundleID
 	s.bundleID = resp.Data.BundleID
 	if s.bundleID == "" {
-		bundlePrompt := promptui.Prompt{Label: "Bundle ID", Default: guessBundleID(resp, ipaBundleID, req.Resign)}
-		s.bundleID, err = bundlePrompt.Run()
-		if err != nil {
-			return err
+		guess := guessBundleID(resp, ipaBundleID, req.Resign)
+		switch {
+		case given != "":
+			s.bundleID = given
+		case !s.input.Interactive || s.input.Yes:
+			if guess == "" {
+				return &InputError{What: "the installed app's bundle ID (MobAI did not report it)", Flags: []string{"--bundle-id"}}
+			}
+			s.bundleID = guess
+		default:
+			bundlePrompt := promptui.Prompt{Label: "Bundle ID", Default: guess}
+			if s.bundleID, err = bundlePrompt.Run(); err != nil {
+				return err
+			}
 		}
 	}
 
 	fmt.Printf("Installed: %s\n", s.bundleID)
+	s.emit(Event{Event: "installed", DeviceID: s.deviceID, BundleID: s.bundleID, Resigned: req.Resign})
 	return nil
 }
 

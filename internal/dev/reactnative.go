@@ -26,7 +26,11 @@ type ReactNativeHandler struct {
 	showLogs    bool
 	metroCmd    *exec.Cmd
 	windowsHost string // Windows host IP (extracted from mobaiURL for WSL)
+	emit        func(Event)
 }
+
+// SetEmitter reports the Metro URL as a "metro" event.
+func (h *ReactNativeHandler) SetEmitter(emit func(Event)) { h.emit = emit }
 
 // NewReactNativeHandler creates a new React Native handler.
 func NewReactNativeHandler(metroPort int, showLogs bool, mobaiURL string) *ReactNativeHandler {
@@ -68,6 +72,9 @@ func (h *ReactNativeHandler) Attach(ctx context.Context, deviceID string, debugO
 	fmt.Println()
 	fmt.Printf("Metro bundler: http://%s:%d\n", ip, h.metroPort)
 	fmt.Println()
+	if h.emit != nil {
+		h.emit(Event{Event: "metro", DeviceID: deviceID, URL: fmt.Sprintf("http://%s:%d", ip, h.metroPort)})
+	}
 	fmt.Println("React Native hot reload active!")
 	fmt.Println("  - Shake device or press 'd' in Metro to open dev menu")
 	fmt.Println("  - Press 'r' in Metro terminal to reload")

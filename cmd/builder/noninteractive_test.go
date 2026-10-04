@@ -145,6 +145,17 @@ func TestSigningSetupManualWithoutTerminal(t *testing.T) {
 	wantUsage(t, err, "--certificate")
 }
 
+func TestDevSkipInstallNeedsBundleID(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, sub := range []string{"flutter", "rn", "kmp"} {
+		_, _, err := runNoInput(t, "dev", sub, "--skip-install", "--json")
+		wantUsage(t, err, "--bundle-id")
+	}
+	if os.Stdout == os.Stderr {
+		t.Fatal("dev --json left os.Stdout pointed at stderr")
+	}
+}
+
 func TestSigningP12WithoutTerminal(t *testing.T) {
 	t.Chdir(t.TempDir())
 	_, _, err := runNoInput(t, "signing", "p12")
