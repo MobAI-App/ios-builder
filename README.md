@@ -256,6 +256,8 @@ builder ios build --profile development --distribute  # Build, then print an ins
 builder ios distribute        # Same for the newest IPA in ./dist/ (or --ipa)
 builder ios distribute --once # One link, no refresh, uploads left in place
 builder ios distribute --cleanup  # Remove uploads earlier sessions left behind
+builder ios distribute --backend s3 --once --ttl 168h      # A week-long link from an S3/R2 bucket
+builder ios distribute --backend testflight --group Team   # App Store build to an internal TestFlight group
 
 # App Store Connect management (needs builder auth apple)
 builder asc apps              # Apps the API key can see
@@ -871,6 +873,74 @@ the manifest and IPA URLs, the expiry and the profile's device count; `--no-qr`
 drops the code, `--qr` prints it off a terminal and `--qr-invert` renders it for
 a dark-on-light one. Codemagic and Bitrise builds work the same way, since the
 uploads always go to the GitHub repository in `builder.json`.
+
+### Other backends
+
+`--backend` picks where the install goes; without it `distribute.backend` in
+`builder.json` decides, else GitHub as above. Every flag works the same on
+`ios build --distribute`, and the backend is checked before the build is pushed.
+
+| Backend | Holds | Link lifetime | QR code |
+| --- | --- | --- | --- |
+| `github` (default) | draft release + secret gist | 5 minutes, refreshed | 41 modules |
+| `s3` | S3 or S3-compatible bucket | `--ttl`, 2m to 7 days (default 1h) | 69 modules (R2: 73) |
+| `azure` | Azure Blob container | `--ttl`, 2m to 7 days (default 1h) | 57 modules |
+| `testflight` | App Store Connect, internal group | as long as the build | none |
+
+```json
+"distribute": {
+  "backend": "s3",
+  "bucket": "my-app-builds",
+  "region": "eu-central-1",
+  "prefix": "ota/"
+}
+```
+
+**s3** works with Amazon S3 and with S3-compatible stores through `endpoint`
+(addressed path-style): Cloudflare R2 (`"endpoint":
+"https://<account>.r2.cloudflarestorage.com", "region": "auto"`), MinIO, or
+Google Cloud Storage with HMAC keys (`"endpoint":
+"https://storage.googleapis.com"`). Credentials come from
+`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` (plus `AWS_SESSION_TOKEN`), else the
+`AWS_PROFILE` (or `default`) section of `~/.aws/credentials`; the region from
+`region`, `AWS_REGION` or `AWS_DEFAULT_REGION`, else `us-east-1`. The key needs
+`s3:PutObject`, `s3:GetObject`, `s3:DeleteObject` and, for `--cleanup`,
+`s3:ListBucket`. The bucket stays private: the IPA and a small manifest go to
+`<prefix>ios-builder/<id>/` and are linked with SigV4 presigned URLs. A
+presigned URL is about 350 characters, so the QR code is larger than GitHub's
+(69 modules, 73 columns with its border, still inside an 80-column terminal).
+Temporary credentials (SSO, assumed roles) put their session token in the URL
+and the code grows to about 105 modules; Builder says so when it does not fit,
+and the link itself works either way. A presigned URL also never outlives the
+credentials that signed it.
+
+**azure** needs `"account"` and `"container"` (and `"endpoint"` for Azurite or
+a sovereign cloud) and the account key in `AZURE_STORAGE_KEY` or
+`AZURE_STORAGE_CONNECTION_STRING`; links are service SAS URLs signed with that
+key. The container stays private.
+
+With either bucket backend `--ttl` sets how long a link lives; the session
+re-mints a minute before expiry as usual, and `--once --ttl 168h` gives a link
+to send around that stays valid for a week. Ending a session deletes both
+objects; `--once` leaves them, and `--cleanup` deletes every object under
+`<prefix>ios-builder/` that carries Builder's marker metadata, nothing else.
+
+**testflight** is the route for App Store signed builds, which cannot be
+installed over the air:
+
+```bash
+builder ios distribute --backend testflight --group Team        # an existing App Store IPA
+builder ios build --profile store --distribute --backend testflight --group Team
+```
+
+It uploads the IPA (needs `builder auth apple`), waits until App Store Connect
+has processed it and adds it to the **internal** group `--group` (or
+`distribute.group`), which is created when missing. Internal groups need no
+beta review, so testers install from the TestFlight app within minutes; an
+external group is refused before the upload. `ios build --distribute
+--backend testflight` is `ios release` to that one group, so it also picks
+the next build number. Instead of a QR code it prints the build and its App
+Store Connect link; `--notes` and `--no-encryption` work as for `ios submit`.
 
 Alternatively, [MobAI](https://mobai.run) installs an IPA over the cable, signed
 or not: an unsigned IPA can be re-signed on install with a free Apple ID (MobAI

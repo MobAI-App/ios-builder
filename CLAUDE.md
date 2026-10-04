@@ -43,6 +43,8 @@ go install ./cmd/builder
 ./builder ios build --profile store --submit                          # Short for: ios release (no groups)
 ./builder ios build --profile development --distribute  # Build, then print an over-the-air install link + QR code
 ./builder ios distribute [--ipa x.ipa] [--once] [--json]  # Same for an existing IPA; --cleanup removes leftovers
+./builder ios distribute --backend s3|azure [--ttl 168h]  # Bucket backends (distribute.* in builder.json)
+./builder ios distribute --backend testflight --group <internal group>  # App Store IPA to an internal group
 ./builder asc apps|builds|groups|testers|users                   # App Store Connect listings (--json)
 ./builder asc groups create <name> [--external]                  # also: groups delete, groups add-build
 ./builder asc testers add <email>... --group <name>              # also: testers remove, users invite
@@ -197,6 +199,12 @@ builder ios distribute ──► otainstall.Inspect: Info.plist + embedded.mobil
                                 ▼
                           Print link + QR (half blocks); re-mint a minute before expiry
                             or on Enter; q / Ctrl-C / --timeout → DELETE gist + release
+                          --backend s3|azure (otainstall.Bucket): PUT IPA + m.plist under
+                            <prefix>ios-builder/<id>/ (marker metadata) → SigV4 presign / service
+                            SAS for --ttl → DELETE both on exit
+                          --backend testflight: Inspect wants a store IPA →
+                            distribute.ToInternalGroup (group check → Upload wait → SubmitTestFlight
+                            Internal); ios build --distribute → release.Run with InternalGroups
 ```
 
 ### Module Layout
@@ -214,7 +222,8 @@ internal/
                      #   beta groups, beta testers, team users/invitations, review)
   distribute/        # Upload / TestFlight / App Store / tester flows on top of asc
   ipa/               # Info.plist and embedded.mobileprovision reading from .ipa archives
-  otainstall/        # ios distribute: over-the-air install links (manifest, QR, GitHub draft release + gist backend)
+  otainstall/        # ios distribute: over-the-air install links (manifest, QR; backends: GitHub draft
+                     #   release + gist, S3/S3-compatible via SigV4, Azure Blob via service SAS)
   build/             # Build coordination (snapshot + trigger + poll + download)
   signing/           # CSR generation, .p12 assembly, and Auto (portal-free provisioning on top of asc)
   snapshot/          # Working-tree snapshot as a throwaway commit on a remote ref
@@ -407,7 +416,7 @@ internal/
   interface a foreign build backend implements.
 - **OTA Install, Not OTA Updates** (`internal/otainstall`): `ios distribute` serves a whole signed IPA
   through an `itms-services://` link; iOS installs only development/ad-hoc (device on the profile) or
-  enterprise builds, so `Inspect` refuses unsigned and App Store IPAs and `CheckDistribution` refuses
+  enterprise builds, so `Inspect` refuses unsigned and App Store IPAs (except for `--backend testflight`) and `CheckDistribution` refuses
   the profile of `ios build --distribute` before the snapshot push. `--distribute` excludes `--submit`.
 - **Draft Releases Create No Tag**: the IPA is an asset of a draft release tagged `ios-builder/distribute-<id>`
   (nothing in `refs/tags`, nothing on the repo page). `GET releases/assets/{id}` with `Accept:
@@ -428,6 +437,28 @@ internal/
 - **QR Rendering**: `skip2/go-qrcode` at error-correction Low, Unicode half blocks (two module rows per
   line, 2-module quiet zone), light modules as `█` so it scans on a dark terminal (`--qr-invert` for light);
   `TestQRFitsATerminal` pins a representative link at 41 modules (version 6). Printed only on a TTY or `--qr`.
+- **Distribute Backends**: `--backend`, else `distribute.backend`, else github (`otainstall.BackendName`).
+  `cmd/builder` resolves the whole target (`distributeTarget`: client, bucket, credentials, group) before a
+  build is pushed; `--ttl` is s3/azure only, `--group` testflight only, and on `ios build` all three need
+  `--distribute`. `Inspect`/`CheckDistribution` take the backend: testflight is the inverse of the OTA check
+  (store only; an empty profile passes so `release.Preflight` can pick the only store profile).
+- **Bucket Backends** (`otainstall.Bucket` over `objectStore`): one folder `<prefix>ios-builder/<id>/` with the
+  IPA and `m.plist` (short: the manifest URL is the QR code). Mint presigns the IPA, rewrites the manifest in
+  place (an older, still valid link serves the newest one) and presigns it; `ExpiresAt` is now + `--ttl`
+  (2m to 168h, SigV4's cap, kept for azure too). Cleanup lists the folder and deletes only marked objects
+  (S3: `x-amz-meta-ios-builder` via HEAD, since listings carry no metadata; Azure: `iosbuilder` via
+  `include=metadata`). Missing keys on DELETE are success.
+- **SigV4 Without The SDK** (`sigv4.go`): header signing signs every header on the request plus host; query
+  presign signs host only with `UNSIGNED-PAYLOAD`; PUTs stream with `UNSIGNED-PAYLOAD`. `TestSigV4*` holds AWS's
+  published S3 vectors, and the fake S3 re-signs what arrives on the wire. Custom endpoints are path-style;
+  AWS is virtual-hosted unless the bucket has a dot. Credentials: `AWS_*` env, else `AWS_PROFILE`/`default` in
+  the shared credentials file (static keys only: SSO/`credential_process` are refused with a hint).
+- **Azure Service SAS**: every request, Builder's own included, carries a SAS (`sv=2022-11-02`, the 16-field
+  string-to-sign of 2020-12-06+); only the signature's `+` is escaped, since `Link` doubles every `%`.
+- **QR Size Per Backend**: github 41 modules, azure 57, s3 69 (R2 73), s3 with a session token ~105.
+  `TestBucketQRSizes` pins them; `Options.print` adds a note when the code is wider than 80 columns.
+- **Hosted Short Links** (not built): a MobAI-hosted link would be one more `Backend` whose `Mint` returns a
+  short manifest URL; it needs a server that does not exist yet.
 - **Signing Sets As A Library**: `signing.Setup` and `signing.EnsureSecrets`
   (internal/signing/sets.go) hold the non-interactive core of `signing setup`
   and on-demand provisioning; cmd/builder keeps the prompts, the plan and the
