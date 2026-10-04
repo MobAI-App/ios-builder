@@ -36,7 +36,7 @@ func newCodemagicFake(t *testing.T) (*codemagicFake, *CodemagicSecrets) {
 		f.calls = append(f.calls, r.Method+" "+r.URL.Path)
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		page := 1
-		fmt.Sscan(r.URL.Query().Get("page"), &page)
+		_, _ = fmt.Sscan(r.URL.Query().Get("page"), &page)
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/apps/app-1/variable-groups":
 			var data []map[string]string
@@ -83,7 +83,7 @@ func newCodemagicFake(t *testing.T) (*codemagicFake, *CodemagicSecrets) {
 		case len(parts) == 4 && parts[0] == "variable-groups" && r.Method == "PATCH":
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			f.values[parts[3]] = body["value"].(string)
+			f.values[parts[3]], _ = body["value"].(string)
 			f.secure[parts[3]] = body["secure"] == true
 			w.WriteHeader(204)
 		case len(parts) == 4 && parts[0] == "variable-groups" && r.Method == "DELETE":
@@ -202,7 +202,8 @@ func newBitriseFake(t *testing.T) (*bitriseFake, *BitriseSecrets) {
 		case r.Method == "POST" && r.URL.Path == "/apps/slug/secrets":
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			f.secrets[body["name"].(string)] = body
+			name, _ := body["name"].(string)
+			f.secrets[name] = body
 			w.WriteHeader(201)
 			fmt.Fprint(w, `{}`)
 		case r.Method == "PATCH" && isItem:

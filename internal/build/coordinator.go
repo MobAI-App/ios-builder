@@ -142,15 +142,15 @@ const workflowSecretsMarker = "toJSON(secrets)"
 // copy of the workflow predates them, since the dispatch would be accepted and
 // the build would run without them. Without a local copy there is nothing to
 // check; the dispatched file is the default branch's anyway.
-func checkWorkflowExportsSecrets(file string, s *config.BuildSettings) error {
+func checkWorkflowExportsSecrets(s *config.BuildSettings) error {
 	if len(s.Secrets) == 0 {
 		return nil
 	}
-	data, err := os.ReadFile(filepath.Join(".github", "workflows", file))
+	data, err := os.ReadFile(filepath.Join(".github", "workflows", WorkflowFile))
 	if err != nil || bytes.Contains(data, []byte(workflowSecretsMarker)) {
 		return nil
 	}
-	return fmt.Errorf(".github/workflows/%s does not export builder.json secrets (%s); run `builder init` to refresh it, then commit and push it to the default branch", file, strings.Join(s.Secrets, ", "))
+	return fmt.Errorf(".github/workflows/%s does not export builder.json secrets (%s); run `builder init` to refresh it, then commit and push it to the default branch", WorkflowFile, strings.Join(s.Secrets, ", "))
 }
 
 // triggerError explains a rejected dispatch. GitHub answers 422 "Unexpected
@@ -192,7 +192,7 @@ func (c *Coordinator) Build(ctx context.Context, opts *BuildOptions) (*BuildResu
 	if c.github == nil {
 		return nil, fmt.Errorf("GitHub client is required")
 	}
-	if err := checkWorkflowExportsSecrets(WorkflowFile, settings); err != nil {
+	if err := checkWorkflowExportsSecrets(settings); err != nil {
 		return nil, err
 	}
 	startTime := time.Now()

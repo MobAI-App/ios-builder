@@ -54,7 +54,7 @@ func TestSecretsReachTheRunners(t *testing.T) {
 func TestOldWorkflowWithSecretsIsRefused(t *testing.T) {
 	t.Chdir(t.TempDir())
 	s := &config.BuildSettings{Secrets: []string{"SENTRY_TOKEN"}}
-	if err := checkWorkflowExportsSecrets(WorkflowFile, s); err != nil {
+	if err := checkWorkflowExportsSecrets(s); err != nil {
 		t.Fatalf("no local workflow must not block: %v", err)
 	}
 	if err := os.MkdirAll(".github/workflows", 0755); err != nil {
@@ -66,14 +66,14 @@ func TestOldWorkflowWithSecretsIsRefused(t *testing.T) {
 		}
 	}
 	write("name: iOS Build\n")
-	if err := checkWorkflowExportsSecrets(WorkflowFile, s); err == nil || !strings.Contains(err.Error(), "builder init") {
+	if err := checkWorkflowExportsSecrets(s); err == nil || !strings.Contains(err.Error(), "builder init") {
 		t.Fatalf("old workflow accepted: %v", err)
 	}
-	if err := checkWorkflowExportsSecrets(WorkflowFile, &config.BuildSettings{}); err != nil {
+	if err := checkWorkflowExportsSecrets(&config.BuildSettings{}); err != nil {
 		t.Fatalf("a build without secrets must not care: %v", err)
 	}
 	write("BUILDER_SECRETS_JSON: ${{ toJSON(secrets) }}\n")
-	if err := checkWorkflowExportsSecrets(WorkflowFile, s); err != nil {
+	if err := checkWorkflowExportsSecrets(s); err != nil {
 		t.Fatalf("current workflow refused: %v", err)
 	}
 }
