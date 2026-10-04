@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -103,7 +104,7 @@ func TestSigningCSRWithoutTerminal(t *testing.T) {
 	// Replacing the key is destructive: --yes or a terminal.
 	_, _, err = runNoInput(t, "signing", "csr", "--name", "A", "--email", "a@example.com")
 	wantUsage(t, err, "--yes")
-	if again, _ := os.ReadFile("ios-signing.key"); string(again) != string(key) {
+	if again, _ := os.ReadFile("ios-signing.key"); !bytes.Equal(again, key) {
 		t.Fatal("the key was replaced without --yes")
 	}
 
