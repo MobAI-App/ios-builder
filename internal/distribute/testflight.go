@@ -21,6 +21,10 @@ type TestFlightOptions struct {
 	// nowhere and reports the available groups instead.
 	Groups   []string
 	External bool
+	// Internal restricts Groups to internal ones: an existing external group
+	// is refused before anything changes, and missing names are created
+	// internal whatever External says.
+	Internal bool
 	// Notes is the "What to Test" text; Locale defaults to the app's primary locale.
 	Notes  string
 	Locale string
@@ -69,6 +73,17 @@ func SubmitTestFlight(ctx context.Context, client *asc.Client, opts *TestFlightO
 	if err != nil {
 		return nil, err
 	}
+	groups, err := client.ListBetaGroups(ctx, app.ID)
+	if err != nil {
+		return nil, err
+	}
+	if opts.Internal {
+		for _, name := range opts.Groups {
+			if err := refuseExternal(groups, name); err != nil {
+				return nil, err
+			}
+		}
+	}
 	build, err := pickBuild(ctx, client, app.ID, opts.Version, opts.BuildNumber)
 	if err != nil {
 		return nil, err
@@ -97,10 +112,6 @@ func SubmitTestFlight(ctx context.Context, client *asc.Client, opts *TestFlightO
 		logf(opts.Log, "Set What to Test (%s)", locale)
 	}
 
-	groups, err := client.ListBetaGroups(ctx, app.ID)
-	if err != nil {
-		return res, err
-	}
 	if len(opts.Groups) == 0 {
 		for _, g := range groups {
 			res.AvailableGroups = append(res.AvailableGroups, GroupRef{ID: g.ID, Name: g.Name, Internal: g.Internal})
@@ -123,7 +134,7 @@ func SubmitTestFlight(ctx context.Context, client *asc.Client, opts *TestFlightO
 	var ids, names []string
 	var external bool
 	for _, name := range opts.Groups {
-		g, err := findOrCreateGroup(ctx, client, opts.Log, app.ID, groups, name, !opts.External)
+		g, err := findOrCreateGroup(ctx, client, opts.Log, app.ID, groups, name, opts.Internal || !opts.External)
 		if err != nil {
 			return res, err
 		}
@@ -182,6 +193,21 @@ func SubmitTestFlight(ctx context.Context, client *asc.Client, opts *TestFlightO
 	}
 	logf(opts.Log, "TestFlight: %s", res.Link)
 	return res, nil
+}
+
+// refuseExternal fails when name matches an external group: those need beta
+// review and reach testers outside the team, which an install on one's own
+// device must not trigger. A name that matches nothing is fine (it is created
+// internal).
+func refuseExternal(groups []asc.BetaGroup, name string) error {
+	g, err := asc.MatchBetaGroup(groups, name)
+	if err != nil {
+		return err
+	}
+	if g != nil && !g.Internal {
+		return fmt.Errorf("TestFlight group %s is external, which needs beta review; pick an internal group (team members only) or a new name, which is created internal", g.Name)
+	}
+	return nil
 }
 
 func groupKind(internal bool) string {

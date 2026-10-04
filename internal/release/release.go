@@ -41,6 +41,9 @@ type Options struct {
 	ReleaseType string
 	Groups      []string
 	Notes       string
+	// InternalGroups refuses external Groups (ios build --distribute
+	// --backend testflight); missing ones are created internal.
+	InternalGroups bool
 	// NoEncryption answers export compliance with "no" when still unanswered.
 	NoEncryption bool
 	PollInterval time.Duration
@@ -205,7 +208,7 @@ func Run(ctx context.Context, cfg *config.Config, builder Builder, client *asc.C
 		return res, err
 	}
 	tf, err := distribute.SubmitTestFlight(ctx, client, &distribute.TestFlightOptions{
-		BundleID: bundleID, Version: info.Version, BuildNumber: res.BuildNumber, Groups: opts.Groups, Notes: opts.Notes,
+		BundleID: bundleID, Version: info.Version, BuildNumber: res.BuildNumber, Groups: opts.Groups, Notes: opts.Notes, Internal: opts.InternalGroups,
 		NoEncryption: opts.NoEncryption, PollInterval: opts.PollInterval, Log: opts.Log,
 	})
 	if tf != nil {
