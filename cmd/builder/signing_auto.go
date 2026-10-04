@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -14,11 +13,11 @@ import (
 
 	"github.com/MobAI-App/ios-builder/internal/asc"
 	"github.com/MobAI-App/ios-builder/internal/config"
+	"github.com/MobAI-App/ios-builder/internal/exitcode"
 	"github.com/MobAI-App/ios-builder/internal/mobai"
 	"github.com/MobAI-App/ios-builder/internal/signing"
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 )
 
 // providerSecretsDoc explains the dashboard steps for Codemagic and Bitrise.
@@ -30,10 +29,6 @@ type signingAutoResult struct {
 	// GeneratedPassword is set when no password was given: it is printed
 	// exactly once, here.
 	GeneratedPassword string `json:"generated_password,omitempty"`
-}
-
-func stdinIsTerminal() bool {
-	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 // runSigningAuto is `signing setup` without --certificate/--profile: it
@@ -111,8 +106,8 @@ func runSigningAuto(cmd *cobra.Command) error {
 	}
 	fmt.Fprintln(out.log)
 	if !yes {
-		if !stdinIsTerminal() {
-			return errors.New("this creates resources in your Apple Developer account; confirm with --yes when not running in a terminal")
+		if !interactive(cmd) {
+			return exitcode.With(exitcode.Usage, errors.New("this creates resources in your Apple Developer account; confirm with --yes when not running in a terminal (or with --json/--no-input)"))
 		}
 		if _, err := (&promptui.Prompt{Label: "Continue", IsConfirm: true}).Run(); err != nil {
 			return errors.New("canceled")
@@ -123,7 +118,7 @@ func runSigningAuto(cmd *cobra.Command) error {
 	var generated string
 	switch {
 	case password != "":
-	case yes || !stdinIsTerminal():
+	case yes || !interactive(cmd):
 		if generated, err = randomPassword(); err != nil {
 			return err
 		}
@@ -231,8 +226,8 @@ func resolveSigningBundleID(cmd *cobra.Command, cfg *config.Config, out output) 
 	if id := configuredBundleID(cfg, out.log); id != "" {
 		return id, nil
 	}
-	if !stdinIsTerminal() || out.json {
-		return "", errors.New("bundle ID unknown: pass --bundle-id, set ios.bundleId in builder.json, or build once so ./dist has an IPA to read it from")
+	if !interactive(cmd) {
+		return "", exitcode.With(exitcode.Usage, errors.New("bundle ID unknown: pass --bundle-id, set ios.bundleId in builder.json, or build once so ./dist has an IPA to read it from"))
 	}
 	id, err := promptString("App bundle ID (e.g. com.example.app)", "")
 	if err != nil {

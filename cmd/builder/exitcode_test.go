@@ -48,6 +48,7 @@ func TestExitCodeMapping(t *testing.T) {
 		{"build failed", []string{"one", "x"}, fmt.Errorf("build failed: %w", &github.RunFailedError{Conclusion: "failure"}), exitcode.BuildFailed},
 		{"timeout", []string{"one", "x"}, fmt.Errorf("wait: %w", context.DeadlineExceeded), exitcode.Timeout},
 		{"interrupted", []string{"one", "x"}, fmt.Errorf("upload: %w", context.Canceled), exitcode.Interrupted},
+		{"needs input", []string{"one", "x"}, needInput("the project name", "--project"), exitcode.Usage},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

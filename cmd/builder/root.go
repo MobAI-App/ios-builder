@@ -609,6 +609,7 @@ func init() {
 	// Root command setup
 	cobra.OnInitialize(initConfig)
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
+	rootCmd.PersistentFlags().BoolVar(&noInput, "no-input", false, "Never prompt: take --yes defaults or fail naming the flag to pass (also BUILDER_NO_INPUT=1 or CI=true)")
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(iosCmd)

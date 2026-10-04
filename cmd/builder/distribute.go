@@ -129,7 +129,7 @@ func runDistribute(cmd *cobra.Command, cfg *config.Config, ipaPath string) error
 		opts.QR = !noQR && (qr || isTerminal(cmd.OutOrStdout()))
 		opts.Progress = uploadProgress(out.log)
 	}
-	if opts.Stdin != nil && !isTerminal(opts.Stdin) {
+	if opts.Stdin != nil && (!isTerminal(opts.Stdin) || !interactive(cmd)) {
 		opts.Stdin = nil
 	}
 
