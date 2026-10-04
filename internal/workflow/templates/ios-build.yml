@@ -66,7 +66,10 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    # The runner from the profile input (a profile's runner, else builder.json's
+    # top-level one), else the default `builder init` rendered here. A tag push
+    # has no inputs, so it always takes the rendered default.
+    runs-on: ${{ fromJSON(inputs.profile || '{}').runner || 'macos-latest' }}
     permissions:
       contents: write # deletes the trigger tag
     timeout-minutes: 90 # a cold React Native/Expo build on the free runner takes 30-60 minutes
@@ -86,6 +89,12 @@ jobs:
           git fetch --depth=1 origin "+$SNAPSHOT_REF:refs/heads/snapshot"
           git checkout --force snapshot
           echo "Building $(git rev-parse --short HEAD)"
+
+      # A self-hosted runner keeps its workspace between jobs. checkout cleans
+      # it, but the snapshot checkout above does not, so outputs of an earlier
+      # run never reach this run's artifact.
+      - name: Clear previous outputs
+        run: rm -rf build/App.xcarchive build/export build/Payload build/*.ipa Payload
 
       # Dispatch inputs arrive with their declared defaults; a tag push has none,
       # so the values come from builder.json in the tagged commit (defaultProfile
@@ -191,10 +200,23 @@ jobs:
             echo "env: $name"
           done < <(jq -r '.env // {} | to_entries[] | "\(.key | @base64) \(.value | tostring | @base64)"' <<< "$PROFILE_JSON")
 
+      # setup-xcode switches with sudo between the Xcodes of the hosted image. A
+      # self-hosted runner keeps the Xcode its owner selected (xcode-select, or
+      # DEVELOPER_DIR in the runner's .env).
       - name: Setup Xcode
+        if: runner.environment == 'github-hosted'
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest-stable
+
+      - name: Check Xcode
+        if: runner.environment != 'github-hosted'
+        run: |
+          if ! xcodebuild -version; then
+            echo "::error::No usable Xcode on this runner. Install Xcode and select it with sudo xcode-select -s /Applications/Xcode.app, or set DEVELOPER_DIR in the runner's .env."
+            exit 1
+          fi
+          xcode-select -p
 
       - name: Restore DerivedData cache
         uses: actions/cache/restore@v6
@@ -271,7 +293,7 @@ jobs:
             echo "Found a committed .xcodeproj — skipping generation."
           else
             echo "Found $MANIFEST and no .xcodeproj — generating with XcodeGen."
-            brew install xcodegen
+            command -v xcodegen >/dev/null || brew install xcodegen
             xcodegen generate
           fi
 
@@ -827,7 +849,13 @@ jobs:
           echo "$IOS_CERTIFICATE" | base64 --decode > "$CERTIFICATE_PATH"
           security import "$CERTIFICATE_PATH" -P "$IOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          # Put the keychain first in the search list without dropping the
+          # others, and keep the list as it was for Cleanup signing to restore:
+          # on a self-hosted Mac it holds the owner's login keychain.
+          security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//' > "$RUNNER_TEMP/keychains-before"
+          KEYCHAINS=()
+          while IFS= read -r k; do [ -n "$k" ] && KEYCHAINS+=("$k"); done < "$RUNNER_TEMP/keychains-before"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" "${KEYCHAINS[@]}"
 
           # The certificate has to be the kind the profile asks for, under
           # whichever of its names it carries. Say so here instead of letting
@@ -837,7 +865,10 @@ jobs:
           CODE_SIGN_IDENTITY=$(signing_identity "$EXPORT_METHOD" "$IDENTITIES") || fail "IOS_CERTIFICATE${SIGNING_SET:+_$SIGNING_SET} holds no $(signing_identities "$EXPORT_METHOD" | paste -sd '/' -) certificate, which an $EXPORT_METHOD profile must be signed with. Run builder signing setup --distribution ${DISTRIBUTION:-<distribution>} to issue the right one."
 
           # Install the provisioning profiles: the app's, then its extensions'
+          # Every profile installed is listed for Cleanup signing (the extensions'
+          # in extensions/installed), so a persistent machine keeps none of them.
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "$PROFILE_UUID" >> "$RUNNER_TEMP/installed-profiles"
           cp "$PROFILE_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/"$PROFILE_UUID".mobileprovision
           EXTENSION_PROFILES=$(install_extension_profiles "$RUNNER_TEMP/extensions")
 
@@ -1015,6 +1046,7 @@ jobs:
           # Install pods if Podfile exists (always run to ensure sync with Podfile.lock)
           if [ -f "Podfile" ]; then
             echo "Running pod install..."
+            command -v pod >/dev/null || brew install cocoapods
             pod install
             WORKSPACE=$(find . -maxdepth 1 -name "*.xcworkspace" | head -1)
           fi
@@ -1294,12 +1326,29 @@ jobs:
           path: DerivedData
           key: deriveddata-${{ github.run_id }}
 
+      # Leaves a self-hosted Mac as the job found it, even when signing failed
+      # halfway: the paths are fixed rather than read from $GITHUB_ENV, which the
+      # signing step only writes at its end.
       - name: Cleanup signing
         if: always() && steps.params.outputs.use_signing == 'true'
         run: |
-          if [ -n "$KEYCHAIN_PATH" ] && [ -f "$KEYCHAIN_PATH" ]; then
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          if [ -f "$RUNNER_TEMP/keychains-before" ]; then
+            KEYCHAINS=()
+            while IFS= read -r k; do [ -n "$k" ] && [ "$k" != "$KEYCHAIN_PATH" ] && KEYCHAINS+=("$k"); done < "$RUNNER_TEMP/keychains-before"
+            security list-keychains -d user -s "${KEYCHAINS[@]}" || true
+          fi
+          if [ -f "$KEYCHAIN_PATH" ]; then
             security delete-keychain "$KEYCHAIN_PATH" || true
           fi
+          for list in "$RUNNER_TEMP/installed-profiles" "$RUNNER_TEMP/extensions/installed"; do
+            [ -f "$list" ] || continue
+            while IFS= read -r uuid; do
+              [ -n "$uuid" ] && rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$uuid.mobileprovision"
+            done < "$list"
+          done
+          rm -f "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/profile.mobileprovision" "$RUNNER_TEMP/profile.plist"
+          rm -rf "$RUNNER_TEMP/extensions"
 
       - name: Build summary
         if: always()

@@ -56,6 +56,7 @@ on:
 
 jobs:
   simulator:
+    # Rendered by `builder init` from builder.json's top-level runner.
     runs-on: macos-latest
     permissions:
       contents: write # deletes the trigger tag
@@ -118,10 +119,23 @@ jobs:
         with:
           boot-sim: true # UDID lands in $MOBAI_SIM_UDID
 
+      # setup-xcode switches with sudo between the Xcodes of the hosted image. A
+      # self-hosted runner keeps the Xcode its owner selected (xcode-select, or
+      # DEVELOPER_DIR in the runner's .env).
       - name: Setup Xcode
+        if: runner.environment == 'github-hosted'
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest-stable
+
+      - name: Check Xcode
+        if: runner.environment != 'github-hosted'
+        run: |
+          if ! xcodebuild -version; then
+            echo "::error::No usable Xcode on this runner. Install Xcode and select it with sudo xcode-select -s /Applications/Xcode.app, or set DEVELOPER_DIR in the runner's .env."
+            exit 1
+          fi
+          xcode-select -p
 
       - name: Restore DerivedData cache
         uses: actions/cache/restore@v6
@@ -195,7 +209,7 @@ jobs:
             echo "Found a committed .xcodeproj — skipping generation."
           else
             echo "Found $MANIFEST and no .xcodeproj — generating with XcodeGen."
-            brew install xcodegen
+            command -v xcodegen >/dev/null || brew install xcodegen
             xcodegen generate
           fi
 
