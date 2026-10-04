@@ -53,3 +53,12 @@ func SigningSet(distribution string) (string, error) { return config.SigningSet(
 
 // SigningSecretNames are the four secrets of a signing set.
 func SigningSecretNames(set string) SigningSecrets { return config.SigningSecretNames(set) }
+
+// Runner is a GitHub Actions runs-on: one label or several.
+type Runner = config.Runner
+
+// DefaultRunner is the runs-on used when no runner is configured.
+const DefaultRunner = config.DefaultRunner
+
+// ParseRunner reads one label or a comma-separated list of labels.
+func ParseRunner(s string) (Runner, error) { return config.ParseRunner(s) }

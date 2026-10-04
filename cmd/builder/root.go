@@ -329,6 +329,58 @@ func detectGitHubRepo(remoteName string) (owner, repo string, err error) {
 	return "", "", fmt.Errorf("could not parse GitHub URL from: %s", remoteURL)
 }
 
+// applyRunnerFlag stores --runner (one label or a comma list) as the
+// top-level runner; without the flag builder.json's runner is kept.
+func applyRunnerFlag(cmd *cobra.Command, cfg *config.Config) error {
+	if stack, _ := cmd.Flags().GetString("stack"); stack != "" {
+		return fmt.Errorf("--stack applies to Bitrise only (builder init --provider bitrise)")
+	}
+	if !cmd.Flags().Changed("runner") {
+		return cfg.Runner.Validate()
+	}
+	value, _ := cmd.Flags().GetString("runner")
+	runner, err := config.ParseRunner(value)
+	if err != nil {
+		return fmt.Errorf("--runner: %w", err)
+	}
+	cfg.Runner = runner
+	if w := runner.Warning(); w != "" {
+		fmt.Println("Warning:", w)
+	}
+	return nil
+}
+
+// writeGitHubWorkflows writes ios-build.yml and ios-share.yml under
+// dir/.github/workflows with runner as their runs-on. The share workflow ships
+// with the build one so `builder ios share` needs no extra setup; it is
+// dispatch-only, so it costs nothing until used.
+func writeGitHubWorkflows(dir string, runner config.Runner) ([]string, error) {
+	workflowDir := filepath.Join(dir, ".github", "workflows")
+	if err := os.MkdirAll(workflowDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create workflow directory: %w", err)
+	}
+	build, err := workflow.RenderWorkflow(runner)
+	if err != nil {
+		return nil, fmt.Errorf("failed to render workflow: %w", err)
+	}
+	share, err := workflow.RenderShareWorkflow(runner)
+	if err != nil {
+		return nil, fmt.Errorf("failed to render simulator workflow: %w", err)
+	}
+	var paths []string
+	for _, f := range []struct {
+		name string
+		data []byte
+	}{{"ios-build.yml", build}, {"ios-share.yml", share}} {
+		path := filepath.Join(workflowDir, f.name)
+		if err := os.WriteFile(path, f.data, 0644); err != nil {
+			return nil, fmt.Errorf("failed to write %s: %w", path, err)
+		}
+		paths = append(paths, path)
+	}
+	return paths, nil
+}
+
 func runInit(cmd *cobra.Command, args []string) error {
 	provider, _ := cmd.Flags().GetString("provider")
 	if provider != "" && provider != "github" {
@@ -430,39 +482,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if jdkVersion != "" {
 		fmt.Printf("JDK:        %s\n", jdkVersion)
 	}
-	fmt.Println()
 
-	// Create workflow file locally
-	fmt.Println("Creating workflow file...")
-	workflowDir := ".github/workflows"
-	if err := os.MkdirAll(workflowDir, 0755); err != nil {
-		return fmt.Errorf("failed to create workflow directory: %w", err)
-	}
-
-	workflowContent, err := workflow.GetWorkflowTemplate()
-	if err != nil {
-		return fmt.Errorf("failed to get workflow template: %w", err)
-	}
-
-	workflowPath := filepath.Join(workflowDir, "ios-build.yml")
-	if err := os.WriteFile(workflowPath, workflowContent, 0644); err != nil {
-		return fmt.Errorf("failed to write workflow file: %w", err)
-	}
-	fmt.Printf("  Created: %s\n", workflowPath)
-
-	// Ship the share workflow next to the build one so `builder ios share` needs
-	// no extra setup. Dispatch-only, so it costs nothing until used.
-	shareContent, err := workflow.GetShareWorkflowTemplate()
-	if err != nil {
-		return fmt.Errorf("failed to get simulator workflow template: %w", err)
-	}
-	sharePath := filepath.Join(workflowDir, "ios-share.yml")
-	if err := os.WriteFile(sharePath, shareContent, 0644); err != nil {
-		return fmt.Errorf("failed to write simulator workflow file: %w", err)
-	}
-	fmt.Printf("  Created: %s\n", sharePath)
-
-	// Save config
 	cfg, err := config.NewManager().Load()
 	if err != nil && err != config.ErrConfigNotFound {
 		return err
@@ -470,6 +490,23 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if cfg == nil {
 		cfg = &config.Config{Provider: "github"}
 	}
+	if err := applyRunnerFlag(cmd, cfg); err != nil {
+		return err
+	}
+	fmt.Printf("Runner:     %s\n", cfg.Runner)
+	fmt.Println()
+
+	// Create workflow file locally
+	fmt.Println("Creating workflow file...")
+	paths, err := writeGitHubWorkflows(".", cfg.Runner)
+	if err != nil {
+		return err
+	}
+	for _, p := range paths {
+		fmt.Printf("  Created: %s\n", p)
+	}
+
+	// Save config
 	cfg.Project, cfg.Platform = projectName, "ios"
 	cfg.GitHub = config.GitHubConfig{Owner: githubOwner, Repo: repoName}
 	cfg.IOS.Path, cfg.IOS.Scheme = iosPath, scheme
@@ -626,6 +663,8 @@ func init() {
 	initCmd.Flags().String("app-id", "", "Codemagic app ID or Bitrise app slug")
 	initCmd.Flags().String("branch", "", "Committed branch containing the provider workflow")
 	initCmd.Flags().Bool("set-default", false, "Make this provider the project default")
+	initCmd.Flags().String("runner", "", "Machine to build on: GitHub runs-on label or comma list (macos-latest, macos-15, self-hosted, self-hosted,macOS,ARM64), Codemagic instance_type, or Bitrise machine_type_id")
+	initCmd.Flags().String("stack", "", "Bitrise stack (e.g. osx-xcode-16.2.x)")
 
 	// iOS build command flags
 	iosBuildCmd.Flags().StringP("output", "o", "dist", "Output directory for IPA")
