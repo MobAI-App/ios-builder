@@ -14,6 +14,8 @@ func providerInitCommand(name string) *cobra.Command {
 	cmd.Flags().String("app-id", name+"-app", "")
 	cmd.Flags().String("branch", "ci-main", "")
 	cmd.Flags().Bool("set-default", false, "")
+	cmd.Flags().String("runner", "", "")
+	cmd.Flags().String("stack", "", "")
 	return cmd
 }
 
