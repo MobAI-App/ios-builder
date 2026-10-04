@@ -23,6 +23,8 @@ go install ./cmd/builder
 
 # Run
 ./builder auth github       # Authenticate with GitHub (OAuth device flow)
+printenv GH_TOKEN | ./builder auth github --token-stdin  # Non-interactive (scopes checked)
+./builder init --yes --json # Non-interactive init: detected values, no commit/build
 ./builder init              # Set up workflow in current repo
 ./builder ios build         # Trigger build and download IPA to ./dist/
 ./builder ios build --profile production  # Build with a builder.json profile
@@ -428,6 +430,22 @@ internal/
 - **QR Rendering**: `skip2/go-qrcode` at error-correction Low, Unicode half blocks (two module rows per
   line, 2-module quiet zone), light modules as `█` so it scans on a dark terminal (`--qr-invert` for light);
   `TestQRFitsATerminal` pins a representative link at 41 modules (version 6). Printed only on a TTY or `--qr`.
+- **Exit Codes** (`internal/exitcode`): 0 ok, 1 failure, 2 usage, 3 auth, 4 CI run failed, 5 timeout,
+  130 interrupted. Tag at the source with `exitcode.With`/`Usagef`, or give an error type an `ExitCode()`
+  method (`github.RunFailedError`, `github.APIError` and `asc.Error` on 401); `Code` then falls back to
+  context.Canceled/DeadlineExceeded and `Timeout()`. `main.usageErrors` wraps every cobra `Args` and the
+  flag error hook, and gives groups a help `RunE` so `builder ios nope` is exit 2, not help + 0.
+- **No Hidden Prompts** (`cmd/builder/input.go`): every question goes through `interactive(cmd)` (stdin is
+  a terminal and none of `--no-input`, `BUILDER_NO_INPUT`, `CI`, `--json`) and the `asker`: `--yes` takes
+  the default, a terminal prompts, anything else is `needInput` (exit 2 naming the flag). New prompts must
+  use it; tests run commands with `runNoInput`, which fails on a command that blocks.
+- **init Without A Terminal**: `--commit`/`--build` are checked (via `Changed`) before any file is
+  written; `--yes` accepts detected values but never commits or builds.
+- **Dev Session Input**: `dev.Input` answers device/re-sign/bundle-ID questions (`dev.InputError` is exit 2);
+  `--json` emits `dev.Event` NDJSON and points `os.Stdout` at stderr for the session, because the handlers
+  and the tools they run print with fmt.
+- **auth github --token-stdin**: `auth.CheckGitHubToken` reads `X-OAuth-Scopes` from `GET /user`; a classic
+  token missing `repo`/`workflow`/`gist` is refused (exit 3), fine-grained tokens (no header) are saved unchecked.
 - **Signing Sets As A Library**: `signing.Setup` and `signing.EnsureSecrets`
   (internal/signing/sets.go) hold the non-interactive core of `signing setup`
   and on-demand provisioning; cmd/builder keeps the prompts, the plan and the
