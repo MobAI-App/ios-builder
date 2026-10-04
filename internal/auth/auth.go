@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MobAI-App/ios-builder/internal/exitcode"
 	"github.com/zalando/go-keyring"
 )
 
@@ -47,22 +48,28 @@ type DeviceCode struct {
 // Login performs GitHub OAuth Device Code flow authentication.
 // It displays a URL and code for the user to authorize, then stores the token in the keychain.
 func Login(ctx context.Context) (*Token, error) {
+	return LoginWith(ctx, func(code *DeviceCode) {
+		fmt.Println()
+		fmt.Printf("  Open: %s\n", code.VerificationURI)
+		fmt.Printf("  Enter code: %s\n", code.UserCode)
+		fmt.Println()
+		fmt.Println("Waiting for authorization...")
+	})
+}
+
+// LoginWith is Login with the code shown by show, so a caller can print it
+// as JSON or elsewhere.
+func LoginWith(ctx context.Context, show func(*DeviceCode)) (*Token, error) {
 	code, err := requestDeviceCode(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	fmt.Println()
-	fmt.Printf("  Open: %s\n", code.VerificationURI)
-	fmt.Printf("  Enter code: %s\n", code.UserCode)
-	fmt.Println()
-	fmt.Println("Waiting for authorization...")
+	show(code)
 
 	token, err := pollForToken(ctx, code)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Println("Authorized. Saving token...")
 
 	if err := storeToken(token.AccessToken); err != nil {
 		return nil, fmt.Errorf("failed to store token: %w", err)
@@ -247,7 +254,7 @@ func pollForToken(ctx context.Context, code *DeviceCode) (*Token, error) {
 		}
 
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("authorization timed out")
+			return nil, exitcode.With(exitcode.Timeout, fmt.Errorf("authorization timed out"))
 		}
 
 		token, err := requestToken(ctx, code.DeviceCode)
