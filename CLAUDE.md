@@ -289,7 +289,36 @@ internal/
   `ios-share.yml` (twice) and `runner.sh`; `TestJSToolchainBlockIdentical` fails on drift.
 - **DerivedData Caching**: `restore` keys on `github.run_id` and only the prefix in `restore-keys`
   ever hits, so every run must pair with a `cache/save` step or later builds stay cold. `ios-share`
-  saves before it shares the simulator, since that step blocks until the session ends.
+  saves before it shares the simulator, since that step blocks until the session ends. Prefixes are
+  `deriveddata-device-`/`deriveddata-sim-` (and `ccache-device-`/`ccache-sim-`) so neither workflow
+  restores the other's products.
+- **Cache Pairing**: `ios-build` uses combined `actions/cache` for lockfile-keyed caches; `ios-share`
+  restores every cache with `cache/restore` and saves it (success only, key missed,
+  `cache-primary-key`) before the share step. `TestGitHubCachesPaired` fails on a restore without a
+  save for the same paths, or a save after the share step.
+- **Swift Package Cache**: every runner clones packages into `~/.ios-builder/SourcePackages`
+  (outside the checkout, so `find`/`hashFiles` never walk package sources) via
+  `-clonedSourcePackagesDirPath` on every xcodebuild that passes `-derivedDataPath` and on the
+  `apply_build_number` calls (`TestSourcePackagesDirUsed`). GitHub keys on the workspace/project
+  `Package.resolved` with `!DerivedData/**`, `!**/node_modules/**`, `!**/Pods/**`, and skips the cache
+  without one. `DerivedData/SourcePackages` from older runs is deleted before the DerivedData save.
+- **Pub Cache**: flutter-action runs with `pub-cache: false`; our own step keys `~/.pub-cache` on
+  `pubspec.lock` with a prefix fallback, which flutter-action's has none of.
+- **Bitrise Caches**: `restore-cache@3`/`save-cache@1` keyed on lockfile `checksum`s (exact key, then
+  the `<kind>-{{ .OS }}-{{ .Arch }}-` prefix); DerivedData and ccache key on `BITRISE_BUILD_NUMBER` and
+  are the only `is_always_run` saves. The restores need the snapshot's lockfiles, so a `runner.sh
+  checkout` step runs first and the build step reuses the runner.sh copied before it.
+  `BITRISE_CACHE_HIT` of the node_modules restore is aliased to `NODE_MODULES_CACHE_HIT`, and `exact`
+  becomes `JS_DEPS_CACHED=true`. Paths that do not exist are skipped by save-cache with a warning.
+- **Codemagic Caches**: path-only `cache_paths` (no keys): DerivedData, Gradle, pub cache, Swift
+  packages, ccache. Pods and node_modules are not cached there, since without a lockfile key a stale
+  copy would be restored on every build.
+- **ccache Is Opt-In**: `cache.ccache` in builder.json (`config.CacheConfig`), read by the runners from
+  the snapshot, React Native and Expo only. The shared block between `# >>> ccache` and `# <<< ccache`
+  (`ccache_enabled`, `ccache_setup`) is verbatim in both GitHub templates and `runner.sh`
+  (`TestCcacheBlockIdentical`) and runs before `pod install`, where RN's `react_native_post_install`
+  reads `USE_CCACHE=1`; Expo's Podfile reads `apple.ccacheEnabled` instead. It is opt-in because a
+  Podfile that ignores it gains nothing and the install costs time on every run.
 - **Scheme Selection**: `xcodebuild -list -json` plus the scheme named after the workspace/project;
   taking the first scheme picks a package or pod scheme in package-heavy repos
 - **Product Selection**: the built `.app` comes from `-showBuildSettings -json` (the target whose
@@ -461,6 +490,9 @@ A profile's fields are `distribution` (`development`, `ad-hoc`/`internal`, `stor
 only signing field, omitted = unsigned), `configuration` (else Debug for development, Release
 otherwise), `scheme`, `provider`, `env`. `runner`/`submit` are planned on `config.Profile`, not read.
 
+`cache.ccache` (top level, default false) turns ccache on for React Native and Expo builds on every
+provider; the runners read it from builder.json in the snapshot, not from a dispatch input.
+
 ## Workflow Features
 
 The embedded workflow template (`internal/workflow/templates/ios-build.yml`):
@@ -484,7 +516,7 @@ The embedded workflow template (`internal/workflow/templates/ios-build.yml`):
   unfiltered `on: push` also fires on these tags.
 - Runs on `macos-latest`
 - Detects Flutter projects (checks for `pubspec.yaml`)
-- Restores and saves DerivedData for fast incremental builds
+- Restores and saves DerivedData, Swift packages, Pods, node_modules, the pub cache and (opt-in) ccache
 - Auto-detects workspace/project and scheme
 - Flutter: uses `Runner` scheme, runs `flutter pub get`
 - Installs CocoaPods if Podfile exists
