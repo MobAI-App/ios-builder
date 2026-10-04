@@ -97,19 +97,26 @@ func runIOSDistribute(cmd *cobra.Command, _ []string) error {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
-	target, err := distributeTarget(cmd, cfg)
-	if err != nil {
-		return err
-	}
 	if cleanup, _ := cmd.Flags().GetBool("cleanup"); cleanup {
+		target, err := distributeTarget(cmd, cfg)
+		if err != nil {
+			return err
+		}
 		return runDistributeCleanup(cmd, target)
 	}
+	// The IPA is found before any client or credential is needed.
 	path, _ := cmd.Flags().GetString("ipa")
 	if path == "" {
 		dir, _ := cmd.Flags().GetString("output")
 		if path, err = ipa.Newest(dir); err != nil {
 			return err
 		}
+	} else if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("open IPA: %w", err)
+	}
+	target, err := distributeTarget(cmd, cfg)
+	if err != nil {
+		return err
 	}
 	return runDistribute(cmd, target, path)
 }
