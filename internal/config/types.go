@@ -25,6 +25,30 @@ type Config struct {
 	// runs have no flags, so it is also the only way they can select a profile.
 	DefaultProfile string             `json:"defaultProfile,omitempty"`
 	Profiles       map[string]Profile `json:"profiles,omitempty"`
+	// Distribute configures where `ios distribute` puts the IPA; nil is the
+	// GitHub backend.
+	Distribute *DistributeConfig `json:"distribute,omitempty"`
+}
+
+// DistributeConfig selects and configures the `ios distribute` backend.
+// Credentials never live here: they come from the environment (AWS_*,
+// AZURE_STORAGE_*) or the App Store Connect key.
+type DistributeConfig struct {
+	// Backend is github (default), s3, azure or testflight; --backend wins.
+	Backend string `json:"backend,omitempty"`
+	// Bucket, Region, Endpoint: the s3 backend. Endpoint is for S3-compatible
+	// stores (Cloudflare R2, MinIO, Google Cloud Storage), addressed path-style.
+	Bucket   string `json:"bucket,omitempty"`
+	Region   string `json:"region,omitempty"`
+	Endpoint string `json:"endpoint,omitempty"`
+	// Prefix is put before every object (s3) or blob (azure) name.
+	Prefix string `json:"prefix,omitempty"`
+	// Account and Container: the azure backend (Endpoint overrides the
+	// account's blob endpoint, e.g. for Azurite).
+	Account   string `json:"account,omitempty"`
+	Container string `json:"container,omitempty"`
+	// Group is the internal TestFlight group of the testflight backend; --group wins.
+	Group string `json:"group,omitempty"`
 }
 
 // SigningConfig is where the signing material lives on this machine.

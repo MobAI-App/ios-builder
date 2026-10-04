@@ -2,8 +2,38 @@ package otainstall
 
 import (
 	"context"
+	"fmt"
 	"time"
+
+	"github.com/MobAI-App/ios-builder/internal/config"
 )
+
+// Backend names, for --backend and distribute.backend in builder.json.
+// github, s3 and azure implement Backend; testflight is not an over-the-air
+// install and goes through App Store Connect instead (see Inspect and
+// CheckDistribution). A hosted short-link service would be one more Backend:
+// Upload stores the IPA, Mint returns its short manifest URL.
+const (
+	BackendGitHub     = "github"
+	BackendS3         = "s3"
+	BackendAzure      = "azure"
+	BackendTestFlight = "testflight"
+)
+
+// BackendName is flag, else distribute.backend in builder.json, else github.
+func BackendName(flag string, cfg *config.Config) (string, error) {
+	name := flag
+	if name == "" && cfg != nil && cfg.Distribute != nil {
+		name = cfg.Distribute.Backend
+	}
+	switch name {
+	case "":
+		return BackendGitHub, nil
+	case BackendGitHub, BackendS3, BackendAzure, BackendTestFlight:
+		return name, nil
+	}
+	return "", fmt.Errorf("unknown distribute backend %q (choose github, s3, azure or testflight)", name)
+}
 
 // Backend stores the IPA and the manifest where an iPhone can fetch them.
 type Backend interface {
@@ -32,4 +62,6 @@ type Links struct {
 	ExpiresAt   time.Time `json:"expires_at"`
 	ReleaseID   int64     `json:"release_id,omitempty"`
 	GistID      string    `json:"gist_id,omitempty"`
+	// Objects names the IPA and the manifest in a bucket backend (s3://…, azure://…).
+	Objects []string `json:"objects,omitempty"`
 }

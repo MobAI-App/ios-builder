@@ -38,14 +38,20 @@ func (p Profile) String() string {
 	return p.Type
 }
 
-// Inspect reads the IPA and refuses one an iPhone cannot install this way.
-func Inspect(path string) (*App, error) {
+// Inspect reads the IPA and refuses one the backend cannot deliver: the
+// over-the-air backends need a development, ad-hoc or enterprise signature;
+// testflight needs the opposite, an App Store one.
+func Inspect(path, backend string) (*App, error) {
 	info, err := ipa.ReadInfo(path)
 	if err != nil {
 		return nil, err
 	}
+	testflight := backend == BackendTestFlight
 	profile, err := ipa.ReadProfile(path)
 	if errors.Is(err, ipa.ErrUnsigned) {
+		if testflight {
+			return nil, fmt.Errorf("%s is unsigned; TestFlight needs an App Store signed IPA (builder ios build --profile <a profile with distribution store>)", path)
+		}
 		return nil, fmt.Errorf("%s is unsigned; build with a profile whose distribution is development, ad-hoc or enterprise (builder ios build --profile <name>)", path)
 	}
 	if err != nil {
@@ -55,27 +61,43 @@ func Inspect(path string) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	if typ == signing.TypeStore {
-		return nil, fmt.Errorf("%s is signed for the App Store, which cannot be installed over the air; use TestFlight (builder ios release) or build with a development or ad-hoc profile", path)
+	app := &App{Path: path, BundleID: info.BundleID, Version: info.Version, Build: info.BuildNumber, Title: info.Name(), Profile: Profile{Type: string(typ)}}
+	switch {
+	case testflight && typ != signing.TypeStore:
+		return nil, fmt.Errorf("%s is signed for %s, but TestFlight takes only App Store signed builds; build with a store profile (builder signing setup --distribution store writes one) or drop --backend testflight to install it over the air", path, typ)
+	case testflight:
+		return app, nil
+	case typ == signing.TypeStore:
+		return nil, fmt.Errorf("%s is signed for the App Store, which cannot be installed over the air; use --backend testflight --group <internal group>, or build with a development or ad-hoc profile", path)
 	}
-	devices, err := signing.ProfileDevices(profile)
-	if err != nil {
+	if app.Profile.Devices, err = signing.ProfileDevices(profile); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	return &App{
-		Path: path, BundleID: info.BundleID, Version: info.Version, Build: info.BuildNumber, Title: info.Name(),
-		Profile: Profile{Type: string(typ), Devices: devices},
-	}, nil
+	return app, nil
 }
 
 // CheckDistribution is the preflight of `ios build --distribute`: the profile
-// must sign for devices, and that is known before anything is pushed.
-func CheckDistribution(s *config.BuildSettings) error {
+// must sign the way the backend needs, and that is known before anything is
+// pushed. For testflight an empty profile passes, since the release preflight
+// then picks the only store profile.
+func CheckDistribution(s *config.BuildSettings, backend string) error {
+	if backend == BackendTestFlight {
+		switch s.Distribution {
+		case config.DistributionStore:
+			return nil
+		case "":
+			if s.Profile == "" {
+				return nil
+			}
+			return fmt.Errorf("profile %q has no distribution, so the build is unsigned; TestFlight needs \"distribution\": \"store\" (builder signing setup --distribution store)", s.Profile)
+		}
+		return fmt.Errorf("profile %q has distribution %s; TestFlight takes only App Store builds, so pass a store profile (builder signing setup --distribution store writes one) or another --backend", s.Profile, s.Distribution)
+	}
 	switch s.Distribution {
 	case config.DistributionDevelopment, config.DistributionAdHoc, config.DistributionEnterprise:
 		return nil
 	case config.DistributionStore:
-		return fmt.Errorf("profile %q has distribution store; an App Store build cannot be installed over the air. Use TestFlight (builder ios release) or a development or ad-hoc profile (builder signing setup --devices-from-mobai writes one)", s.Profile)
+		return fmt.Errorf("profile %q has distribution store; an App Store build cannot be installed over the air. Use --backend testflight --group <internal group>, or a development or ad-hoc profile (builder signing setup --devices-from-mobai writes one)", s.Profile)
 	}
 	if s.Profile == "" {
 		return errors.New("--distribute needs a signed build: pass --profile with a development, ad-hoc or enterprise profile (builder signing setup --devices-from-mobai writes one)")

@@ -692,7 +692,7 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := otainstall.CheckDistribution(&s); err != nil {
+		if err := otainstall.CheckDistribution(&s, otainstall.BackendGitHub); err != nil {
 			return err
 		}
 	}

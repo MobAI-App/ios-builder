@@ -65,7 +65,7 @@ func TestInspect(t *testing.T) {
 		{"development", twoDevices + taskAllow, Profile{Type: config.DistributionDevelopment, Devices: 2}, ""},
 		{"ad-hoc", twoDevices + noTaskAllow, Profile{Type: config.DistributionAdHoc, Devices: 2}, ""},
 		{"enterprise", `<key>ProvisionsAllDevices</key><true/>` + noTaskAllow, Profile{Type: config.DistributionEnterprise}, ""},
-		{"store", noTaskAllow, Profile{}, "signed for the App Store"},
+		{"store", noTaskAllow, Profile{}, "use --backend testflight"},
 		{"unsigned", "", Profile{}, "is unsigned"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -75,7 +75,7 @@ func TestInspect(t *testing.T) {
 				// An embedded framework's profile must not be the one read.
 				entries["Payload/App.app/Frameworks/X.framework/embedded.mobileprovision"] = mobileprovision(noTaskAllow)
 			}
-			app, err := Inspect(writeIPA(t, entries))
+			app, err := Inspect(writeIPA(t, entries), BackendS3)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("err = %v, want %q", err, tc.wantErr)
@@ -92,6 +92,61 @@ func TestInspect(t *testing.T) {
 	}
 }
 
+// The testflight backend wants the opposite signature of the OTA ones.
+func TestInspectForTestFlight(t *testing.T) {
+	for _, tc := range []struct {
+		name, profile, wantErr string
+	}{
+		{"store", noTaskAllow, ""},
+		{"development", twoDevices + taskAllow, "signed for development, but TestFlight takes only App Store"},
+		{"ad-hoc", twoDevices + noTaskAllow, "signed for ad-hoc"},
+		{"enterprise", `<key>ProvisionsAllDevices</key><true/>` + noTaskAllow, "signed for enterprise"},
+		{"unsigned", "", "TestFlight needs an App Store signed IPA"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entries := map[string]string{"Payload/App.app/Info.plist": appPlist}
+			if tc.profile != "" {
+				entries["Payload/App.app/embedded.mobileprovision"] = mobileprovision(tc.profile)
+			}
+			app, err := Inspect(writeIPA(t, entries), BackendTestFlight)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if app.Profile.Type != config.DistributionStore || app.BundleID != "run.mobai.tapdash" {
+				t.Errorf("app = %+v", app)
+			}
+		})
+	}
+}
+
+func TestBackendName(t *testing.T) {
+	cfg := &config.Config{Distribute: &config.DistributeConfig{Backend: "s3"}}
+	for _, tc := range []struct {
+		flag string
+		cfg  *config.Config
+		want string
+	}{
+		{"", nil, BackendGitHub},
+		{"", &config.Config{}, BackendGitHub},
+		{"", cfg, BackendS3},
+		{"azure", cfg, BackendAzure},
+		{"testflight", nil, BackendTestFlight},
+	} {
+		if got, err := BackendName(tc.flag, tc.cfg); err != nil || got != tc.want {
+			t.Errorf("BackendName(%q) = %q, %v; want %q", tc.flag, got, err, tc.want)
+		}
+	}
+	if _, err := BackendName("mobai", nil); err == nil || !strings.Contains(err.Error(), "unknown distribute backend") {
+		t.Errorf("err = %v", err)
+	}
+}
+
 func TestProfileString(t *testing.T) {
 	if got := (Profile{Type: "development", Devices: 2}).String(); got != "development, 2 device(s)" {
 		t.Errorf("got %q", got)
@@ -103,21 +158,26 @@ func TestProfileString(t *testing.T) {
 
 func TestCheckDistribution(t *testing.T) {
 	for _, tc := range []struct {
-		profile, distribution, wantErr string
+		backend, profile, distribution, wantErr string
 	}{
-		{"dev", config.DistributionDevelopment, ""},
-		{"internal", config.DistributionAdHoc, ""},
-		{"inhouse", config.DistributionEnterprise, ""},
-		{"store", config.DistributionStore, `profile "store" has distribution store`},
-		{"plain", "", `profile "plain" has no distribution`},
-		{"", "", "pass --profile"},
+		{BackendGitHub, "dev", config.DistributionDevelopment, ""},
+		{BackendS3, "internal", config.DistributionAdHoc, ""},
+		{BackendAzure, "inhouse", config.DistributionEnterprise, ""},
+		{BackendGitHub, "store", config.DistributionStore, `profile "store" has distribution store`},
+		{BackendGitHub, "plain", "", `profile "plain" has no distribution`},
+		{BackendS3, "", "", "pass --profile"},
+		{BackendTestFlight, "store", config.DistributionStore, ""},
+		{BackendTestFlight, "", "", ""},
+		{BackendTestFlight, "dev", config.DistributionDevelopment, "TestFlight takes only App Store builds"},
+		{BackendTestFlight, "inhouse", config.DistributionEnterprise, "TestFlight takes only App Store builds"},
+		{BackendTestFlight, "plain", "", `profile "plain" has no distribution`},
 	} {
-		err := CheckDistribution(&config.BuildSettings{Profile: tc.profile, Distribution: tc.distribution})
+		err := CheckDistribution(&config.BuildSettings{Profile: tc.profile, Distribution: tc.distribution}, tc.backend)
 		if tc.wantErr == "" && err != nil {
-			t.Errorf("%s/%s: %v", tc.profile, tc.distribution, err)
+			t.Errorf("%s %s/%s: %v", tc.backend, tc.profile, tc.distribution, err)
 		}
 		if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
-			t.Errorf("%s/%s: err = %v, want %q", tc.profile, tc.distribution, err, tc.wantErr)
+			t.Errorf("%s %s/%s: err = %v, want %q", tc.backend, tc.profile, tc.distribution, err, tc.wantErr)
 		}
 	}
 }

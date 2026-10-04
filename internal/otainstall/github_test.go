@@ -179,7 +179,7 @@ func testApp(t *testing.T) *App {
 		"Payload/App.app/Info.plist":               appPlist,
 		"Payload/App.app/embedded.mobileprovision": mobileprovision(twoDevices + taskAllow),
 	})
-	app, err := Inspect(path)
+	app, err := Inspect(path, BackendGitHub)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -106,7 +106,7 @@ func distributeBackend(cfg *config.Config) (otainstall.Backend, error) {
 
 // runDistribute is the flow behind `ios distribute` and `ios build --distribute`.
 func runDistribute(cmd *cobra.Command, cfg *config.Config, ipaPath string) error {
-	app, err := otainstall.Inspect(ipaPath)
+	app, err := otainstall.Inspect(ipaPath, otainstall.BackendGitHub)
 	if err != nil {
 		return err
 	}
