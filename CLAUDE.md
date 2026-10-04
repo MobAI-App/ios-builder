@@ -48,6 +48,9 @@ go install ./cmd/builder
 ./builder asc testers add <email>... --group <name>              # also: testers remove, users invite
 ./builder asc testers invite <email>...                          # send/resend the TestFlight email
 ./builder asc builds expire --build-number N --yes               # groups delete needs --yes too
+./builder env set API_URL https://... [--profile production]     # also: env unset, env list [--json]
+./builder secret set SENTRY_TOKEN [--profile p] [--provider x] [--value-stdin]  # value on the provider, name in builder.json
+./builder secret unset SENTRY_TOKEN [--profile p]                # secret list [--json]: names + presence only
 ```
 
 ## Architecture
@@ -247,11 +250,24 @@ internal/
   `env` and `distribution` (`config.ResolveProfile`: `--profile`, else `defaultProfile`, else top level
   unchanged). A profile signs iff it has a `distribution`; `ios.signing` is only the no-profile path
 - **Profile Transport**: the `profile` dispatch input is one JSON object (`{"name","env","distribution"}`)
-  to stay under the ten-input limit and is sent only when a profile is selected, since an older
-  workflow rejects unknown inputs (`triggerError`). `runner.sh` reads `BUILD_ENV` and `DISTRIBUTION`
+  to stay under the ten-input limit and is sent only when a profile is selected (or a top-level `env`/
+  `secrets` exists), since an older workflow rejects unknown inputs (`triggerError`). It also carries
+  `"secrets"` (names). `runner.sh` reads `BUILD_ENV`, `DISTRIBUTION`, `BUILDER_SECRETS`, `BUILDER_SECRET_SUFFIX`
 - **Profile Env**: entries are base64 per key/value on the runner and the `$GITHUB_ENV` heredoc uses a
   random delimiter; names must match `^[A-Za-z_][A-Za-z0-9_]*$` and not hit `reservedEnv`/
-  `reservedEnvPrefixes` (`internal/config/profile.go`), which must track what the runners read
+  `reservedEnvPrefixes` (`internal/config/profile.go`), which must track what the runners read.
+  A top-level `env` applies to every build; the profile's wins per key (`config.resolveEnv`)
+- **Secrets Are Names Only**: builder.json `secrets` (top level, per profile; union) lists names;
+  values live on the provider (`ci.SecretStore`: GitHub Actions secrets, Codemagic secure vars in the
+  `builder` group via v3 `variable-groups`, Bitrise protected app secrets). `secret set --profile P`
+  stores `NAME__<SUFFIX>` (`config.SecretStorageName`: upper-cased, non-alnum `_`); runners prefer it
+  over `NAME` and export as `NAME`. Names: `^[A-Z_][A-Z0-9_]*$`, no `__`, reserved rules, never also env.
+  Value from a hidden prompt or `--value-stdin`, never argv. `secretStoreFor` is a var for tests
+- **Secrets On The Runner**: GitHub's Resolve step gets `BUILDER_SECRETS_JSON: ${{ toJSON(secrets) }}`
+  (that step only; `TestResolveStepReceivesAllSecrets`), exports only listed names with
+  `::add-mask::` per value line, fails naming `builder secret set` for a missing one. `runner.sh`
+  `export_build_secrets` runs after `export_build_env`. `ios build` refuses secrets when the local
+  `ios-build.yml` lacks `toJSON(secrets)` (`checkWorkflowExportsSecrets`). `ios share` gets none
 - **Signing Sets**: one trio per distribution, `IOS_{CERTIFICATE,CERTIFICATE_PASSWORD,PROVISIONING_PROFILE}_<SET>`
   (DEVELOPMENT, AD_HOC, STORE, ENTERPRISE); the unsuffixed names serve only the legacy no-profile path.
   The table lives in `config.SigningSet` and the shell `signing_set` (both templates) and must agree
@@ -459,7 +475,8 @@ the first IPA exists. `signing.dir` is the last automatic `signing setup`'s `--o
 
 A profile's fields are `distribution` (`development`, `ad-hoc`/`internal`, `store`, `enterprise`; the
 only signing field, omitted = unsigned), `configuration` (else Debug for development, Release
-otherwise), `scheme`, `provider`, `env`. `runner`/`submit` are planned on `config.Profile`, not read.
+otherwise), `scheme`, `provider`, `env`, `secrets`. `runner`/`submit` are planned on `config.Profile`,
+not read. Top-level `env` (map) and `secrets` (names) apply to every build.
 
 ## Workflow Features
 
