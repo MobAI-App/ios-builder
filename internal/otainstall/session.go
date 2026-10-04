@@ -9,7 +9,12 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
+
+// wideQR is the widest code, quiet zone included, that fits a standard
+// 80-column terminal.
+const wideQR = 80
 
 // Options configures Run.
 type Options struct {
@@ -168,6 +173,9 @@ func (o *Options) print(res *Result) error {
 		}
 		fmt.Fprintln(o.Log)
 		fmt.Fprint(o.Log, qr)
+		if width := utf8.RuneCountInString(qr[:strings.Index(qr, "\n")]); width > wideQR {
+			fmt.Fprintf(o.Log, "\nThe QR code is %d columns wide because the signed URL is long (temporary credentials add their session token); widen the terminal or zoom out to scan it, or open the link on the phone.\n", width)
+		}
 	}
 	fmt.Fprintln(o.Log)
 	return nil
