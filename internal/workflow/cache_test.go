@@ -52,7 +52,7 @@ func actionSteps(t *testing.T, name string) []actionStep {
 }
 
 // cachePaths normalizes a cache step's path input to its set of lines.
-func cachePaths(s actionStep) string {
+func cachePaths(s *actionStep) string {
 	var lines []string
 	for _, line := range strings.Split(s.With["path"], "\n") {
 		if line = strings.TrimSpace(line); line != "" {
@@ -77,10 +77,10 @@ func TestGitHubCachesPaired(t *testing.T) {
 					continue
 				}
 				j := slices.IndexFunc(all, func(s actionStep) bool {
-					return strings.HasPrefix(s.Uses, "actions/cache/save@") && cachePaths(s) == cachePaths(restore)
+					return strings.HasPrefix(s.Uses, "actions/cache/save@") && cachePaths(&s) == cachePaths(&restore)
 				})
 				if j < 0 {
-					t.Errorf("%q has no save step for %q", restore.Name, cachePaths(restore))
+					t.Errorf("%q has no save step for %q", restore.Name, cachePaths(&restore))
 					continue
 				}
 				save := all[j]
@@ -107,9 +107,9 @@ func TestGitHubCachesPaired(t *testing.T) {
 					continue
 				}
 				if !slices.ContainsFunc(all, func(s actionStep) bool {
-					return strings.HasPrefix(s.Uses, "actions/cache/restore@") && cachePaths(s) == cachePaths(save)
+					return strings.HasPrefix(s.Uses, "actions/cache/restore@") && cachePaths(&s) == cachePaths(&save)
 				}) {
-					t.Errorf("%q saves %q, which nothing restores", save.Name, cachePaths(save))
+					t.Errorf("%q saves %q, which nothing restores", save.Name, cachePaths(&save))
 				}
 			}
 		})
@@ -134,7 +134,7 @@ func TestGitHubCacheKeys(t *testing.T) {
 			all := actionSteps(t, name)
 			for _, w := range append(slices.Clone(common), perRun...) {
 				i := slices.IndexFunc(all, func(s actionStep) bool {
-					return strings.HasPrefix(s.Uses, "actions/cache") && !strings.Contains(s.Uses, "/save@") && cachePaths(s) == w.path
+					return strings.HasPrefix(s.Uses, "actions/cache") && !strings.Contains(s.Uses, "/save@") && cachePaths(&s) == w.path
 				})
 				if i < 0 {
 					t.Errorf("nothing restores %q", w.path)
@@ -299,7 +299,9 @@ func TestCcacheOptIn(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			work, home := t.TempDir(), t.TempDir()
-			os.Remove(filepath.Join(bin, "ccache"))
+			if err := os.Remove(filepath.Join(bin, "ccache")); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
 			if tt.config != "" {
 				if err := os.WriteFile(filepath.Join(work, "builder.json"), []byte(tt.config), 0644); err != nil {
 					t.Fatal(err)
