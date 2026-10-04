@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+
+	"github.com/MobAI-App/ios-builder/internal/exitcode"
 )
 
 // GetRepository retrieves a repository by owner and name
@@ -43,7 +45,7 @@ func (c *Client) ListSecretNames(ctx context.Context, owner, repo string) ([]str
 		if err := c.do(ctx, path, &list); err != nil {
 			var apiErr *APIError
 			if errors.As(err, &apiErr) && (apiErr.Status == "403" || apiErr.Status == "404") {
-				return nil, fmt.Errorf("cannot list the secrets of %s/%s (%s): the GitHub token needs the repo scope and admin access to the repository; run builder auth github as an admin of it", owner, repo, apiErr.Message)
+				return nil, exitcode.With(exitcode.Auth, fmt.Errorf("cannot list the secrets of %s/%s (%s): the GitHub token needs the repo scope and admin access to the repository; run builder auth github as an admin of it", owner, repo, apiErr.Message))
 			}
 			return nil, fmt.Errorf("failed to list the secrets of %s/%s: %w", owner, repo, err)
 		}

@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/MobAI-App/ios-builder/internal/exitcode"
 )
 
 // DefaultBaseURL is the production App Store Connect API endpoint.
@@ -96,6 +98,14 @@ type ErrorSource struct {
 }
 
 // Error renders the status and every ASC error on one line.
+// ExitCode makes a rejected API key (401) exit with exitcode.Auth.
+func (e *Error) ExitCode() int {
+	if e.StatusCode == 401 {
+		return exitcode.Auth
+	}
+	return exitcode.Failure
+}
+
 func (e *Error) Error() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "App Store Connect %s %s: HTTP %d", e.Method, e.Path, e.StatusCode)

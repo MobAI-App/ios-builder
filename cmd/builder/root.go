@@ -19,6 +19,7 @@ import (
 	"github.com/MobAI-App/ios-builder/internal/auth"
 	"github.com/MobAI-App/ios-builder/internal/build"
 	"github.com/MobAI-App/ios-builder/internal/config"
+	"github.com/MobAI-App/ios-builder/internal/exitcode"
 	"github.com/MobAI-App/ios-builder/internal/github"
 	"github.com/MobAI-App/ios-builder/internal/otainstall"
 	"github.com/MobAI-App/ios-builder/internal/release"
@@ -53,7 +54,7 @@ func initConfig() {
 func getGitHubClient() (*github.Client, error) {
 	token, err := auth.GetToken()
 	if err != nil {
-		return nil, fmt.Errorf("not authenticated. Run: builder auth github")
+		return nil, exitcode.With(exitcode.Auth, fmt.Errorf("not authenticated. Run: builder auth github (or pipe a token: builder auth github --token-stdin)"))
 	}
 	return github.NewClient(token), nil
 }
