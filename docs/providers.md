@@ -88,14 +88,17 @@ Use a personal account and a YAML-configured app. Create an environment group
 named `builder` accessible to that app; add `BUILDER=1` if you only need unsigned
 builds. Store any signing/MobAI secrets in that group. The generated workflows
 use `mac_mini_m2`, the machine eligible for personal free minutes, and have no
-automatic push triggers.
+automatic push triggers. `init --provider codemagic --runner <instance_type>`
+(saved as `codemagic.instance_type`) picks another machine.
 
 ### Bitrise
 
 Use a Hobby app connected to your repository. Enable **configuration from the
 repository** so Bitrise loads the committed `bitrise.yml`; dashboard-only YAML
-will not pick up these files. Select a macOS Xcode stack in the app settings.
-The workflow requests `g2.mac.medium`. Disable any automatically generated push
+will not pick up these files. Select a macOS Xcode stack in the app settings,
+or pass `--stack` to `init` to put one in `bitrise.yml` (`bitrise.stack`).
+The workflow requests `g2.mac.medium`; `--runner <machine_type_id>` (saved as
+`bitrise.machine_type_id`) picks another. Disable any automatically generated push
 triggers if you only want builds explicitly started by Builder. Add secrets in
 the app's Secrets settings. Keep the app's total build timeout at 90 minutes or
 less; IPA/script limits are also included in the generated workflow. Unsigned

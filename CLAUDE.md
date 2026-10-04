@@ -24,6 +24,8 @@ go install ./cmd/builder
 # Run
 ./builder auth github       # Authenticate with GitHub (OAuth device flow)
 ./builder init              # Set up workflow in current repo
+./builder init --runner self-hosted,macOS,ARM64  # runs-on rendered into both workflows; also macos-15 etc.
+./builder init --provider bitrise --app-id X --branch main --runner g2.mac.large --stack osx-xcode-16.2.x
 ./builder ios build         # Trigger build and download IPA to ./dist/
 ./builder ios build --profile production  # Build with a builder.json profile
 ./builder dev flutter       # Flutter hot reload with MobAI
@@ -428,6 +430,20 @@ internal/
 - **QR Rendering**: `skip2/go-qrcode` at error-correction Low, Unicode half blocks (two module rows per
   line, 2-module quiet zone), light modules as `█` so it scans on a dark terminal (`--qr-invert` for light);
   `TestQRFitsATerminal` pins a representative link at 41 modules (version 6). Printed only on a TTY or `--qr`.
+- **Runner Selection**: `config.Runner` is a label or label list (JSON string or array, `--runner` comma
+  list, labels `^[A-Za-z0-9][A-Za-z0-9._-]*$` so they render unescaped). `ios-build.yml` has
+  `runs-on: ${{ fromJSON(inputs.profile || '{}').runner || <default> }}` (`inputs` is allowed in
+  `runs-on`); `ProfileInput` carries the profile's runner, else the top-level one, and is sent with an
+  empty name when only a runner is set. `workflow.RenderWorkflow` swaps only the default (the embedded
+  file is the `macos-latest` rendering) and must find exactly one runs-on line; `ios-share.yml` and tag
+  builds get only the rendered top-level runner. Codemagic/Bitrise use `codemagic.instance_type`,
+  `bitrise.machine_type_id`/`stack` (`ProviderFiles(provider, ci)`, unknown values warn, unsafe ones fail)
+- **Persistent Runners**: `setup-xcode` only `if: runner.environment == 'github-hosted'`, else a
+  `Check Xcode` step; `brew install` only behind `command -v` (`TestTemplatesSafeOnPersistentRunner`);
+  `Clear previous outputs` after the snapshot checkout; the signing step prepends its keychain to the
+  saved search list (`$RUNNER_TEMP/keychains-before`) and lists installed profile UUIDs
+  (`installed-profiles`, `extensions/installed`), which `Cleanup signing` restores/removes from fixed
+  `$RUNNER_TEMP` paths, since `$GITHUB_ENV` is written only at the end of the signing step
 - **Signing Sets As A Library**: `signing.Setup` and `signing.EnsureSecrets`
   (internal/signing/sets.go) hold the non-interactive core of `signing setup`
   and on-demand provisioning; cmd/builder keeps the prompts, the plan and the
@@ -442,10 +458,11 @@ internal/
   "project": "MyApp",
   "platform": "ios",
   "github": { "owner": "username", "repo": "my-ios-app" },
+  "runner": ["self-hosted", "macOS", "ARM64"],
   "ios": { "path": "ios", "scheme": "", "bundleId": "com.example.app" },
   "defaultProfile": "development",
   "profiles": {
-    "development": { "distribution": "development" },
+    "development": { "distribution": "development", "runner": "macos-15" },
     "preview":     { "distribution": "internal", "env": { "API_URL": "https://staging.example.com" } },
     "production":  { "distribution": "store", "scheme": "MyApp", "provider": "codemagic" }
   }
@@ -459,7 +476,10 @@ the first IPA exists. `signing.dir` is the last automatic `signing setup`'s `--o
 
 A profile's fields are `distribution` (`development`, `ad-hoc`/`internal`, `store`, `enterprise`; the
 only signing field, omitted = unsigned), `configuration` (else Debug for development, Release
-otherwise), `scheme`, `provider`, `env`. `runner`/`submit` are planned on `config.Profile`, not read.
+otherwise), `scheme`, `provider`, `env`, `runner` (GitHub runs-on, overrides the top-level `runner`;
+empty everywhere is `macos-latest`). `submit` is planned, not read. `codemagic.instance_type`,
+`bitrise.machine_type_id` and `bitrise.stack` pick those providers' machines (set by `init --provider
+... --runner/--stack`).
 
 ## Workflow Features
 
@@ -482,7 +502,7 @@ The embedded workflow template (`internal/workflow/templates/ios-build.yml`):
   `signing_set`. The job deletes
   the tag when it ends (`permissions: contents: write`). Any other workflow in the repo with an
   unfiltered `on: push` also fires on these tags.
-- Runs on `macos-latest`
+- Runs on the profile input's `runner`, else the default `init` rendered (`macos-latest` unless `runner` is set)
 - Detects Flutter projects (checks for `pubspec.yaml`)
 - Restores and saves DerivedData for fast incremental builds
 - Auto-detects workspace/project and scheme
