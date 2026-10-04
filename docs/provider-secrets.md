@@ -209,8 +209,8 @@ before it is ready. Release it in MobAI when finished, or cancel using the run
 ID printed by the CLI:
 
 ```sh
-builder ios cancel --provider codemagic --run-id CODEMAGIC_RUN_ID
-builder ios cancel --provider bitrise --run-id BITRISE_RUN_ID
+builder builds cancel CODEMAGIC_RUN_ID --provider codemagic
+builder builds cancel BITRISE_RUN_ID --provider bitrise
 ```
 
 Run the printed snapshot cleanup command after the job stops. `--duration` is

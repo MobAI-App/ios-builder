@@ -172,7 +172,7 @@ First [create a MobAI key and add it to each provider](provider-secrets.md#3-cre
 ```sh
 builder ios share --provider codemagic
 builder ios share --provider bitrise --duration 20m
-builder ios cancel --provider bitrise --run-id RUN_SLUG
+builder builds cancel RUN_SLUG --provider bitrise
 ```
 
 Set `MOBAI_API_KEY` as a secret on the chosen provider. Any MobAI account will
@@ -186,7 +186,7 @@ The remote job outlives the CLI and consumes minutes until released, idle,
 cancelled, or timed out. Workflows on these free plans are capped at 90 minutes
 including setup and compilation. `--duration` controls idle time only (maximum
 60 minutes for these providers), so it does not guarantee that much usable time.
-The CLI prints an explicit cancellation command. `ios cancel` confirms the run
+The CLI prints an explicit cancellation command. `builds cancel` (formerly `ios cancel`, still accepted) confirms the run
 has stopped; it does not affect another provider's runs.
 
 Submitted simulator sessions retain their source ref while queued/running.

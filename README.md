@@ -103,6 +103,42 @@ build cannot pick a [profile](#build-profiles) per run; it applies the profile
 named by `defaultProfile`, if there is one. The simulator build takes no
 profile at all.
 
+## Build history
+
+The provider stays the source of truth: `builder builds` reads the runs Builder
+started there and shows them in one shape, whether they ran on GitHub Actions,
+Codemagic or Bitrise. Nothing is stored locally.
+
+```bash
+builder builds                          # Newest 20 builds on the default provider
+builder builds --status failed --limit 50 --json
+builder builds --provider codemagic     # Another provider's builds
+builder builds show 1a2b3c4d            # Jobs and steps, failed step and its errors, artifacts and expiry
+builder builds logs 1a2b3c4d --failed   # Only the failed jobs (GitHub) or steps (Codemagic)
+builder builds logs 1a2b3c4d --follow   # Keep printing until the build ends
+builder builds download 1a2b3c4d        # The IPA into ./dist/ (-o to change), e.g. after Ctrl-C on ios build
+builder builds cancel 1a2b3c4d
+```
+
+`<id>` is the 8-character build ID `ios build` prints, a provider run ID, or a
+run URL; a URL also picks its provider, so `--provider` is only needed for bare
+run IDs on a non-default provider. The listing covers IPA builds (`ios build`,
+kind `ipa`) and simulator sessions (`ios share`, kind `simulator`):
+
+- **GitHub**: runs of `ios-build.yml` and `ios-share.yml`; the build ID comes
+  from the run name (`iOS Build <id>`, or the tag for tag-triggered runs). Job
+  logs exist once a job has ended, so `--follow` prints step names while a job
+  runs and its log when it ends. Artifacts expire after 7 days. GitHub does not
+  report workflow inputs, so the profile column stays empty.
+- **Codemagic / Bitrise**: builds of the configured `build_workflow` and
+  `share_workflow`; the build ID and profile come from the variables Builder sent
+  (`BUILD_ID`, `BUILDER_PROFILE`), else from the IPA's name. Codemagic serves logs
+  per step; Bitrise serves one build log, so `--failed` prints all of a failed
+  build's log.
+
+`builder ios cancel --provider <name> --run-id <id>` still works and now means
+`builder builds cancel <id> --provider <name>`.
+
 ## Additional macOS Providers
 
 GitHub Actions remains the default, so existing commands continue to work. Add
@@ -215,6 +251,13 @@ builder ios build --unsigned  # Build without code signing (if signing is config
 builder ios build --provider codemagic  # Build on another provider (also: bitrise)
 builder ios build --profile production  # Build with a profile from builder.json
 
+# Build history (GitHub, Codemagic and Bitrise)
+builder builds                # Recent builds: ID, kind, profile, status, started, duration, run
+builder builds show <id>      # Jobs, steps, failure, artifacts (<id>: build ID, run ID or run URL)
+builder builds logs <id> --follow  # Logs until the build ends (--failed: failed jobs/steps only)
+builder builds download <id>  # The IPA into ./dist/
+builder builds cancel <id>    # Cancel a running build
+
 # Simulator (free, needs a MOBAI_API_KEY secret)
 builder ios share             # Try the build on a simulator in the MobAI app
 builder ios share --duration 1h  # Keep it available longer while unused
@@ -273,7 +316,7 @@ builder asc users             # Team members and whether they can test internall
 builder asc users invite dev@example.com --role DEVELOPER --first Dee --last Vee
 ```
 
-Every `release`/`upload`/`submit`/`distribute`/`asc` command takes `--json` for
+Every `release`/`upload`/`submit`/`distribute`/`asc` command, and `builds`/`builds show`, takes `--json` for
 machine-readable output and never prompts, so agents and CI jobs can drive them.
 
 ## Configuration
