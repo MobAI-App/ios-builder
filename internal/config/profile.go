@@ -20,7 +20,11 @@ type BuildSettings struct {
 	// profile, when ios.signing is set (the legacy path).
 	Signing  bool
 	Provider string // profile provider, else the top-level provider; may be empty (GitHub)
-	Env      map[string]string
+	// Env is the top-level env with the profile's on top, key by key.
+	Env map[string]string
+	// Secrets are the names of the provider secrets to expose, top-level and
+	// the profile's, sorted and unique. Values never pass through Builder.
+	Secrets []string
 	// Distribution is the profile's distribution, canonical (internal is
 	// ad-hoc); empty for unsigned builds and the legacy path.
 	Distribution string
@@ -87,6 +91,11 @@ func (c *Config) ResolveProfile(name string) (BuildSettings, error) {
 		name, source = c.DefaultProfile, "defaultProfile"
 	}
 	if name == "" {
+		env, secrets, err := c.resolveEnv("")
+		if err != nil {
+			return s, err
+		}
+		s.Env, s.Secrets = env, secrets
 		return s, nil
 	}
 	p, ok := c.Profiles[name]
@@ -100,13 +109,9 @@ func (c *Config) ResolveProfile(name string) (BuildSettings, error) {
 	if err != nil {
 		return s, fmt.Errorf("profile %q: %w", name, err)
 	}
-	for k := range p.Env {
-		if !envNameRe.MatchString(k) {
-			return s, fmt.Errorf("profile %q: env name %q is not a valid environment variable name", name, k)
-		}
-		if reservedEnvName(k) {
-			return s, fmt.Errorf("profile %q: env name %q is reserved for the runner", name, k)
-		}
+	env, secrets, err := c.resolveEnv(name)
+	if err != nil {
+		return s, err
 	}
 	s.Profile = name
 	s.Distribution = distribution
@@ -125,9 +130,7 @@ func (c *Config) ResolveProfile(name string) (BuildSettings, error) {
 	if p.Provider != "" {
 		s.Provider = p.Provider
 	}
-	if len(p.Env) > 0 {
-		s.Env = p.Env
-	}
+	s.Env, s.Secrets = env, secrets
 	return s, nil
 }
 
@@ -142,11 +145,12 @@ func (s *BuildSettings) EnvJSON() string {
 	return string(data)
 }
 
-// ProfileInput encodes name, env and distribution as the single `profile`
-// dispatch input, keeping the workflow under GitHub's limit of ten inputs. It
-// is empty when no profile is selected, so older workflow files still work.
+// ProfileInput encodes name, env, distribution and the secret names as the
+// single `profile` dispatch input, keeping the workflow under GitHub's limit
+// of ten inputs. It is empty when no profile is selected and builder.json has
+// no top-level env or secrets, so older workflow files still work.
 func (s *BuildSettings) ProfileInput() string {
-	if s.Profile == "" {
+	if s.Profile == "" && len(s.Env) == 0 && len(s.Secrets) == 0 {
 		return ""
 	}
 	env := s.Env
@@ -157,6 +161,7 @@ func (s *BuildSettings) ProfileInput() string {
 		Name         string            `json:"name"`
 		Env          map[string]string `json:"env"`
 		Distribution string            `json:"distribution"`
-	}{s.Profile, env, s.Distribution})
+		Secrets      []string          `json:"secrets,omitempty"`
+	}{s.Profile, env, s.Distribution, s.Secrets})
 	return string(data)
 }

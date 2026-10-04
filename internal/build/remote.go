@@ -88,6 +88,15 @@ func (c *Coordinator) inputs(buildID, ref, sha string, s *config.BuildSettings) 
 	if s.Distribution != "" {
 		v["DISTRIBUTION"] = s.Distribution
 	}
+	// Only names: the values are the app's own secure variables, already in
+	// the runner's environment. runner.sh checks each is set and, for a
+	// profile, prefers NAME__<suffix> (config.SecretStorageName).
+	if len(s.Secrets) > 0 {
+		v["BUILDER_SECRETS"] = strings.Join(s.Secrets, " ")
+		if s.Profile != "" {
+			v["BUILDER_SECRET_SUFFIX"] = config.SecretSuffix(s.Profile)
+		}
+	}
 	return v
 }
 

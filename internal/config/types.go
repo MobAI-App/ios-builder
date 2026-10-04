@@ -25,6 +25,12 @@ type Config struct {
 	// runs have no flags, so it is also the only way they can select a profile.
 	DefaultProfile string             `json:"defaultProfile,omitempty"`
 	Profiles       map[string]Profile `json:"profiles,omitempty"`
+	// Env is exported on the runner for every build; a profile's env
+	// overrides it key by key.
+	Env map[string]string `json:"env,omitempty"`
+	// Secrets names the provider-held secrets every build exposes as
+	// environment variables. Only names live here, never values.
+	Secrets []string `json:"secrets,omitempty"`
 }
 
 // SigningConfig is where the signing material lives on this machine.
@@ -41,7 +47,10 @@ type Profile struct {
 	Configuration string            `json:"configuration,omitempty"` // overrides ios.configuration; derived from distribution when empty
 	Scheme        string            `json:"scheme,omitempty"`        // overrides ios.scheme
 	Provider      string            `json:"provider,omitempty"`      // overrides provider
-	Env           map[string]string `json:"env,omitempty"`           // exported on the runner before dependencies and the build
+	Env           map[string]string `json:"env,omitempty"`           // exported on the runner before dependencies and the build; overrides the top-level env per key
+	// Secrets names further provider-held secrets this profile's builds
+	// expose, on top of the top-level list (see SecretStorageName).
+	Secrets []string `json:"secrets,omitempty"`
 	// Distribution is the only signing setting of a profile (development,
 	// ad-hoc or internal, store, enterprise; empty is unsigned): it selects the
 	// signing set and the type the provisioning profile in it must have.
