@@ -11,9 +11,11 @@ import (
 	"github.com/MobAI-App/ios-builder/internal/config"
 )
 
+// The machine lines of the templates. Group 1 is the indent and group 2 the
+// line ending's \r, if any, so a CRLF checkout renders and stays CRLF.
 var (
-	codemagicInstanceRe = regexp.MustCompile(`(?m)^(\s*)instance_type: ` + regexp.QuoteMeta(config.DefaultCodemagicInstance) + `$`)
-	bitriseMachineRe    = regexp.MustCompile(`(?m)^(\s*)machine_type_id: ` + regexp.QuoteMeta(config.DefaultBitriseMachine) + `$`)
+	codemagicInstanceRe = regexp.MustCompile(`(?m)^([ \t]*)instance_type: ` + regexp.QuoteMeta(config.DefaultCodemagicInstance) + `(\r?)$`)
+	bitriseMachineRe    = regexp.MustCompile(`(?m)^([ \t]*)machine_type_id: ` + regexp.QuoteMeta(config.DefaultBitriseMachine) + `(\r?)$`)
 )
 
 // ProviderFiles returns files to commit to the provider's configured branch,
@@ -41,27 +43,33 @@ func ProviderFiles(provider string, ci *config.CIConfig) (map[string][]byte, err
 			return nil, err
 		}
 	}
+	yaml = renderMachine(provider, yaml, ci)
+	script, err := GetTemplate("runner.sh")
+	if err != nil {
+		return nil, err
+	}
+	return map[string][]byte{name: yaml, ".builder/ci/runner.sh": script}, nil
+}
+
+// renderMachine writes ci's machine settings into a provider template.
+func renderMachine(provider string, yaml []byte, ci *config.CIConfig) []byte {
 	switch provider {
 	case "codemagic":
 		if ci.InstanceType != "" {
-			yaml = codemagicInstanceRe.ReplaceAll(yaml, []byte("${1}instance_type: "+ci.InstanceType))
+			yaml = codemagicInstanceRe.ReplaceAll(yaml, []byte("${1}instance_type: "+ci.InstanceType+"${2}"))
 		}
 	case "bitrise":
 		machine := ci.MachineTypeID
 		if machine == "" {
 			machine = config.DefaultBitriseMachine
 		}
-		repl := "${1}machine_type_id: " + machine
+		repl := "${1}machine_type_id: " + machine + "${2}"
 		if ci.Stack != "" {
-			repl += "\n${1}stack: " + ci.Stack
+			repl += "\n${1}stack: " + ci.Stack + "${2}"
 		}
 		yaml = bitriseMachineRe.ReplaceAll(yaml, []byte(repl))
 	}
-	script, err := GetTemplate("runner.sh")
-	if err != nil {
-		return nil, err
-	}
-	return map[string][]byte{name: yaml, ".builder/ci/runner.sh": script}, nil
+	return yaml
 }
 
 // WriteProviderFiles refuses to replace unrelated CI files and checks all

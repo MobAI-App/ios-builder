@@ -34,10 +34,11 @@ func GetShareWorkflowTemplate() ([]byte, error) {
 	return GetTemplate("ios-share.yml")
 }
 
-// The runs-on lines of the templates, as embedded (default runner).
+// The runs-on lines of the templates, as embedded (default runner). They are
+// matched without the line ending, so a CRLF checkout renders the same way.
 const (
-	buildRunsOn = "    runs-on: ${{ fromJSON(inputs.profile || '{}').runner || 'macos-latest' }}\n"
-	shareRunsOn = "    runs-on: macos-latest\n"
+	buildRunsOn = "    runs-on: ${{ fromJSON(inputs.profile || '{}').runner || 'macos-latest' }}"
+	shareRunsOn = "    runs-on: macos-latest"
 )
 
 // RenderWorkflow returns ios-build.yml with runner as the default runs-on.
@@ -60,7 +61,7 @@ func RenderWorkflow(runner config.Runner) ([]byte, error) {
 		data, _ := json.Marshal([]string(runner))
 		def = "fromJSON('" + string(data) + "')"
 	}
-	line := "    runs-on: ${{ fromJSON(inputs.profile || '{}').runner || " + def + " }}\n"
+	line := "    runs-on: ${{ fromJSON(inputs.profile || '{}').runner || " + def + " }}"
 	return replaceOnce(content, buildRunsOn, line, "ios-build.yml")
 }
 
@@ -83,7 +84,7 @@ func RenderShareWorkflow(runner config.Runner) ([]byte, error) {
 	} else {
 		data, _ = json.Marshal([]string(runner))
 	}
-	return replaceOnce(content, shareRunsOn, "    runs-on: "+string(data)+"\n", "ios-share.yml")
+	return replaceOnce(content, shareRunsOn, "    runs-on: "+string(data), "ios-share.yml")
 }
 
 func replaceOnce(content []byte, old, new, name string) ([]byte, error) {

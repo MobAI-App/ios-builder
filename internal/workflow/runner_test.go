@@ -259,6 +259,37 @@ printf '    "%s"\n' "/Users/me/Library/Keychains/login.keychain-db" "/Users/me/L
 	}
 }
 
+// A Windows checkout with core.autocrlf embeds the templates with CRLF line
+// endings; rendering must still find its lines and keep the endings.
+func TestRenderingSurvivesCRLF(t *testing.T) {
+	crlf := func(b []byte) []byte {
+		return bytes.ReplaceAll(bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n")), []byte("\n"), []byte("\r\n"))
+	}
+	for name, old := range map[string]string{"ios-build.yml": buildRunsOn, "ios-share.yml": shareRunsOn} {
+		raw, _ := GetTemplate(name)
+		got, err := replaceOnce(crlf(raw), old, "    runs-on: x", name)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !bytes.Contains(got, []byte("    runs-on: x\r\n")) {
+			t.Errorf("%s: runs-on line lost its CRLF", name)
+		}
+	}
+	raw, _ := GetTemplate("codemagic.yaml")
+	got := renderMachine("codemagic", crlf(raw), &config.CIConfig{InstanceType: "mac_mini_m4"})
+	if bytes.Count(got, []byte("instance_type: mac_mini_m4\r\n")) != 2 {
+		t.Errorf("codemagic CRLF:\n%q", got)
+	}
+	raw, _ = GetTemplate("bitrise.yml")
+	got = renderMachine("bitrise", crlf(raw), &config.CIConfig{MachineTypeID: "g2.mac.large", Stack: "osx-xcode-16.2.x"})
+	if bytes.Count(got, []byte("machine_type_id: g2.mac.large\r\n")) != 3 || bytes.Count(got, []byte("stack: osx-xcode-16.2.x\r\n")) != 3 {
+		t.Errorf("bitrise CRLF:\n%q", got)
+	}
+	if bytes.Contains(bytes.ReplaceAll(got, []byte("\r\n"), nil), []byte("\n")) {
+		t.Error("bitrise CRLF rendering introduced a bare LF")
+	}
+}
+
 func TestProviderMachines(t *testing.T) {
 	files, err := ProviderFiles("codemagic", &config.CIConfig{InstanceType: "mac_mini_m4"})
 	if err != nil {
