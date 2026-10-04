@@ -457,8 +457,6 @@ internal/
   string-to-sign of 2020-12-06+); only the signature's `+` is escaped, since `Link` doubles every `%`.
 - **QR Size Per Backend**: github 41 modules, azure 57, s3 69 (R2 73), s3 with a session token ~105.
   `TestBucketQRSizes` pins them; `Options.print` adds a note when the code is wider than 80 columns.
-- **Hosted Short Links** (not built): a MobAI-hosted link would be one more `Backend` whose `Mint` returns a
-  short manifest URL; it needs a server that does not exist yet.
 - **Signing Sets As A Library**: `signing.Setup` and `signing.EnsureSecrets`
   (internal/signing/sets.go) hold the non-interactive core of `signing setup`
   and on-demand provisioning; cmd/builder keeps the prompts, the plan and the
