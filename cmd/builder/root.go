@@ -762,7 +762,7 @@ func runIOSShare(cmd *cobra.Command, args []string) error {
 		fmt.Println("Simulator session submitted. The build and bridge must start before it appears in MobAI under CI Devices.")
 		fmt.Println("The workflow is limited to 90 minutes including setup/build; idle duration is not a guaranteed session length.")
 		fmt.Printf("Workflow: %s\n", result.WorkflowURL)
-		fmt.Printf("Cancel: builder ios cancel --provider %s --run-id %s\n", name, result.ProviderRunID)
+		fmt.Printf("Cancel: builder builds cancel %s --provider %s\n", result.ProviderRunID, name)
 		fmt.Printf("After the run finishes, remove its snapshot: git push %s --delete refs/ios-builder/jobs/%s\n", remote, result.BuildID)
 		return nil
 	}
