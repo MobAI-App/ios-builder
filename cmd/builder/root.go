@@ -678,22 +678,27 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 	if submit && distribute {
 		return fmt.Errorf("pass only one of --submit (TestFlight) or --distribute (over-the-air install)")
 	}
+	for _, name := range []string{"backend", "ttl", "group"} {
+		if cmd.Flags().Changed(name) && !distribute {
+			return fmt.Errorf("--%s goes with --distribute", name)
+		}
+	}
 	if submit {
 		if opts.Unsigned {
 			return fmt.Errorf("--submit uploads to App Store Connect, which needs a signed build; drop --unsigned")
 		}
 		return runRelease(cmd, cfg, &release.Options{Build: opts})
 	}
+	var dist *target
 	if distribute {
 		if opts.Unsigned {
 			return fmt.Errorf("--distribute installs on a device, which needs a signed build; drop --unsigned")
 		}
-		s, err := cfg.ResolveProfile(opts.Profile)
-		if err != nil {
+		if dist, err = buildDistributeTarget(cmd, cfg, opts.Profile); err != nil {
 			return err
 		}
-		if err := otainstall.CheckDistribution(&s, otainstall.BackendGitHub); err != nil {
-			return err
+		if dist.Name == otainstall.BackendTestFlight {
+			return runBuildTestFlight(cmd, cfg, dist, &release.Options{Build: opts})
 		}
 	}
 
@@ -715,7 +720,7 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 	if err != nil || !distribute {
 		return err
 	}
-	return runDistribute(cmd, cfg, result.IPAPath)
+	return runDistribute(cmd, dist, result.IPAPath)
 }
 
 func runIOSShare(cmd *cobra.Command, args []string) error {
