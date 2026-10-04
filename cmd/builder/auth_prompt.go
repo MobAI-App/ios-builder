@@ -14,12 +14,19 @@ import (
 // Hidden terminal input avoids line-editor redraws and wrapping when pasting
 // long API tokens. Pipes must explicitly opt in with --token-stdin.
 func readProviderToken(ctx context.Context, input io.Reader, output io.Writer) (string, error) {
+	return readHidden(ctx, input, output, "API token", "--token-stdin")
+}
+
+// readHidden reads one value from the terminal without echoing it. what names
+// the value in the prompt and errors; stdinFlag is the flag that takes it from
+// a pipe instead.
+func readHidden(ctx context.Context, input io.Reader, output io.Writer, what, stdinFlag string) (string, error) {
 	if err := ctx.Err(); err != nil {
-		return "", fmt.Errorf("API token input canceled: %w", err)
+		return "", fmt.Errorf("%s input canceled: %w", what, err)
 	}
 	file, ok := input.(*os.File)
 	if !ok || !term.IsTerminal(int(file.Fd())) {
-		return "", fmt.Errorf("API token input requires a terminal; use --token-stdin for piped input")
+		return "", fmt.Errorf("%s input requires a terminal; use %s for piped input", what, stdinFlag)
 	}
 	fd := int(file.Fd())
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
@@ -35,9 +42,9 @@ func readProviderToken(ctx context.Context, input io.Reader, output io.Writer) (
 		_ = term.Restore(fd, state)
 		fmt.Fprintln(output)
 	}()
-	fmt.Fprint(output, "API token (input hidden; paste once, then press Enter): ")
+	fmt.Fprintf(output, "%s (input hidden; paste once, then press Enter): ", what)
 	type result struct {
-		token string
+		value string
 		err   error
 	}
 	done := make(chan result, 1)
@@ -48,16 +55,16 @@ func readProviderToken(ctx context.Context, input io.Reader, output io.Writer) (
 			io.Reader
 			io.Writer
 		}{file, io.Discard}, "")
-		token, err := terminal.ReadPassword("")
-		done <- result{token, err}
+		value, err := terminal.ReadPassword("")
+		done <- result{value, err}
 	}()
 	select {
 	case <-ctx.Done():
-		return "", fmt.Errorf("API token input canceled: %w", ctx.Err())
+		return "", fmt.Errorf("%s input canceled: %w", what, ctx.Err())
 	case r := <-done:
 		if r.err != nil {
-			return "", fmt.Errorf("read API token: %w", r.err)
+			return "", fmt.Errorf("read %s: %w", what, r.err)
 		}
-		return r.token, nil
+		return r.value, nil
 	}
 }
