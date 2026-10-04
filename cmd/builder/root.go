@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -26,7 +27,6 @@ import (
 	"github.com/MobAI-App/ios-builder/internal/signing"
 	"github.com/MobAI-App/ios-builder/internal/update"
 	"github.com/MobAI-App/ios-builder/internal/workflow"
-	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -335,8 +335,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if provider != "" && provider != "github" {
 		return runProviderInit(cmd)
 	}
-	fmt.Println("Builder - iOS Build Setup")
-	fmt.Println()
+	out := newOutput(cmd)
+	w := out.log
+	ask := newAsker(cmd)
+	res := &initResult{Files: []string{}}
+	fmt.Fprintln(w, "Builder - iOS Build Setup")
+	fmt.Fprintln(w)
 
 	// Get remote name from flag
 	remoteName, _ := cmd.Flags().GetString("remote")
@@ -347,15 +351,15 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to detect GitHub repository: %w\nMake sure you're in a git repository with a GitHub remote", err)
 	}
 
-	fmt.Printf("Detected repository: %s/%s (from remote '%s')\n", githubOwner, repoName, remoteName)
-	fmt.Println()
+	fmt.Fprintf(w, "Detected repository: %s/%s (from remote '%s')\n", githubOwner, repoName, remoteName)
+	fmt.Fprintln(w)
 
 	// Get project name
 	projectName, _ := cmd.Flags().GetString("project")
 	if projectName == "" {
 		cwd, _ := os.Getwd()
 		defaultProject := filepath.Base(cwd)
-		projectName, err = promptString("Project name", defaultProject)
+		projectName, err = ask.text("Project name", defaultProject, "--project")
 		if err != nil {
 			return err
 		}
@@ -365,76 +369,95 @@ func runInit(cmd *cobra.Command, args []string) error {
 	iosPath, _ := cmd.Flags().GetString("ios-path")
 	scheme, _ := cmd.Flags().GetString("scheme")
 
-	if iosPath == "" {
+	if !cmd.Flags().Changed("ios-path") {
 		detectedPath, framework := detectIOSPath()
+		res.Framework = framework
 		if detectedPath != "" {
-			fmt.Printf("Detected %s project (iOS at '%s')\n", framework, detectedPath)
+			fmt.Fprintf(w, "Detected %s project (iOS at '%s')\n", framework, detectedPath)
 			if framework == expoManagedFramework {
-				fmt.Printf("There is no '%s' directory yet; the build generates it on the runner with 'expo prebuild'.\n", detectedPath)
-				fmt.Println("app.json / app.config.js must set ios.bundleIdentifier, or prebuild cannot run unattended.")
+				fmt.Fprintf(w, "There is no '%s' directory yet; the build generates it on the runner with 'expo prebuild'.\n", detectedPath)
+				fmt.Fprintln(w, "app.json / app.config.js must set ios.bundleIdentifier, or prebuild cannot run unattended.")
 			}
-			confirmPrompt := promptui.Prompt{
-				Label:     "Use this path",
-				IsConfirm: true,
+			use, err := ask.confirm("Use this path", true, "--ios-path")
+			if err != nil {
+				return err
 			}
-			_, err := confirmPrompt.Run()
-			if err == nil {
+			if use {
 				iosPath = detectedPath
 			}
 		} else if framework != "" {
-			fmt.Printf("Detected %s project\n", framework)
+			fmt.Fprintf(w, "Detected %s project\n", framework)
 		}
 
 		if iosPath == "" && framework == "" {
-			fmt.Println("No iOS project detected in current directory.")
-			fmt.Println("If this is a hybrid app (React Native, Flutter, etc.),")
-			iosPath, _ = promptString("Path to iOS folder (leave empty for root)", "")
+			fmt.Fprintln(w, "No iOS project detected in current directory.")
+			fmt.Fprintln(w, "If this is a hybrid app (React Native, Flutter, etc.),")
+			if iosPath, err = ask.text("Path to iOS folder (leave empty for root)", "", "--ios-path"); err != nil {
+				return err
+			}
 		}
 	}
 
 	// Detect Flutter and prompt for version
-	var flutterVersion string
+	flutterVersion, _ := cmd.Flags().GetString("flutter-version")
 	if isFlutterProject() {
-		fmt.Println()
-		fmt.Println("Detected Flutter project")
-		localVersion := getLocalFlutterVersion()
-		if localVersion != "" {
-			fmt.Printf("Local Flutter version: %s\n", localVersion)
-		}
-		flutterVersion, err = promptString("Flutter version for builds (leave empty for latest)", localVersion)
-		if err != nil {
-			return err
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Detected Flutter project")
+		if !cmd.Flags().Changed("flutter-version") {
+			localVersion := getLocalFlutterVersion()
+			if localVersion != "" {
+				fmt.Fprintf(w, "Local Flutter version: %s\n", localVersion)
+			}
+			flutterVersion, err = ask.text("Flutter version for builds (leave empty for latest)", localVersion, "--flutter-version")
+			if err != nil {
+				return err
+			}
 		}
 	}
 
 	// Detect Kotlin Multiplatform and prompt for JDK version
-	var jdkVersion string
+	jdkVersion, _ := cmd.Flags().GetString("jdk-version")
 	if isKMPProject() {
-		fmt.Println()
-		fmt.Println("Detected Kotlin Multiplatform project")
-		fmt.Println("Note: KMP has no hot reload on iOS - rebuild for code changes.")
-		jdkVersion, err = promptString("JDK version for Gradle builds", "17")
-		if err != nil {
-			return err
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Detected Kotlin Multiplatform project")
+		fmt.Fprintln(w, "Note: KMP has no hot reload on iOS - rebuild for code changes.")
+		if !cmd.Flags().Changed("jdk-version") {
+			jdkVersion, err = ask.text("JDK version for Gradle builds", "17", "--jdk-version")
+			if err != nil {
+				return err
+			}
 		}
 	}
 
-	fmt.Println()
-	fmt.Printf("Project:    %s\n", projectName)
-	fmt.Printf("Repository: %s/%s\n", githubOwner, repoName)
+	// The commit and build questions come last in a terminal, but without
+	// one they are settled here, before any file is written.
+	commit, _ := cmd.Flags().GetBool("commit")
+	runFirstBuild, _ := cmd.Flags().GetBool("build")
+	if !ask.interactive && !ask.yes {
+		if !cmd.Flags().Changed("commit") {
+			return needInput(`an answer to "Commit and push workflow"`, "--commit", "--commit=false", "--yes (no)")
+		}
+		if !cmd.Flags().Changed("build") {
+			return needInput(`an answer to "Run build now"`, "--build", "--build=false", "--yes (no)")
+		}
+	}
+
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Project:    %s\n", projectName)
+	fmt.Fprintf(w, "Repository: %s/%s\n", githubOwner, repoName)
 	if iosPath != "" {
-		fmt.Printf("iOS Path:   %s\n", iosPath)
+		fmt.Fprintf(w, "iOS Path:   %s\n", iosPath)
 	}
 	if flutterVersion != "" {
-		fmt.Printf("Flutter:    %s\n", flutterVersion)
+		fmt.Fprintf(w, "Flutter:    %s\n", flutterVersion)
 	}
 	if jdkVersion != "" {
-		fmt.Printf("JDK:        %s\n", jdkVersion)
+		fmt.Fprintf(w, "JDK:        %s\n", jdkVersion)
 	}
-	fmt.Println()
+	fmt.Fprintln(w)
 
 	// Create workflow file locally
-	fmt.Println("Creating workflow file...")
+	fmt.Fprintln(w, "Creating workflow file...")
 	workflowDir := ".github/workflows"
 	if err := os.MkdirAll(workflowDir, 0755); err != nil {
 		return fmt.Errorf("failed to create workflow directory: %w", err)
@@ -449,7 +472,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if err := os.WriteFile(workflowPath, workflowContent, 0644); err != nil {
 		return fmt.Errorf("failed to write workflow file: %w", err)
 	}
-	fmt.Printf("  Created: %s\n", workflowPath)
+	fmt.Fprintf(w, "  Created: %s\n", workflowPath)
+	res.Files = append(res.Files, workflowPath)
 
 	// Ship the share workflow next to the build one so `builder ios share` needs
 	// no extra setup. Dispatch-only, so it costs nothing until used.
@@ -461,7 +485,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if err := os.WriteFile(sharePath, shareContent, 0644); err != nil {
 		return fmt.Errorf("failed to write simulator workflow file: %w", err)
 	}
-	fmt.Printf("  Created: %s\n", sharePath)
+	fmt.Fprintf(w, "  Created: %s\n", sharePath)
+	res.Files = append(res.Files, sharePath)
 
 	// Save config
 	cfg, err := config.NewManager().Load()
@@ -477,7 +502,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if cfg.IOS.BundleID == "" {
 		cfg.IOS.BundleID = detectBundleID(iosPath)
 	}
-	signing.SyncExtensions(cfg, os.Stdout)
+	signing.SyncExtensions(cfg, w)
 	if flutterVersion != "" {
 		cfg.Flutter.Version = flutterVersion
 	}
@@ -490,82 +515,123 @@ func runInit(cmd *cobra.Command, args []string) error {
 		cfg.Provider = "github"
 	}
 
-	fmt.Println("Creating builder.json...")
+	fmt.Fprintln(w, "Creating builder.json...")
 	mgr := config.NewManager()
 	if err := mgr.Save(cfg); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
-	fmt.Println("  Created: builder.json")
+	fmt.Fprintln(w, "  Created: builder.json")
+	res.Files = append(res.Files, "builder.json")
+	res.Project, res.Repository, res.IOSPath = projectName, githubOwner+"/"+repoName, iosPath
+	res.BundleID, res.FlutterVersion, res.JDKVersion = cfg.IOS.BundleID, flutterVersion, jdkVersion
 
-	fmt.Println()
-	fmt.Println("Setup complete!")
-	fmt.Println()
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Setup complete!")
+	fmt.Fprintln(w)
 
 	// Ask to commit and push
-	commitPrompt := promptui.Prompt{
-		Label:     "Commit and push workflow",
-		IsConfirm: true,
+	if !cmd.Flags().Changed("commit") {
+		if commit, err = ask.confirm("Commit and push workflow", false, "--commit"); err != nil {
+			return err
+		}
 	}
-	_, commitErr := commitPrompt.Run()
 
-	if commitErr == nil {
-		fmt.Println()
-		fmt.Println("Committing and pushing...")
-
-		// Git add
-		addCmd := exec.Command("git", "add", ".github/workflows/ios-build.yml", ".github/workflows/ios-share.yml", "builder.json")
-		if output, err := addCmd.CombinedOutput(); err != nil {
-			fmt.Printf("  Warning: git add failed: %s\n", strings.TrimSpace(string(output)))
-		} else {
-			fmt.Println("  Added files to staging")
-		}
-
-		// Git commit
-		commitCmd := exec.Command("git", "commit", "-m", "Add iOS build workflow")
-		if output, err := commitCmd.CombinedOutput(); err != nil {
-			outputStr := strings.TrimSpace(string(output))
-			if strings.Contains(outputStr, "nothing to commit") {
-				fmt.Println("  Nothing to commit (already committed)")
-			} else {
-				fmt.Printf("  Warning: git commit failed: %s\n", outputStr)
-			}
-		} else {
-			fmt.Println("  Committed changes")
-		}
-
-		// Git push
-		pushCmd := exec.Command("git", "push")
-		if output, err := pushCmd.CombinedOutput(); err != nil {
-			fmt.Printf("  Warning: git push failed: %s\n", strings.TrimSpace(string(output)))
-		} else {
-			fmt.Println("  Pushed to remote")
-		}
-		fmt.Println()
+	if commit {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Committing and pushing...")
+		res.Committed, res.Pushed = commitAndPushInit(w)
+		fmt.Fprintln(w)
 	}
 
 	// Ask to run build
-	buildPrompt := promptui.Prompt{
-		Label:     "Run build now",
-		IsConfirm: true,
+	if !cmd.Flags().Changed("build") {
+		if runFirstBuild, err = ask.confirm("Run build now", false, "--build"); err != nil {
+			return err
+		}
 	}
-	_, buildErr := buildPrompt.Run()
 
-	if buildErr == nil {
-		fmt.Println()
-		_, err := runBuild(context.Background(), cfg, &build.BuildOptions{
+	if runFirstBuild {
+		fmt.Fprintln(w)
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		result, err := runBuild(ctx, cfg, &build.BuildOptions{
 			OutputDir: "dist",
 			Timeout:   build.DefaultTimeout,
 			Remote:    remoteName,
-		})
+		}, w)
+		if result != nil {
+			res.Build = newBuildJSON(result, "github", "")
+			if !out.json {
+				fmt.Fprintf(w, "IPA: %s\n", result.IPAPath)
+				fmt.Fprintf(w, "Workflow: %s\n", result.WorkflowURL)
+			}
+		}
+		if out.json {
+			_ = printJSON(cmd, res)
+		}
 		return err
 	}
 
-	fmt.Println()
-	fmt.Println("To build later, run:")
-	fmt.Println("  builder ios build")
-	fmt.Println()
+	if out.json {
+		return printJSON(cmd, res)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "To build later, run:")
+	fmt.Fprintln(w, "  builder ios build")
+	fmt.Fprintln(w)
 
 	return nil
+}
+
+// initResult is the JSON of `init --json`.
+type initResult struct {
+	Project        string     `json:"project"`
+	Repository     string     `json:"repository"`
+	IOSPath        string     `json:"ios_path"`
+	Framework      string     `json:"framework,omitempty"`
+	BundleID       string     `json:"bundle_id,omitempty"`
+	FlutterVersion string     `json:"flutter_version,omitempty"`
+	JDKVersion     string     `json:"jdk_version,omitempty"`
+	Files          []string   `json:"files"`
+	Committed      bool       `json:"committed"`
+	Pushed         bool       `json:"pushed"`
+	Build          *buildJSON `json:"build,omitempty"`
+}
+
+// commitAndPushInit commits the files init wrote and pushes them. Failures
+// are warnings: the files are in place either way.
+func commitAndPushInit(w io.Writer) (committed, pushed bool) {
+	addCmd := exec.Command("git", "add", ".github/workflows/ios-build.yml", ".github/workflows/ios-share.yml", "builder.json")
+	if output, err := addCmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(w, "  Warning: git add failed: %s\n", strings.TrimSpace(string(output)))
+	} else {
+		fmt.Fprintln(w, "  Added files to staging")
+	}
+
+	commitCmd := exec.Command("git", "commit", "-m", "Add iOS build workflow")
+	if output, err := commitCmd.CombinedOutput(); err != nil {
+		outputStr := strings.TrimSpace(string(output))
+		if strings.Contains(outputStr, "nothing to commit") {
+			fmt.Fprintln(w, "  Nothing to commit (already committed)")
+			committed = true
+		} else {
+			fmt.Fprintf(w, "  Warning: git commit failed: %s\n", outputStr)
+		}
+	} else {
+		fmt.Fprintln(w, "  Committed changes")
+		committed = true
+	}
+
+	pushCmd := exec.Command("git", "push")
+	if output, err := pushCmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(w, "  Warning: git push failed: %s\n", strings.TrimSpace(string(output)))
+	} else {
+		fmt.Fprintln(w, "  Pushed to remote")
+		pushed = true
+	}
+	return committed, pushed
 }
 
 var iosCmd = &cobra.Command{
@@ -628,6 +694,12 @@ func init() {
 	initCmd.Flags().String("app-id", "", "Codemagic app ID or Bitrise app slug")
 	initCmd.Flags().String("branch", "", "Committed branch containing the provider workflow")
 	initCmd.Flags().Bool("set-default", false, "Make this provider the project default")
+	initCmd.Flags().String("flutter-version", "", "Flutter version for builds (default: the local one; empty for latest)")
+	initCmd.Flags().String("jdk-version", "", "JDK version for Kotlin Multiplatform Gradle builds (default 17)")
+	initCmd.Flags().Bool("commit", false, "Commit and push the workflow and builder.json without asking (--commit=false: don't)")
+	initCmd.Flags().Bool("build", false, "Run the first build without asking (--build=false: don't)")
+	initCmd.Flags().BoolP("yes", "y", false, "Accept every detected value and default without asking; does not commit or build unless --commit/--build")
+	initCmd.Flags().Bool("json", false, "Print the result as JSON (progress goes to stderr); implies --no-input")
 
 	// iOS build command flags
 	iosBuildCmd.Flags().StringP("output", "o", "dist", "Output directory for IPA")
@@ -637,12 +709,14 @@ func init() {
 	iosBuildCmd.Flags().String("provider", "", "Override CI provider (default github or builder.json provider)")
 	iosBuildCmd.Flags().String("profile", "", "Build profile from builder.json (default: defaultProfile, else the top-level ios settings)")
 	iosBuildCmd.Flags().Bool("submit", false, "Also upload to App Store Connect and process for TestFlight (short for: ios release)")
+	iosBuildCmd.Flags().Bool("json", false, "Print the result as JSON (progress goes to stderr); with --submit or --distribute their JSON follows")
 	iosCmd.AddCommand(iosBuildCmd)
 
 	// iOS share command flags
 	iosShareCmd.Flags().Duration("duration", 30*time.Minute, "How long the simulator stays available while unused")
 	iosShareCmd.Flags().StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
 	iosShareCmd.Flags().String("provider", "", "Override CI provider (default github or builder.json provider)")
+	iosShareCmd.Flags().Bool("json", false, "Print the result as JSON (progress goes to stderr)")
 	iosCmd.AddCommand(iosShareCmd)
 }
 
@@ -713,11 +787,54 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 		ctx, stop = signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer stop()
 	}
-	result, err := runBuild(ctx, cfg, &opts)
-	if err != nil || !distribute {
+	out := newOutput(cmd)
+	result, err := runBuild(ctx, cfg, &opts, out.log)
+	if err != nil {
 		return err
 	}
+	if out.json {
+		if err := printJSON(cmd, newBuildJSON(result, name, opts.Profile)); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintf(out.log, "IPA: %s\n", result.IPAPath)
+		fmt.Fprintf(out.log, "Workflow: %s\n", result.WorkflowURL)
+	}
+	if !distribute {
+		return nil
+	}
 	return runDistribute(cmd, cfg, result.IPAPath)
+}
+
+// buildJSON is the JSON of `ios build --json` (and init's "build").
+type buildJSON struct {
+	BuildID     string  `json:"build_id"`
+	IPAPath     string  `json:"ipa"`
+	IPASize     int64   `json:"ipa_size"`
+	WorkflowURL string  `json:"workflow_url"`
+	Provider    string  `json:"provider"`
+	Profile     string  `json:"profile,omitempty"`
+	Duration    float64 `json:"duration_seconds"`
+}
+
+func newBuildJSON(r *build.BuildResult, provider, profile string) *buildJSON {
+	return &buildJSON{
+		BuildID: r.BuildID, IPAPath: r.IPAPath, IPASize: r.IPASize, WorkflowURL: r.WorkflowURL,
+		Provider: provider, Profile: profile, Duration: r.Duration.Round(time.Second).Seconds(),
+	}
+}
+
+// shareJSON is the JSON of `ios share --json`. Ready means the simulator is
+// in MobAI now; Submitted means the provider accepted the run and it shows up
+// once the build and bridge start.
+type shareJSON struct {
+	BuildID       string `json:"build_id"`
+	Provider      string `json:"provider"`
+	WorkflowURL   string `json:"workflow_url"`
+	RunID         string `json:"run_id,omitempty"`
+	Ready         bool   `json:"ready"`
+	Submitted     bool   `json:"submitted"`
+	CancelCommand string `json:"cancel_command,omitempty"`
 }
 
 func runIOSShare(cmd *cobra.Command, args []string) error {
@@ -734,6 +851,7 @@ func runIOSShare(cmd *cobra.Command, args []string) error {
 	// A simulator build takes no profile, so the provider is the flag, else
 	// builder.json's.
 	provider, _ := cmd.Flags().GetString("provider")
+	out := newOutput(cmd)
 
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -749,7 +867,7 @@ func runIOSShare(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	result, err := build.NewCoordinator(cfg, ghClient).Share(ctx, build.ShareOptions{
+	result, err := build.NewCoordinatorWithOutput(cfg, ghClient, out.log).Share(ctx, build.ShareOptions{
 		Provider: provider,
 		Duration: duration,
 		Remote:   remote,
@@ -758,24 +876,38 @@ func runIOSShare(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Println()
+	name, _ := cfg.ProviderName(provider)
+	if out.json {
+		res := shareJSON{BuildID: result.BuildID, Provider: name, WorkflowURL: result.WorkflowURL, Ready: !result.Submitted, Submitted: result.Submitted}
+		if result.Submitted {
+			res.RunID = result.ProviderRunID
+			res.CancelCommand = fmt.Sprintf("builder ios cancel --provider %s --run-id %s", name, result.ProviderRunID)
+		} else if result.RunID != 0 {
+			res.RunID = strconv.FormatInt(result.RunID, 10)
+		}
+		return printJSON(cmd, res)
+	}
+
+	w := out.log
+	fmt.Fprintln(w)
 	if result.Submitted {
-		name, _ := cfg.ProviderName(provider)
-		fmt.Println("Simulator session submitted. The build and bridge must start before it appears in MobAI under CI Devices.")
-		fmt.Println("The workflow is limited to 90 minutes including setup/build; idle duration is not a guaranteed session length.")
-		fmt.Printf("Workflow: %s\n", result.WorkflowURL)
-		fmt.Printf("Cancel: builder ios cancel --provider %s --run-id %s\n", name, result.ProviderRunID)
-		fmt.Printf("After the run finishes, remove its snapshot: git push %s --delete refs/ios-builder/jobs/%s\n", remote, result.BuildID)
+		fmt.Fprintln(w, "Simulator session submitted. The build and bridge must start before it appears in MobAI under CI Devices.")
+		fmt.Fprintln(w, "The workflow is limited to 90 minutes including setup/build; idle duration is not a guaranteed session length.")
+		fmt.Fprintf(w, "Workflow: %s\n", result.WorkflowURL)
+		fmt.Fprintf(w, "Cancel: builder ios cancel --provider %s --run-id %s\n", name, result.ProviderRunID)
+		fmt.Fprintf(w, "After the run finishes, remove its snapshot: git push %s --delete refs/ios-builder/jobs/%s\n", remote, result.BuildID)
 		return nil
 	}
-	fmt.Println("Simulator ready. Open MobAI and find it under CI Devices.")
-	fmt.Println("It closes when you stop its bridge there, or after being left unused.")
-	fmt.Printf("Workflow: %s\n", result.WorkflowURL)
+	fmt.Fprintln(w, "Simulator ready. Open MobAI and find it under CI Devices.")
+	fmt.Fprintln(w, "It closes when you stop its bridge there, or after being left unused.")
+	fmt.Fprintf(w, "Workflow: %s\n", result.WorkflowURL)
 
 	return nil
 }
 
-func runBuild(ctx context.Context, cfg *config.Config, opts *build.BuildOptions) (*build.BuildResult, error) {
+// runBuild provisions a missing signing set (GitHub) and runs the build,
+// with progress on log.
+func runBuild(ctx context.Context, cfg *config.Config, opts *build.BuildOptions, log io.Writer) (*build.BuildResult, error) {
 	ghClient, err := clientForProvider(cfg, opts.Provider)
 	if err != nil {
 		return nil, err
@@ -783,20 +915,9 @@ func runBuild(ctx context.Context, cfg *config.Config, opts *build.BuildOptions)
 	// A GitHub build with a distribution needs its signing set in the
 	// repository; ensureSigningSecrets leaves Codemagic and Bitrise alone.
 	if ghClient != nil && !opts.Unsigned {
-		if err := ensureSigningSecrets(ctx, cfg, ghClient, getASCClient, opts.Profile, opts.Provider, os.Stdout); err != nil {
+		if err := ensureSigningSecrets(ctx, cfg, ghClient, getASCClient, opts.Profile, opts.Provider, log); err != nil {
 			return nil, err
 		}
 	}
-
-	coordinator := build.NewCoordinator(cfg, ghClient)
-
-	result, err := coordinator.Build(ctx, opts)
-	if err != nil {
-		return nil, err
-	}
-
-	fmt.Printf("IPA: %s\n", result.IPAPath)
-	fmt.Printf("Workflow: %s\n", result.WorkflowURL)
-
-	return result, nil
+	return build.NewCoordinatorWithOutput(cfg, ghClient, log).Build(ctx, opts)
 }
