@@ -3,7 +3,10 @@ package main
 import (
 	"encoding/json"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,6 +45,18 @@ func TestShareJSONShape(t *testing.T) {
 	got := jsonKeys(t, shareJSON{BuildID: "b", Provider: "codemagic", WorkflowURL: "u", RunID: "r", Submitted: true, CancelCommand: "c"})
 	if !slices.Equal(got, want) {
 		t.Errorf("ios share --json keys = %v, want %v", got, want)
+	}
+}
+
+func TestMobaiPingJSON(t *testing.T) {
+	t.Chdir(t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	stdout, _, err := runNoInput(t, "mobai", "ping", "--url", srv.URL, "--json")
+	if err != nil || strings.TrimSpace(stdout) != "{\n  \"ok\": true\n}" {
+		t.Fatalf("mobai ping --json = %q, %v", stdout, err)
 	}
 }
 
