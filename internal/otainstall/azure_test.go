@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
-	"github.com/MobAI-App/ios-builder/internal/config"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/MobAI-App/ios-builder/internal/config"
 )
 
 const fakeAzureKey = "ZmFrZS1henVyZS1hY2NvdW50LWtleQ=="
@@ -49,7 +50,10 @@ func TestAzureSASMatchesTheDocumentedStringToSign(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := b.store.(*azureStore)
+	store, ok := b.store.(*azureStore)
+	if !ok {
+		t.Fatal("not an azure store")
+	}
 	exp := time.Date(2026, 10, 4, 13, 0, 0, 0, time.UTC)
 	got, _ := url.ParseQuery(store.sas("ios-builder/x/m.plist", "r", exp))
 	if got.Get("sig") != azureSig("r", "2026-10-04T13:00:00Z", "b", "/blob/acct/builds/ios-builder/x/m.plist") ||
@@ -239,7 +243,7 @@ func TestAzureLinkInstalls(t *testing.T) {
 	if strings.Count(res.Link, "%25") != strings.Count(res.Link, "%252B") {
 		t.Errorf("link has double-escaped characters, which cost QR versions: %s", res.Link)
 	}
-	_, ipa := install(t, f.srv.Client(), res.Links)
+	_, ipa := install(t, f.srv.Client(), &res.Links)
 	want, _ := os.ReadFile(app.Path)
 	if !bytes.Equal(ipa, want) {
 		t.Error("installed IPA differs")
@@ -285,7 +289,10 @@ func TestAzureFromConfigReadsTheEnvironment(t *testing.T) {
 		t.Fatalf("no container: %v, %v", b, err)
 	}
 	cfgB, err := AzureFromConfig(&config.DistributeConfig{Container: "c"}, 0, func(k string) string { return env[k] })
-	if err != nil || cfgB.store.(*azureStore).account != "fromcs" {
+	if err != nil {
+		t.Fatalf("connection string: %v", err)
+	}
+	if store, ok := cfgB.store.(*azureStore); !ok || store.account != "fromcs" {
 		t.Fatalf("connection string: %v", err)
 	}
 	env = map[string]string{"AZURE_STORAGE_ACCOUNT": "acct"}

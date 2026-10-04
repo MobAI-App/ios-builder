@@ -173,7 +173,8 @@ func (o *Options) print(res *Result) error {
 		}
 		fmt.Fprintln(o.Log)
 		fmt.Fprint(o.Log, qr)
-		if width := utf8.RuneCountInString(qr[:strings.Index(qr, "\n")]); width > wideQR {
+		firstLine, _, _ := strings.Cut(qr, "\n")
+		if width := utf8.RuneCountInString(firstLine); width > wideQR {
 			fmt.Fprintf(o.Log, "\nThe QR code is %d columns wide because the signed URL is long (temporary credentials add their session token); widen the terminal or zoom out to scan it, or open the link on the phone.\n", width)
 		}
 	}

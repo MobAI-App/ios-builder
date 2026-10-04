@@ -220,7 +220,7 @@ func (f *fakeS3) keys() []string {
 }
 
 // install does what iOS does with a link: fetch the manifest, then the IPA it names.
-func install(t *testing.T, client *http.Client, links Links) (manifest string, ipa []byte) {
+func install(t *testing.T, client *http.Client, links *Links) (manifest string, ipa []byte) {
 	t.Helper()
 	get := func(u string) []byte {
 		resp, err := client.Get(u)
@@ -276,7 +276,7 @@ func TestS3SessionRefreshesInstallsAndCleansUp(t *testing.T) {
 	}
 	// Both links install, the older one serving the newest manifest.
 	want, _ := os.ReadFile(app.Path)
-	for _, l := range []Links{first, second} {
+	for _, l := range []*Links{&first, &second} {
 		manifest, ipa := install(t, f.srv.Client(), l)
 		if !bytes.Equal(ipa, want) || !strings.Contains(manifest, "run.mobai.tapdash") {
 			t.Errorf("install from %s fetched %d bytes", l.ManifestURL, len(ipa))
