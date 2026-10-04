@@ -7,10 +7,13 @@ import (
 
 // Config represents the builder.json configuration file
 type Config struct {
-	Project     string            `json:"project"`
-	Platform    string            `json:"platform"`
-	GitHub      GitHubConfig      `json:"github"`
-	Provider    string            `json:"provider,omitempty"`
+	Project  string       `json:"project"`
+	Platform string       `json:"platform"`
+	GitHub   GitHubConfig `json:"github"`
+	Provider string       `json:"provider,omitempty"`
+	// Runner is the GitHub Actions runs-on of the generated workflows: a label
+	// or labels; empty is macos-latest. init renders it into the workflow files.
+	Runner      Runner            `json:"runner,omitempty"`
 	Codemagic   CIConfig          `json:"codemagic,omitempty"`
 	Bitrise     CIConfig          `json:"bitrise,omitempty"`
 	IOS         IOSConfig         `json:"ios,omitempty"`
@@ -46,6 +49,9 @@ type Profile struct {
 	// ad-hoc or internal, store, enterprise; empty is unsigned): it selects the
 	// signing set and the type the provisioning profile in it must have.
 	Distribution string `json:"distribution,omitempty"`
+	// Runner overrides the top-level runner for builds dispatched with this
+	// profile (GitHub only; a tag-triggered build uses the rendered default).
+	Runner Runner `json:"runner,omitempty"`
 }
 
 // CIConfig identifies an app already connected to the project's GitHub repository.
@@ -55,6 +61,12 @@ type CIConfig struct {
 	Branch        string `json:"branch,omitempty"`
 	BuildWorkflow string `json:"build_workflow,omitempty"`
 	ShareWorkflow string `json:"share_workflow,omitempty"`
+	// InstanceType is the Codemagic instance_type (default mac_mini_m2).
+	InstanceType string `json:"instance_type,omitempty"`
+	// MachineTypeID is the Bitrise machine_type_id (default g2.mac.medium).
+	MachineTypeID string `json:"machine_type_id,omitempty"`
+	// Stack is the Bitrise stack (e.g. osx-xcode-16.2.x); empty leaves it to the app settings.
+	Stack string `json:"stack,omitempty"`
 }
 
 // ProviderName resolves a command override, the project default, then GitHub.
