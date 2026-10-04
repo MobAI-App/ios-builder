@@ -73,7 +73,8 @@ func (p *Progress) Start(buildID string) {
 // Settings prints what the job will run with, before anything is dispatched,
 // so a wrong profile or flag is visible without opening the provider's logs.
 // It completes the header that Start begins.
-func (p *Progress) Settings(s *config.BuildSettings, provider string) {
+// runner is what the provider runs the job on (config.RunnerName).
+func (p *Progress) Settings(s *config.BuildSettings, provider, runner string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -95,6 +96,9 @@ func (p *Progress) Settings(s *config.BuildSettings, provider string) {
 	fmt.Fprintf(p.writer, "   Scheme:        %s\n", orDefault(s.Scheme, "(auto-detected)"))
 	fmt.Fprintf(p.writer, "   Signing:       %s\n", signing)
 	fmt.Fprintf(p.writer, "   Provider:      %s\n", provider)
+	if runner != "" {
+		fmt.Fprintf(p.writer, "   Runner:        %s\n", runner)
+	}
 	if len(s.Env) > 0 {
 		keys := slices.Sorted(maps.Keys(s.Env))
 		fmt.Fprintf(p.writer, "   Env:           %s\n", strings.Join(keys, ", "))

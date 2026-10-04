@@ -187,7 +187,7 @@ func (c *Coordinator) Build(ctx context.Context, opts *BuildOptions) (*BuildResu
 	// Generate build ID
 	buildID := uuid.New().String()[:8]
 	c.progress.Start(buildID)
-	c.progress.Settings(settings, name)
+	c.progress.Settings(settings, name, c.config.RunnerName(name, settings))
 
 	// Step 1: Snapshot the working tree so the build matches what's on disk
 	c.progress.Update(PhaseSnapshot, "Snapshotting working tree...")
