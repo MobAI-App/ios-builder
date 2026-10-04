@@ -23,7 +23,7 @@ func TestProviderYAMLAndPreservation(t *testing.T) {
 	for _, name := range []string{"codemagic", "bitrise"} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			files, err := ProviderFiles(name, config.CIConfig{})
+			files, err := ProviderFiles(name, &config.CIConfig{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -43,17 +43,17 @@ func TestProviderYAMLAndPreservation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := WriteProviderFiles(dir, name, config.CIConfig{}); err == nil {
+			if _, err := WriteProviderFiles(dir, name, &config.CIConfig{}); err == nil {
 				t.Fatal("overwrote unrelated workflow")
 			}
 			if _, err := os.Stat(filepath.Join(dir, ".builder")); !os.IsNotExist(err) {
 				t.Fatal("partial write before collision check")
 			}
 			dir = t.TempDir()
-			if _, err := WriteProviderFiles(dir, name, config.CIConfig{}); err != nil {
+			if _, err := WriteProviderFiles(dir, name, &config.CIConfig{}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := WriteProviderFiles(dir, name, config.CIConfig{}); err != nil {
+			if _, err := WriteProviderFiles(dir, name, &config.CIConfig{}); err != nil {
 				t.Fatal("idempotent setup:", err)
 			}
 		})

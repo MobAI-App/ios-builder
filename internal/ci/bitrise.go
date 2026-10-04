@@ -18,8 +18,8 @@ type Bitrise struct {
 	baseURL string
 }
 
-func NewBitrise(cfg config.CIConfig, token string) *Bitrise {
-	return &Bitrise{api: newAPI(token, "Authorization"), config: cfg, baseURL: "https://api.bitrise.io/v0.1"}
+func NewBitrise(cfg *config.CIConfig, token string) *Bitrise {
+	return &Bitrise{api: newAPI(token, "Authorization"), config: *cfg, baseURL: "https://api.bitrise.io/v0.1"}
 }
 func (*Bitrise) Name() string { return "bitrise" }
 func (b *Bitrise) buildsURL() string {

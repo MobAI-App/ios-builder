@@ -15,8 +15,8 @@ type Codemagic struct {
 	dispatchURL, statusURL string
 }
 
-func NewCodemagic(cfg config.CIConfig, token string) *Codemagic {
-	return &Codemagic{api: newAPI(token, "x-auth-token"), config: cfg, dispatchURL: "https://api.codemagic.io", statusURL: "https://codemagic.io/api/v3"}
+func NewCodemagic(cfg *config.CIConfig, token string) *Codemagic {
+	return &Codemagic{api: newAPI(token, "x-auth-token"), config: *cfg, dispatchURL: "https://api.codemagic.io", statusURL: "https://codemagic.io/api/v3"}
 }
 func (*Codemagic) Name() string { return "codemagic" }
 func (c *Codemagic) Start(ctx context.Context, req Request) (Run, error) {

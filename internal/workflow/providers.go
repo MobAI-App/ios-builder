@@ -20,7 +20,7 @@ var (
 // with the machine from ci: Codemagic instance_type, Bitrise machine_type_id
 // and stack (empty keeps the template's default; no stack leaves it to the
 // Bitrise app settings).
-func ProviderFiles(provider string, ci config.CIConfig) (map[string][]byte, error) {
+func ProviderFiles(provider string, ci *config.CIConfig) (map[string][]byte, error) {
 	name := ""
 	switch provider {
 	case "codemagic":
@@ -66,7 +66,7 @@ func ProviderFiles(provider string, ci config.CIConfig) (map[string][]byte, erro
 
 // WriteProviderFiles refuses to replace unrelated CI files and checks all
 // destinations before writing any file. Existing Builder-generated files update.
-func WriteProviderFiles(dir, provider string, ci config.CIConfig) ([]string, error) {
+func WriteProviderFiles(dir, provider string, ci *config.CIConfig) ([]string, error) {
 	root, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err

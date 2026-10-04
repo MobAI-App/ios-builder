@@ -93,7 +93,7 @@ func runProviderInit(cmd *cobra.Command) error {
 	var paths []string
 	customWorkflows := ciCfg.BuildWorkflow != "ios-build" || ciCfg.ShareWorkflow != "ios-share"
 	if !customWorkflows {
-		paths, err = workflow.WriteProviderFiles(".", name, ciCfg)
+		paths, err = workflow.WriteProviderFiles(".", name, &ciCfg)
 		if err != nil {
 			return err
 		}

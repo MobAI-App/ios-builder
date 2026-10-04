@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,7 +60,7 @@ func TestRenderWorkflowRunsOn(t *testing.T) {
 	// The embedded template is the default rendering.
 	raw, _ := GetWorkflowTemplate()
 	def, _ := RenderWorkflow(nil)
-	if string(raw) != string(def) {
+	if !bytes.Equal(raw, def) {
 		t.Fatal("RenderWorkflow(nil) differs from the embedded template")
 	}
 	if _, err := RenderWorkflow(config.Runner{"x' }}"}); err == nil {
@@ -259,7 +260,7 @@ printf '    "%s"\n' "/Users/me/Library/Keychains/login.keychain-db" "/Users/me/L
 }
 
 func TestProviderMachines(t *testing.T) {
-	files, err := ProviderFiles("codemagic", config.CIConfig{InstanceType: "mac_mini_m4"})
+	files, err := ProviderFiles("codemagic", &config.CIConfig{InstanceType: "mac_mini_m4"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +278,7 @@ func TestProviderMachines(t *testing.T) {
 		}
 	}
 
-	files, err = ProviderFiles("bitrise", config.CIConfig{MachineTypeID: "g2.mac.large", Stack: "osx-xcode-16.2.x"})
+	files, err = ProviderFiles("bitrise", &config.CIConfig{MachineTypeID: "g2.mac.large", Stack: "osx-xcode-16.2.x"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,16 +307,16 @@ func TestProviderMachines(t *testing.T) {
 
 	// Defaults leave the templates as embedded.
 	for provider, name := range map[string]string{"codemagic": "codemagic.yaml", "bitrise": "bitrise.yml"} {
-		files, err := ProviderFiles(provider, config.CIConfig{})
+		files, err := ProviderFiles(provider, &config.CIConfig{})
 		if err != nil {
 			t.Fatal(err)
 		}
 		raw, _ := GetTemplate(name)
-		if string(files[name]) != string(raw) {
+		if !bytes.Equal(files[name], raw) {
 			t.Errorf("%s: default rendering differs from the template", name)
 		}
 	}
-	if _, err := ProviderFiles("bitrise", config.CIConfig{Stack: "x\nworkflows: {}"}); err == nil {
+	if _, err := ProviderFiles("bitrise", &config.CIConfig{Stack: "x\nworkflows: {}"}); err == nil {
 		t.Fatal("an unsafe stack was rendered")
 	}
 }

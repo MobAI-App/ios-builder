@@ -18,5 +18,5 @@ type (
 	Bitrise        = ci.Bitrise
 )
 
-func NewCodemagic(cfg config.CIConfig, token string) *Codemagic { return ci.NewCodemagic(cfg, token) }
-func NewBitrise(cfg config.CIConfig, token string) *Bitrise     { return ci.NewBitrise(cfg, token) }
+func NewCodemagic(cfg *config.CIConfig, token string) *Codemagic { return ci.NewCodemagic(cfg, token) }
+func NewBitrise(cfg *config.CIConfig, token string) *Bitrise     { return ci.NewBitrise(cfg, token) }

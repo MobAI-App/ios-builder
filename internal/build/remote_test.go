@@ -156,7 +156,7 @@ func TestRemoteSnapshotLifecycle(t *testing.T) {
 					}
 					return &http.Response{StatusCode: code, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
 				})
-				c.provider = ci.NewCodemagic(cfg.Codemagic, "test-token")
+				c.provider = ci.NewCodemagic(&cfg.Codemagic, "test-token")
 			}
 
 			var result *BuildResult
