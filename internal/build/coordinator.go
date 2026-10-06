@@ -341,16 +341,25 @@ func extractFile(f *zip.File, destPath string) (int64, error) {
 	}
 	defer func() { _ = rc.Close() }()
 
-	out, err := os.Create(destPath)
+	// Publish the IPA only after the entire entry (including its ZIP checksum)
+	// has been read and the output closed successfully. A failed extraction
+	// must not leave a broken archive for later commands to select.
+	out, err := os.CreateTemp(filepath.Dir(destPath), ".builder-*.ipa.part")
 	if err != nil {
 		return 0, fmt.Errorf("failed to create output file: %w", err)
 	}
-	defer func() { _ = out.Close() }()
+	defer func() { _ = out.Close(); _ = os.Remove(out.Name()) }()
 
 	size, err := io.Copy(out, rc)
 	if err != nil {
 		return 0, fmt.Errorf("failed to write IPA: %w", err)
 	}
 
+	if err := out.Close(); err != nil {
+		return 0, fmt.Errorf("failed to close IPA: %w", err)
+	}
+	if err := os.Rename(out.Name(), destPath); err != nil {
+		return 0, fmt.Errorf("failed to save IPA: %w", err)
+	}
 	return size, nil
 }
