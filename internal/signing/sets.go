@@ -88,8 +88,11 @@ type SetupResult struct {
 	SecretsUploaded bool   `json:"secrets_uploaded"`
 	// GitHubUpload is "ok" or why the upload failed.
 	GitHubUpload string `json:"github_upload"`
-	// BuildProfile is the builder.json profile written with the distribution.
+	// BuildProfile is the builder.json profile that builds with the set.
 	BuildProfile string `json:"build_profile"`
+	// ProfileWritten says BuildProfile was written to builder.json, which
+	// happens only when the secrets were uploaded.
+	ProfileWritten bool `json:"profile_written"`
 	// ReplacedDistribution is the distribution the profile had before, when
 	// it was a different one.
 	ReplacedDistribution string `json:"replaced_distribution,omitempty"`
@@ -135,9 +138,14 @@ func Setup(ctx context.Context, client *asc.Client, store SecretStore, storeErr 
 		res.GitHubUpload = res.UploadError.Error()
 	}
 
-	// The profile is written whatever the upload did: the material exists and
-	// the build that uses it is the same either way.
-	res.ReplacedDistribution = WriteProfile(cfg, profileName, opts.Type)
+	// The profile is written only when its secrets reached the repository: a
+	// profile in builder.json says the set is ready to build with, and one
+	// whose secrets are missing fails the build late and misleads anyone, an
+	// agent that cannot list secrets included, who reads builder.json.
+	if res.SecretsUploaded {
+		res.ReplacedDistribution = WriteProfile(cfg, profileName, opts.Type)
+		res.ProfileWritten = true
+	}
 	RecordDir(cfg, opts.OutDirAsGiven)
 	if cfg.IOS.BundleID == "" {
 		cfg.IOS.BundleID = opts.BundleID
