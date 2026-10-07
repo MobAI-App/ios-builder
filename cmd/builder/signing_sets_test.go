@@ -706,7 +706,8 @@ func signingSetupCommand(t *testing.T, store secretStore, args ...string) (cmd *
 
 // TestSigningSetupManualReportsAFailedUpload: a repository Builder cannot
 // write to is a message, not a dead end. The values are printed, the build
-// profile is written, and only the exit code says it failed.
+// profile is not written (builder.json must not claim a set the repository
+// does not have), and the exit code says it failed.
 func TestSigningSetupManualReportsAFailedUpload(t *testing.T) {
 	t.Chdir(t.TempDir())
 	cfg := &config.Config{Project: "App", Platform: "ios", GitHub: config.GitHubConfig{Owner: "o", Repo: "r"}}
@@ -742,8 +743,11 @@ func TestSigningSetupManualReportsAFailedUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.Profiles["store"].Distribution != "store" {
-		t.Errorf("build profile not written: %+v", saved.Profiles)
+	if _, ok := saved.Profiles["store"]; ok {
+		t.Errorf("build profile written although its secrets were not uploaded: %+v", saved.Profiles)
+	}
+	if !strings.Contains(stdout.String(), "Not updated: builder.json") {
+		t.Errorf("the skipped profile is not reported:\n%s", stdout.String())
 	}
 }
 
@@ -785,8 +789,11 @@ func TestSigningSetupAutoReportsAFailedUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.Profiles["store"].Distribution != "store" {
-		t.Errorf("build profile not written: %+v", saved.Profiles)
+	if _, ok := saved.Profiles["store"]; ok {
+		t.Errorf("build profile written although its secrets were not uploaded: %+v", saved.Profiles)
+	}
+	if !strings.Contains(stdout.String(), "Not updated: builder.json") {
+		t.Errorf("the skipped profile is not reported:\n%s", stdout.String())
 	}
 
 	// --json says the same in github_upload, and still exits non-zero.

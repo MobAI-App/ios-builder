@@ -395,13 +395,20 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", uploadErr)
 	}
 
-	// The profile is written whatever the upload did: the files exist and the
-	// build that uses them is the same either way.
-	replaced := writeSigningProfile(cfg, profileName, typ)
+	// The profile is written only when its secrets reached the repository:
+	// builder.json must not claim a signing set the repository does not have.
+	replaced := ""
+	if uploadErr == nil {
+		replaced = writeSigningProfile(cfg, profileName, typ)
+	}
 	if err := config.NewManager().Save(cfg); err != nil {
 		return fmt.Errorf("failed to update config: %w", err)
 	}
-	fmt.Fprintln(out, profileWritten(profileName, typ, replaced))
+	if uploadErr == nil {
+		fmt.Fprintln(out, profileWritten(profileName, typ, replaced))
+	} else {
+		fmt.Fprintln(out, profileNotWritten(profileName))
+	}
 
 	names := config.SigningSecretNames(set)
 	fmt.Fprintln(out)

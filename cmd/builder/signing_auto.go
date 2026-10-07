@@ -146,7 +146,11 @@ func runSigningAuto(cmd *cobra.Command) error {
 	if uploadErr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", uploadErr)
 	}
-	fmt.Fprintln(out.log, profileWritten(profileName, typ, res.ReplacedDistribution))
+	if res.ProfileWritten {
+		fmt.Fprintln(out.log, profileWritten(profileName, typ, res.ReplacedDistribution))
+	} else {
+		fmt.Fprintln(out.log, profileNotWritten(profileName))
+	}
 
 	// Everything is printed before the exit code, so finish's success-only
 	// hook is not used.
@@ -220,6 +224,12 @@ func profileWritten(name string, typ signing.Type, replaced string) string {
 		line += ", was " + replaced
 	}
 	return line + ")"
+}
+
+// profileNotWritten replaces that line when the upload failed: the profile
+// would claim a signing set the repository does not have.
+func profileNotWritten(name string) string {
+	return fmt.Sprintf("  Not updated: builder.json (profile %q is written once its secrets are uploaded; rerun setup with access to the repository's secrets, or add them by hand and then the profile)", name)
 }
 
 // resolveSigningBundleID takes the flag, then builder.json, then the newest
