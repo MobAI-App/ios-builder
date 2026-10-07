@@ -201,9 +201,11 @@ jobs:
         id: cache-deriveddata
         with:
           path: DerivedData
-          key: deriveddata-${{ github.run_id }}
+          key: deriveddata-device-${{ github.run_id }}
+          # "deriveddata-" alone would also match the simulator workflow's
+          # deriveddata-sim-*, whose products are no use to a device build.
           restore-keys: |
-            deriveddata-
+            deriveddata-device-
 
       - name: Detect project type
         id: detect
@@ -315,6 +317,19 @@ jobs:
           flutter-version: ${{ steps.params.outputs.flutter_version || '' }}
           channel: stable
           cache: true
+          pub-cache: false # cached below, with a fallback key
+
+      # flutter-action's own pub cache has no fallback key, so any change to
+      # pubspec.lock started from an empty ~/.pub-cache.
+      - name: Restore pub cache
+        if: steps.detect.outputs.type == 'flutter'
+        uses: actions/cache@v6
+        id: pub-cache
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
+          restore-keys: |
+            pub-${{ runner.os }}-
 
       - name: Flutter pub get
         if: steps.detect.outputs.type == 'flutter'
@@ -641,6 +656,74 @@ jobs:
           key: pods-${{ runner.os }}-${{ hashFiles(format('{0}/Podfile.lock', steps.params.outputs.ios_path)) }}
           restore-keys: |
             pods-${{ runner.os }}-
+
+      # Swift packages are cloned into a directory of their own (the build
+      # passes -clonedSourcePackagesDirPath) rather than DerivedData/SourcePackages,
+      # so they are keyed on the Package.resolved files that pin them. It sits
+      # outside the checkout, so nothing that walks the repository walks into
+      # package sources. No Package.resolved, nothing stable to key on: no cache.
+      - name: Restore Swift packages cache
+        if: hashFiles('**/*.xcworkspace/xcshareddata/swiftpm/Package.resolved', '**/*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', '!DerivedData/**', '!**/node_modules/**', '!**/Pods/**') != ''
+        uses: actions/cache@v6
+        id: spm-cache
+        with:
+          path: ~/.ios-builder/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles('**/*.xcworkspace/xcshareddata/swiftpm/Package.resolved', '**/*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', '!DerivedData/**', '!**/node_modules/**', '!**/Pods/**') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
+      # Before the build step's pod install, which is where React Native's
+      # Podfile hook reads USE_CCACHE.
+      - name: Enable ccache
+        id: ccache
+        env:
+          PROJECT_TYPE: ${{ steps.detect.outputs.type }}
+        run: |
+          set -e
+          # >>> ccache (keep identical across ios-build.yml, ios-share.yml, runner.sh)
+          # Opt-in with "cache": {"ccache": true} in builder.json, React Native and
+          # Expo only. A fresh checkout gives every source a new mtime, so a restored
+          # DerivedData still recompiles the native code; ccache hashes contents.
+          # React Native's Podfile hook (react_native_post_install) compiles through
+          # ccache when USE_CCACHE=1 is set at pod install; Expo's generated Podfile
+          # reads apple.ccacheEnabled from Podfile.properties.json instead. Off by
+          # default: a Podfile that does neither never calls it, and installing
+          # ccache costs time on every run.
+          ccache_enabled() {
+            case "$1" in reactnative|expo) ;; *) return 1 ;; esac
+            [ -f builder.json ] && [ "$(jq -r '.cache.ccache // false' builder.json 2>/dev/null || true)" = true ]
+          }
+
+          ccache_setup() {
+            command -v ccache >/dev/null 2>&1 || brew install ccache
+            export USE_CCACHE=1 CCACHE_DIR="$HOME/.ccache" CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-2G}"
+            mkdir -p "$CCACHE_DIR"
+            echo "ccache: $(ccache --version | head -n1), cache in $CCACHE_DIR (max $CCACHE_MAXSIZE)"
+          }
+          # <<< ccache
+          if ccache_enabled "$PROJECT_TYPE"; then
+            ccache_setup
+            {
+              echo "USE_CCACHE=$USE_CCACHE"
+              echo "CCACHE_DIR=$CCACHE_DIR"
+              echo "CCACHE_MAXSIZE=$CCACHE_MAXSIZE"
+            } >> "$GITHUB_ENV"
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ccache off (\"cache\": {\"ccache\": true} in builder.json turns it on for React Native and Expo)"
+          fi
+
+      # Content-addressed, so like DerivedData it is keyed per run and only the
+      # prefix ever hits; the save step at the end must stay paired with this.
+      - name: Restore ccache
+        if: steps.ccache.outputs.enabled == 'true'
+        uses: actions/cache/restore@v6
+        id: ccache-cache
+        with:
+          path: ~/.ccache
+          key: ccache-device-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-device-${{ runner.os }}-
 
       # One set of secrets per distribution, IOS_*_<SET>; the unsuffixed names
       # serve builds without a profile. A secret that does not exist arrives empty.
@@ -1071,6 +1154,9 @@ jobs:
 
           # Use custom DerivedData path for caching
           DERIVED_DATA_PATH="${GITHUB_WORKSPACE}/DerivedData"
+          # Swift packages go where the Restore Swift packages cache step put them;
+          # every xcodebuild that resolves the package graph gets the same path.
+          SOURCE_PACKAGES_PATH="$HOME/.ios-builder/SourcePackages"
 
           if [ "$PROJECT_TYPE" = "flutter" ]; then
             cd "$GITHUB_WORKSPACE"
@@ -1104,11 +1190,12 @@ jobs:
 
               # Flutter wrote the build number into Generated.xcconfig; this
               # only catches a Runner Info.plist that hardcodes it.
-              apply_build_number "$TARGET_FLAG" "$TARGET_PATH" -scheme "${SCHEME:-Runner}"
+              apply_build_number "$TARGET_FLAG" "$TARGET_PATH" -scheme "${SCHEME:-Runner}" -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_PATH"
               ARCHIVE_CMD="$ARCHIVE_CMD -scheme '${SCHEME:-Runner}'"
               ARCHIVE_CMD="$ARCHIVE_CMD -configuration '$CONFIGURATION'"
               ARCHIVE_CMD="$ARCHIVE_CMD -destination 'generic/platform=iOS'"
               ARCHIVE_CMD="$ARCHIVE_CMD -derivedDataPath '$DERIVED_DATA_PATH'"
+              ARCHIVE_CMD="$ARCHIVE_CMD -clonedSourcePackagesDirPath '$SOURCE_PACKAGES_PATH'"
               ARCHIVE_CMD="$ARCHIVE_CMD COMPILER_INDEX_STORE_ENABLE=NO $version_settings"
               ARCHIVE_CMD="$ARCHIVE_CMD -quiet"
               ARCHIVE_CMD="$ARCHIVE_CMD -archivePath '$GITHUB_WORKSPACE/build/App.xcarchive' archive"
@@ -1148,11 +1235,12 @@ jobs:
               fi
             fi
 
-            apply_build_number "$TARGET_FLAG" "$TARGET_PATH" -scheme "$SCHEME"
+            apply_build_number "$TARGET_FLAG" "$TARGET_PATH" -scheme "$SCHEME" -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_PATH"
             BUILD_CMD="$BUILD_CMD -scheme '$SCHEME'"
             BUILD_CMD="$BUILD_CMD -configuration '$CONFIGURATION'"
             BUILD_CMD="$BUILD_CMD -destination 'generic/platform=iOS'"
             BUILD_CMD="$BUILD_CMD -derivedDataPath '$DERIVED_DATA_PATH'"
+            BUILD_CMD="$BUILD_CMD -clonedSourcePackagesDirPath '$SOURCE_PACKAGES_PATH'"
             BUILD_CMD="$BUILD_CMD COMPILER_INDEX_STORE_ENABLE=NO $version_settings"
             BUILD_CMD="$BUILD_CMD -quiet"
 
@@ -1176,11 +1264,12 @@ jobs:
               BUILD_CMD="$BUILD_CMD -project $PROJECT"
             fi
 
-            apply_build_number "$TARGET_FLAG" "$TARGET_PATH" -scheme "$SCHEME"
+            apply_build_number "$TARGET_FLAG" "$TARGET_PATH" -scheme "$SCHEME" -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_PATH"
             BUILD_CMD="$BUILD_CMD -scheme '$SCHEME'"
             BUILD_CMD="$BUILD_CMD -configuration '$CONFIGURATION'"
             BUILD_CMD="$BUILD_CMD -destination 'generic/platform=iOS'"
             BUILD_CMD="$BUILD_CMD -derivedDataPath '$DERIVED_DATA_PATH'"
+            BUILD_CMD="$BUILD_CMD -clonedSourcePackagesDirPath '$SOURCE_PACKAGES_PATH'"
             BUILD_CMD="$BUILD_CMD $version_settings"
 
             # Speed optimization flags
@@ -1246,6 +1335,7 @@ jobs:
                 -configuration "$CONFIGURATION" \
                 -destination 'generic/platform=iOS' \
                 -derivedDataPath "$DERIVED_DATA_PATH" \
+                -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_PATH" \
                 -showBuildSettings -json 2>/dev/null \
                 | jq -r 'map(.buildSettings)
                          | map(select(.PRODUCT_TYPE == "com.apple.product-type.application"
@@ -1280,11 +1370,14 @@ jobs:
           if-no-files-found: error
 
       # Flutter builds through its own tree, so DerivedData can be absent and a
-      # save would fail on a path that never existed.
+      # save would fail on a path that never existed. Swift packages have their
+      # own cache now; a SourcePackages left by an older run is dropped here
+      # instead of riding along in every DerivedData save.
       - name: Check for DerivedData
         id: dd
         if: always()
         run: |
+          rm -rf DerivedData/SourcePackages
           if [ -d DerivedData ]; then echo "exists=yes" >> $GITHUB_OUTPUT; fi
 
       - name: Save DerivedData cache
@@ -1292,7 +1385,14 @@ jobs:
         if: always() && steps.dd.outputs.exists == 'yes'
         with:
           path: DerivedData
-          key: deriveddata-${{ github.run_id }}
+          key: deriveddata-device-${{ github.run_id }}
+
+      - name: Save ccache
+        uses: actions/cache/save@v6
+        if: always() && steps.ccache.outputs.enabled == 'true'
+        with:
+          path: ~/.ccache
+          key: ccache-device-${{ runner.os }}-${{ github.run_id }}
 
       - name: Cleanup signing
         if: always() && steps.params.outputs.use_signing == 'true'
@@ -1323,6 +1423,9 @@ jobs:
           echo "- **DerivedData Cache:** ${{ steps.cache-deriveddata.outputs.cache-hit == 'true' && 'Hit' || 'Miss' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Pods Cache:** ${{ steps.pods-cache.outputs.cache-hit == 'true' && 'Hit' || 'Miss' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Node Modules Cache:** ${{ steps.node-modules-cache.outputs.cache-hit == 'true' && 'Hit' || 'N/A' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Swift Packages Cache:** ${{ steps.spm-cache.outputs.cache-hit == 'true' && 'Hit' || (steps.spm-cache.outcome == 'success' && 'Miss' || 'N/A') }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pub Cache:** ${{ steps.pub-cache.outputs.cache-hit == 'true' && 'Hit' || (steps.pub-cache.outcome == 'success' && 'Miss' || 'N/A') }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **ccache:** ${{ steps.ccache.outputs.enabled == 'true' && 'On' || 'Off' }}" >> $GITHUB_STEP_SUMMARY
           if [ "$USE_SIGNING" = "true" ]; then
             echo "- **Signing:** Signed (${EXPORT_METHOD:-unknown}, set ${SIGNING_SET_USED:-unknown})" >> $GITHUB_STEP_SUMMARY
           else

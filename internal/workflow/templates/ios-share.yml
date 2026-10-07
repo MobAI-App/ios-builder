@@ -239,6 +239,17 @@ jobs:
           flutter-version: ${{ steps.params.outputs.flutter_version || '' }}
           channel: stable
           cache: true
+          pub-cache: false # cached below, saved before the share step
+
+      - name: Restore pub cache
+        if: steps.detect.outputs.type == 'flutter'
+        uses: actions/cache/restore@v6
+        id: pub-cache
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
+          restore-keys: |
+            pub-${{ runner.os }}-
 
       - name: Flutter pub get
         if: steps.detect.outputs.type == 'flutter'
@@ -377,12 +388,25 @@ jobs:
           node-version: ${{ steps.js.outputs.node_version }}
           node-version-file: ${{ steps.js.outputs.node_version_file }}
 
+      # Same key as the build workflow's: node_modules does not depend on the
+      # destination, so either workflow's save serves the other.
+      - name: Restore node_modules cache
+        if: steps.detect.outputs.type == 'reactnative' || steps.detect.outputs.type == 'expo'
+        uses: actions/cache/restore@v6
+        id: node-modules-cache
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ steps.js.outputs.manager }}-${{ hashFiles('package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock', 'bun.lockb') }}
+          restore-keys: |
+            node-modules-${{ runner.os }}-${{ steps.js.outputs.manager }}-
+
       # Runs even on a cache hit: the manager itself still has to be on PATH for
       # the prebuild and build steps that follow.
       - name: Install JS dependencies
         if: steps.detect.outputs.type == 'reactnative' || steps.detect.outputs.type == 'expo'
         env:
           JS_MANAGER: ${{ steps.js.outputs.manager }}
+          JS_DEPS_CACHED: ${{ steps.node-modules-cache.outputs.cache-hit }}
         run: |
           set -e
           # >>> js toolchain (keep identical across ios-build.yml, ios-share.yml, runner.sh)
@@ -538,6 +562,81 @@ jobs:
         if: steps.detect.outputs.type == 'kmp'
         uses: gradle/actions/setup-gradle@v6
 
+      # Every cache below is restored here and saved before the share step,
+      # which blocks until the session ends: a post-job save would come after
+      # a timeout, or not at all. Keys match the build workflow's except where
+      # the output depends on the destination (DerivedData, ccache).
+      - name: Restore Pods cache
+        if: hashFiles(format('{0}/Podfile', steps.params.outputs.ios_path)) != ''
+        uses: actions/cache/restore@v6
+        id: pods-cache
+        with:
+          path: |
+            ${{ steps.params.outputs.ios_path }}/Pods
+            ~/.cocoapods/repos
+          key: pods-${{ runner.os }}-${{ hashFiles(format('{0}/Podfile.lock', steps.params.outputs.ios_path)) }}
+          restore-keys: |
+            pods-${{ runner.os }}-
+
+      - name: Restore Swift packages cache
+        if: hashFiles('**/*.xcworkspace/xcshareddata/swiftpm/Package.resolved', '**/*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', '!DerivedData/**', '!**/node_modules/**', '!**/Pods/**') != ''
+        uses: actions/cache/restore@v6
+        id: spm-cache
+        with:
+          path: ~/.ios-builder/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles('**/*.xcworkspace/xcshareddata/swiftpm/Package.resolved', '**/*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', '!DerivedData/**', '!**/node_modules/**', '!**/Pods/**') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
+      - name: Enable ccache
+        id: ccache
+        env:
+          PROJECT_TYPE: ${{ steps.detect.outputs.type }}
+        run: |
+          set -e
+          # >>> ccache (keep identical across ios-build.yml, ios-share.yml, runner.sh)
+          # Opt-in with "cache": {"ccache": true} in builder.json, React Native and
+          # Expo only. A fresh checkout gives every source a new mtime, so a restored
+          # DerivedData still recompiles the native code; ccache hashes contents.
+          # React Native's Podfile hook (react_native_post_install) compiles through
+          # ccache when USE_CCACHE=1 is set at pod install; Expo's generated Podfile
+          # reads apple.ccacheEnabled from Podfile.properties.json instead. Off by
+          # default: a Podfile that does neither never calls it, and installing
+          # ccache costs time on every run.
+          ccache_enabled() {
+            case "$1" in reactnative|expo) ;; *) return 1 ;; esac
+            [ -f builder.json ] && [ "$(jq -r '.cache.ccache // false' builder.json 2>/dev/null || true)" = true ]
+          }
+
+          ccache_setup() {
+            command -v ccache >/dev/null 2>&1 || brew install ccache
+            export USE_CCACHE=1 CCACHE_DIR="$HOME/.ccache" CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-2G}"
+            mkdir -p "$CCACHE_DIR"
+            echo "ccache: $(ccache --version | head -n1), cache in $CCACHE_DIR (max $CCACHE_MAXSIZE)"
+          }
+          # <<< ccache
+          if ccache_enabled "$PROJECT_TYPE"; then
+            ccache_setup
+            {
+              echo "USE_CCACHE=$USE_CCACHE"
+              echo "CCACHE_DIR=$CCACHE_DIR"
+              echo "CCACHE_MAXSIZE=$CCACHE_MAXSIZE"
+            } >> "$GITHUB_ENV"
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ccache off (\"cache\": {\"ccache\": true} in builder.json turns it on for React Native and Expo)"
+          fi
+
+      - name: Restore ccache
+        if: steps.ccache.outputs.enabled == 'true'
+        uses: actions/cache/restore@v6
+        id: ccache-cache
+        with:
+          path: ~/.ccache
+          key: ccache-sim-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-sim-${{ runner.os }}-
+
       - name: Build for the simulator
         id: build
         env:
@@ -546,6 +645,8 @@ jobs:
           PROJECT_TYPE: ${{ steps.detect.outputs.type }}
         run: |
           set -e
+          # Where the Restore Swift packages cache step put them.
+          SOURCE_PACKAGES_PATH="$HOME/.ios-builder/SourcePackages"
 
           if [ "$PROJECT_TYPE" = "flutter" ]; then
             # Flutter drives xcodebuild itself and puts the bundle in a known
@@ -622,6 +723,7 @@ jobs:
               -configuration Debug \
               "$DEST_FLAG" "$DEST_VALUE" \
               -derivedDataPath "$GITHUB_WORKSPACE/DerivedData" \
+              -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_PATH" \
               COMPILER_INDEX_STORE_ENABLE=NO \
               CODE_SIGNING_ALLOWED=NO \
               build
@@ -634,6 +736,7 @@ jobs:
               -configuration Debug \
               "$DEST_FLAG" "$DEST_VALUE" \
               -derivedDataPath "$GITHUB_WORKSPACE/DerivedData" \
+              -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_PATH" \
               -showBuildSettings -json 2>/dev/null \
               | jq -r 'map(.buildSettings)
                        | map(select(.PRODUCT_TYPE == "com.apple.product-type.application"
@@ -654,11 +757,13 @@ jobs:
           echo "app_path=$APP_PATH" >> $GITHUB_OUTPUT
 
       # Flutter builds through its own tree, so DerivedData can be absent and a
-      # save would fail on a path that never existed.
+      # save would fail on a path that never existed. A SourcePackages left by
+      # an older run is dropped: Swift packages have a cache of their own.
       - name: Check for DerivedData
         id: dd
         if: always()
         run: |
+          rm -rf DerivedData/SourcePackages
           if [ -d DerivedData ]; then echo "exists=yes" >> $GITHUB_OUTPUT; fi
 
       # Saved before the sharing step, which blocks for as long as the
@@ -670,6 +775,46 @@ jobs:
         with:
           path: DerivedData
           key: deriveddata-sim-${{ github.run_id }}
+
+      - name: Save ccache
+        if: always() && steps.ccache.outputs.enabled == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.ccache
+          key: ccache-sim-${{ runner.os }}-${{ github.run_id }}
+
+      # The dependency caches are saved the way actions/cache's post-job step
+      # would: only after a successful build, only when the key missed, under
+      # the key computed at restore time.
+      - name: Save pub cache
+        if: steps.pub-cache.outcome == 'success' && steps.pub-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.pub-cache
+          key: ${{ steps.pub-cache.outputs.cache-primary-key }}
+
+      - name: Save node_modules cache
+        if: steps.node-modules-cache.outcome == 'success' && steps.node-modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: node_modules
+          key: ${{ steps.node-modules-cache.outputs.cache-primary-key }}
+
+      - name: Save Pods cache
+        if: steps.pods-cache.outcome == 'success' && steps.pods-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ steps.params.outputs.ios_path }}/Pods
+            ~/.cocoapods/repos
+          key: ${{ steps.pods-cache.outputs.cache-primary-key }}
+
+      - name: Save Swift packages cache
+        if: steps.spm-cache.outcome == 'success' && steps.spm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.ios-builder/SourcePackages
+          key: ${{ steps.spm-cache.outputs.cache-primary-key }}
 
       # Installs the build on the simulator and publishes it to the MobAI app.
       # The step (and the job) stay running until the simulator is released

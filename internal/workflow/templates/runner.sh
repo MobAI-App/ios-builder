@@ -14,6 +14,11 @@ export DISTRIBUTION="${DISTRIBUTION:-}" BUILD_ENV="${BUILD_ENV:-}"
 # the CFBundleVersion to stamp as BUILDER_BUILD_NUMBER; empty means none.
 export BUILD_NUMBER="${BUILDER_BUILD_NUMBER:-}"
 
+# Swift packages resolve here instead of DerivedData/SourcePackages, so the
+# provider caches them on their own (Codemagic by path, Bitrise keyed on the
+# Package.resolved files). Same directory as the GitHub workflows.
+source_packages_dir="$HOME/.ios-builder/SourcePackages"
+
 fail() { echo "$*" >&2; exit 1; }
 
 # Exports the profile's env before any dependency install or build, as the
@@ -148,6 +153,28 @@ js_install() {
 }
 # <<< js toolchain
 
+# >>> ccache (keep identical across ios-build.yml, ios-share.yml, runner.sh)
+# Opt-in with "cache": {"ccache": true} in builder.json, React Native and
+# Expo only. A fresh checkout gives every source a new mtime, so a restored
+# DerivedData still recompiles the native code; ccache hashes contents.
+# React Native's Podfile hook (react_native_post_install) compiles through
+# ccache when USE_CCACHE=1 is set at pod install; Expo's generated Podfile
+# reads apple.ccacheEnabled from Podfile.properties.json instead. Off by
+# default: a Podfile that does neither never calls it, and installing
+# ccache costs time on every run.
+ccache_enabled() {
+  case "$1" in reactnative|expo) ;; *) return 1 ;; esac
+  [ -f builder.json ] && [ "$(jq -r '.cache.ccache // false' builder.json 2>/dev/null || true)" = true ]
+}
+
+ccache_setup() {
+  command -v ccache >/dev/null 2>&1 || brew install ccache
+  export USE_CCACHE=1 CCACHE_DIR="$HOME/.ccache" CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-2G}"
+  mkdir -p "$CCACHE_DIR"
+  echo "ccache: $(ccache --version | head -n1), cache in $CCACHE_DIR (max $CCACHE_MAXSIZE)"
+}
+# <<< ccache
+
 # Codemagic and Bitrise images ship Node already, so a mismatch is worth a log
 # line, not a failed build. Switch only when a version manager is right there.
 js_use_node_version() {
@@ -211,6 +238,8 @@ prepare() {
   echo "Project type: $project_type"
   if ! command -v jq >/dev/null; then brew install jq; fi
   export_build_env
+  # Before pod install below, where React Native's Podfile hook reads USE_CCACHE.
+  if ccache_enabled "$project_type"; then ccache_setup; fi
 
   # Match the GitHub workflows' committed xcconfig-template convention.
   find . -path ./DerivedData -prune -o -type f \
@@ -623,11 +652,12 @@ build_ipa() {
   select_project
   # Flutter wrote the build number into Generated.xcconfig; for it this only
   # catches a Runner Info.plist that hardcodes CFBundleVersion.
-  apply_build_number "${target[@]}" -scheme "$SCHEME"
+  apply_build_number "${target[@]}" -scheme "$SCHEME" -clonedSourcePackagesDirPath "$source_packages_dir"
   # version_settings is unquoted on purpose: validated above, it holds zero
   # to two KEY=VALUE words.
   args=("${target[@]}" -scheme "$SCHEME" -configuration "$CONFIGURATION" -destination 'generic/platform=iOS'
-    -derivedDataPath "$BUILDER_WORKSPACE/DerivedData" COMPILER_INDEX_STORE_ENABLE=NO $version_settings)
+    -derivedDataPath "$BUILDER_WORKSPACE/DerivedData" -clonedSourcePackagesDirPath "$source_packages_dir"
+    COMPILER_INDEX_STORE_ENABLE=NO $version_settings)
   mkdir -p "$BUILDER_WORKSPACE/build"
   if [ "$USE_SIGNING" = true ]; then
     # After pod install / expo prebuild / flutter build ios, so the project
@@ -674,7 +704,8 @@ build_simulator() {
   else
     select_project
     args=("${target[@]}" -scheme "$SCHEME" -configuration Debug -destination "id=$sim_udid"
-      -derivedDataPath "$BUILDER_WORKSPACE/DerivedData" COMPILER_INDEX_STORE_ENABLE=NO CODE_SIGNING_ALLOWED=NO)
+      -derivedDataPath "$BUILDER_WORKSPACE/DerivedData" -clonedSourcePackagesDirPath "$source_packages_dir"
+      COMPILER_INDEX_STORE_ENABLE=NO CODE_SIGNING_ALLOWED=NO)
     xcodebuild "${args[@]}" build
     app_path=$(xcodebuild "${args[@]}" -showBuildSettings -json | jq -r 'map(.buildSettings) | map(select(.PRODUCT_TYPE == "com.apple.product-type.application" and (.TARGET_BUILD_DIR | contains("-iphonesimulator")))) | map(.TARGET_BUILD_DIR + "/" + .FULL_PRODUCT_NAME) | first // empty')
   fi
@@ -690,6 +721,9 @@ case "$mode" in
     snapshot_checkout
     prepare
     if [ "$mode" = build ]; then build_ipa; else build_simulator; fi
+    # Left by runs before Swift packages had their own directory; dropped so
+    # the DerivedData cache does not carry a second copy of every package.
+    rm -rf "$BUILDER_WORKSPACE/DerivedData/SourcePackages"
     ;;
   share)
     export PATH="$ci_dir/bin:$PATH"

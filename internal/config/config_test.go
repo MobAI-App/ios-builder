@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -118,6 +119,39 @@ func TestManager_SaveAndLoad(t *testing.T) {
 	}
 	if loaded.GitHub.Repo != cfg.GitHub.Repo {
 		t.Errorf("GitHub.Repo = %q, want %q", loaded.GitHub.Repo, cfg.GitHub.Repo)
+	}
+}
+
+// TestManager_KeepsCacheSwitch: the runners read cache.ccache from builder.json,
+// so a command that rewrites the file must not drop it.
+func TestManager_KeepsCacheSwitch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "builder.json")
+	if err := os.WriteFile(path, []byte(`{"project":"App","platform":"ios","github":{"owner":"o","repo":"r"},"cache":{"ccache":true}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	mgr := &Manager{path: path}
+	cfg, err := mgr.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Cache == nil || !cfg.Cache.CCache {
+		t.Fatalf("cache.ccache not loaded: %+v", cfg.Cache)
+	}
+	if err := mgr.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"ccache": true`) {
+		t.Fatalf("cache.ccache lost on save:\n%s", data)
+	}
+	if err := mgr.Save(&Config{Project: "App"}); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(path); strings.Contains(string(data), `"cache"`) {
+		t.Fatalf("an unset cache block is written:\n%s", data)
 	}
 }
 
