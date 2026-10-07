@@ -63,8 +63,9 @@ way when it is missing.
 
 The names and the values to put in them are always printed too, for
 Codemagic, Bitrise or a repository this login cannot write to. A failed upload
-is reported and the command carries on — the files and the build profile are
-written regardless — and it exits non-zero at the end.`,
+is reported and the command carries on — the files are written and the values
+printed, but the build profile is not, since builder.json must not claim a set
+the repository does not have — and it exits non-zero at the end.`,
 	RunE: runSigningSetup,
 }
 

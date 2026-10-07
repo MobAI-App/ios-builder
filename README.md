@@ -530,8 +530,9 @@ create certificates. It then:
 
 The upload goes to the repository in `builder.json`, always. When it fails (no
 GitHub login, or a token that cannot write secrets) the error is printed and
-the command carries on: files, values and the build profile are written and
-shown anyway, and it exits non-zero at the end so a script notices. `--json`
+the command carries on: files and values are written and shown anyway, but
+the build profile is not, since `builder.json` must not claim a set the
+repository does not have. It exits non-zero at the end so a script notices. `--json`
 reports the same in `github_upload` (`ok` or the error).
 
 **Extensions.** Every extension target (a widget, a share or notification
