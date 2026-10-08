@@ -24,6 +24,9 @@ type (
 	ErrorSource = asc.ErrorSource
 
 	App                     = asc.App
+	AppInfo                 = asc.AppInfo
+	AppScreenshot           = asc.AppScreenshot
+	AppScreenshotSet        = asc.AppScreenshotSet
 	AppStoreVersion         = asc.AppStoreVersion
 	AppStoreVersionUpdate   = asc.AppStoreVersionUpdate
 	BetaAppReviewSubmission = asc.BetaAppReviewSubmission
@@ -40,9 +43,11 @@ type (
 	BundleID                = asc.BundleID
 	Certificate             = asc.Certificate
 	Device                  = asc.Device
+	Localization            = asc.Localization
 	Profile                 = asc.Profile
 	ReviewSubmission        = asc.ReviewSubmission
 	ReviewSubmissionItem    = asc.ReviewSubmissionItem
+	ScreenshotFailedError   = asc.ScreenshotFailedError
 	StateDetail             = asc.StateDetail
 	UploadBuildOptions      = asc.UploadBuildOptions
 	UploadFailedError       = asc.UploadFailedError
@@ -91,6 +96,21 @@ const (
 	VersionStateWaitingForReview = asc.VersionStateWaitingForReview
 	VersionStateInReview         = asc.VersionStateInReview
 
+	AssetStateAwaitingUpload = asc.AssetStateAwaitingUpload
+	AssetStateUploadComplete = asc.AssetStateUploadComplete
+	AssetStateComplete       = asc.AssetStateComplete
+	AssetStateFailed         = asc.AssetStateFailed
+
+	AttrDescription      = asc.AttrDescription
+	AttrKeywords         = asc.AttrKeywords
+	AttrWhatsNew         = asc.AttrWhatsNew
+	AttrPromotionalText  = asc.AttrPromotionalText
+	AttrMarketingURL     = asc.AttrMarketingURL
+	AttrSupportURL       = asc.AttrSupportURL
+	AttrName             = asc.AttrName
+	AttrSubtitle         = asc.AttrSubtitle
+	AttrPrivacyPolicyURL = asc.AttrPrivacyPolicyURL
+
 	RoleCustomerSupport     = asc.RoleCustomerSupport
 	CodeNoInstallableBuilds = asc.CodeNoInstallableBuilds
 )
@@ -115,6 +135,9 @@ func MatchBetaGroup(groups []BetaGroup, name string) (*BetaGroup, error) {
 
 // HasCode reports whether err is an App Store Connect error carrying code.
 func HasCode(err error, code string) bool { return asc.HasCode(err, code) }
+
+// FileMD5 returns the MD5 of a file in hex, the form sourceFileChecksum uses.
+func FileMD5(path string) (string, error) { return asc.FileMD5(path) }
 
 // IsStatus reports whether err is an App Store Connect error with the HTTP status.
 func IsStatus(err error, status int) bool { return asc.IsStatus(err, status) }

@@ -250,6 +250,8 @@ builder ios build --profile store --submit    # Short for: ios release (TestFlig
 builder ios upload --wait     # Upload ./dist/*.ipa to App Store Connect and wait for processing
 builder ios submit --testflight --group "Beta Testers" --notes "What to test"
 builder ios submit --app-store --release after-approval  # Submit the version for App Review
+builder ios metadata pull     # App Store listing into ./metadata (fastlane deliver layout)
+builder ios metadata push --yes  # Push what differs (--dry-run for the plan; --screenshots for images)
 
 # Install on a device over the air (development, ad-hoc or enterprise build)
 builder ios build --profile development --distribute  # Build, then print an install link + QR code
@@ -273,7 +275,7 @@ builder asc users             # Team members and whether they can test internall
 builder asc users invite dev@example.com --role DEVELOPER --first Dee --last Vee
 ```
 
-Every `release`/`upload`/`submit`/`distribute`/`asc` command takes `--json` for
+Every `release`/`upload`/`submit`/`metadata`/`distribute`/`asc` command takes `--json` for
 machine-readable output and never prompts, so agents and CI jobs can drive them.
 
 ## Configuration
@@ -832,6 +834,89 @@ External groups take anyone by email, reusing a tester the team already has.
 the tester from TestFlight team-wide), print what goes and then need `--yes`.
 Group names match case-insensitively; when two differ only by case, the
 command refuses and lists both.
+
+## App Store metadata
+
+`builder ios metadata pull` and `push` keep the App Store listing in files,
+through the App Store Connect API, from any platform. The layout is fastlane
+deliver's, so an existing `fastlane/metadata` and `fastlane/screenshots` work
+with `--metadata-dir` and `--screenshots-dir`:
+
+```
+metadata/
+  primary_category.txt          PRODUCTIVITY (App Store Connect IDs; MZGenre.* accepted)
+  secondary_category.txt
+  en-US/
+    name.txt                    30 characters   (app info)
+    subtitle.txt                30              (app info)
+    privacy_url.txt                             (app info)
+    description.txt             4000
+    keywords.txt                100
+    release_notes.txt           4000            (What's New)
+    promotional_text.txt        170
+    marketing_url.txt
+    support_url.txt
+screenshots/
+  en-US/
+    01_home.png                 display type from the pixel size
+    APP_IPAD_PRO_129/home.png   or explicit: a subfolder named after it
+```
+
+```bash
+builder ios metadata pull                     # text and categories of the version being prepared
+builder ios metadata pull --screenshots       # also download screenshots/<locale>/<DISPLAY_TYPE>/
+builder ios metadata push --dry-run           # print what would change
+builder ios metadata push --yes               # change it
+builder ios metadata push --version 1.3 --yes # target (or create) version 1.3
+builder ios metadata push --screenshots --replace-screenshots --yes
+```
+
+- **Version.** Both commands work on the App Store version being prepared
+  (`PREPARE_FOR_SUBMISSION`, or rejected); pull falls back to the newest
+  version when none is. `--version X.Y` picks one, and push creates it when it
+  does not exist, then compares against the localizations App Store Connect
+  copied into it. Name, subtitle, privacy URL and categories live on the app
+  info, which is only editable while a version is being prepared.
+- **Push changes only what differs.** It prints one `Will ...` line per
+  difference and needs `--yes`; `--dry-run` prints the plan and exits 0. A
+  field without a file is left alone, an empty file clears it, and a new
+  locale directory adds that language (a new language needs `name.txt`).
+  Lengths, URLs, categories, screenshot sizes and the 10-per-set limit are
+  checked before anything is sent. `review_information/` and `default/` are ignored.
+- **Pull never deletes** local files App Store Connect has no value for unless
+  `--clean`; empty fields get no file. Screenshots download only with
+  `--screenshots`.
+- **Screenshots** are compared by MD5 per locale and display type. Without
+  `--replace-screenshots` push appends the local images a set lacks; with it,
+  a set that differs is emptied and uploaded again in file-name order. Each
+  upload is reserved, sent in the chunks App Store Connect hands out,
+  committed with its checksum and followed until processed.
+
+Display types inferred from the pixel size (portrait or landscape):
+
+| Size | Display type |
+|------|--------------|
+| 1320x2868, 1290x2796, 1260x2736 | `APP_IPHONE_67` (6.9"/6.7") |
+| 1284x2778, 1242x2688 | `APP_IPHONE_65` |
+| 1206x2622, 1179x2556, 1170x2532 | `APP_IPHONE_61` (6.3"/6.1") |
+| 1125x2436, 1080x2340 | `APP_IPHONE_58` |
+| 1242x2208 | `APP_IPHONE_55` |
+| 750x1334 | `APP_IPHONE_47` |
+| 640x1136 | `APP_IPHONE_40` |
+| 640x960 | `APP_IPHONE_35` |
+| 2064x2752, 2048x2732 | `APP_IPAD_PRO_3GEN_129` (13"/12.9") |
+| 1668x2420, 1668x2388, 1640x2360, 1488x2266 | `APP_IPAD_PRO_3GEN_11` |
+| 1668x2224 | `APP_IPAD_105` |
+| 1536x2048 | `APP_IPAD_97` |
+| 1280x800, 1440x900, 2560x1600, 2880x1800 | `APP_DESKTOP` |
+
+2048x2732 is also the size of the older 12.9" iPad Pro (`APP_IPAD_PRO_129`):
+put those in a `APP_IPAD_PRO_129/` subfolder. Any other size, Apple TV, Watch,
+Vision Pro and iMessage screenshots need the subfolder too; other subfolders
+(fastlane's `iMessage/`) are skipped with a warning.
+
+Not covered yet: copyright, review information, age rating, subcategories,
+app previews (video) and screenshot reordering within a set.
 
 ## Install on a device (internal distribution)
 
