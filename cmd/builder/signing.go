@@ -103,11 +103,15 @@ func init() {
 
 	signingCSRCmd.Flags().String("name", "", "Your name (certificate common name)")
 	signingCSRCmd.Flags().String("email", "", "Email address of your Apple Developer account")
+	signingCSRCmd.Flags().BoolP("yes", "y", false, "Replace an existing ios-signing.key without asking")
+	signingCSRCmd.Flags().Bool("json", false, "Print the written paths as JSON")
 
 	signingP12Cmd.Flags().StringP("certificate", "c", "", "Path to the .cer downloaded from the Apple Developer portal")
 	signingP12Cmd.Flags().StringP("key", "k", "", "Path to the private key from 'builder signing csr'")
 	signingP12Cmd.Flags().StringP("out", "o", "ios-signing.p12", "Path to write the .p12 to")
 	signingP12Cmd.Flags().String("password", "", "Password to protect the .p12 (prompted if omitted)")
+	signingP12Cmd.Flags().BoolP("yes", "y", false, "Take the default key path (ios-signing.key) instead of asking")
+	signingP12Cmd.Flags().Bool("json", false, "Print the written path as JSON")
 }
 
 // addSigningSetupFlags registers the flags of `signing setup`; tests build
@@ -132,15 +136,17 @@ func addSigningSetupFlags(cmd *cobra.Command) {
 func runSigningCSR(cmd *cobra.Command, args []string) error {
 	name, _ := cmd.Flags().GetString("name")
 	email, _ := cmd.Flags().GetString("email")
+	ask := newAsker(cmd)
+	out := newOutput(cmd)
 
 	var err error
 	if name == "" {
-		if name, err = promptString("Your name (as on the certificate)", ""); err != nil {
+		if name, err = ask.required("Your name (as on the certificate)", "--name"); err != nil {
 			return err
 		}
 	}
 	if email == "" {
-		if email, err = promptString("Apple Developer account email", ""); err != nil {
+		if email, err = ask.required("Apple Developer account email", "--email"); err != nil {
 			return err
 		}
 	}
@@ -151,10 +157,13 @@ func runSigningCSR(cmd *cobra.Command, args []string) error {
 	keyPath := "ios-signing.key"
 	csrPath := "ios-signing.csr"
 	if _, err := os.Stat(keyPath); err == nil {
-		fmt.Printf("%s already exists. Regenerating it invalidates any\n", keyPath)
-		fmt.Println("certificate created from the previous CSR.")
-		confirm := promptui.Prompt{Label: "Generate a new key", IsConfirm: true}
-		if _, err := confirm.Run(); err != nil {
+		fmt.Fprintf(out.log, "%s already exists. Regenerating it invalidates any\n", keyPath)
+		fmt.Fprintln(out.log, "certificate created from the previous CSR.")
+		replace, err := ask.confirm("Generate a new key", true, "--yes")
+		if err != nil {
+			return err
+		}
+		if !replace {
 			return fmt.Errorf("keeping the existing key")
 		}
 	}
@@ -171,6 +180,9 @@ func runSigningCSR(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to write CSR: %w", err)
 	}
 
+	if out.json {
+		return printJSON(cmd, map[string]string{"key": keyPath, "csr": csrPath})
+	}
 	fmt.Println()
 	fmt.Printf("Private key: %s\n", keyPath)
 	fmt.Printf("CSR:         %s\n", csrPath)
@@ -217,14 +229,15 @@ func runSigningP12(cmd *cobra.Command, args []string) error {
 	outPath, _ := cmd.Flags().GetString("out")
 	password, _ := cmd.Flags().GetString("password")
 
+	ask := newAsker(cmd)
 	var err error
 	if certPath == "" {
-		if certPath, err = promptString("Path to certificate (.cer from the Apple Developer portal)", ""); err != nil {
+		if certPath, err = ask.required("Path to certificate (.cer from the Apple Developer portal)", "--certificate"); err != nil {
 			return err
 		}
 	}
 	if keyPath == "" {
-		if keyPath, err = promptString("Path to private key", "ios-signing.key"); err != nil {
+		if keyPath, err = ask.text("Path to private key", "ios-signing.key", "--key"); err != nil {
 			return err
 		}
 	}
@@ -232,7 +245,7 @@ func runSigningP12(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("certificate and key are required")
 	}
 	if password == "" {
-		if password, err = promptPassword("Password to protect the .p12"); err != nil {
+		if password, err = ask.password("Password to protect the .p12", "--password"); err != nil {
 			return err
 		}
 	}
@@ -245,6 +258,9 @@ func runSigningP12(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to write .p12: %w", err)
 	}
 
+	if newOutput(cmd).json {
+		return printJSON(cmd, map[string]string{"p12": outPath})
+	}
 	fmt.Printf("Created %s (do not commit it)\n", outPath)
 	return nil
 }
@@ -276,12 +292,14 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	// A GitHub client that cannot be built is reported with the upload, after
 	// the files are read: the values are printed either way.
 	store, storeErr := signingSecretStore()
-	out := cmd.OutOrStdout()
+	o := newOutput(cmd)
+	out := o.log
+	ask := newAsker(cmd)
 
 	// Get certificate path
 	certPath, _ := cmd.Flags().GetString("certificate")
 	if certPath == "" {
-		certPath, err = promptString("Path to .p12 certificate file", "")
+		certPath, err = ask.required("Path to .p12 certificate file", "--certificate")
 		if err != nil {
 			return err
 		}
@@ -298,7 +316,7 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	// Get provisioning profile path
 	profilePath, _ := cmd.Flags().GetString("profile")
 	if profilePath == "" {
-		profilePath, err = promptString("Path to .mobileprovision file", "")
+		profilePath, err = ask.required("Path to .mobileprovision file", "--profile")
 		if err != nil {
 			return err
 		}
@@ -355,7 +373,7 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 		// from the private key that produced the CSR.
 		keyPath, _ := cmd.Flags().GetString("key")
 		if keyPath == "" {
-			keyPath, err = promptString("Path to private key file (from 'builder signing csr')", "ios-signing.key")
+			keyPath, err = ask.text("Path to private key file (from 'builder signing csr')", "ios-signing.key", "--key")
 			if err != nil {
 				return err
 			}
@@ -365,7 +383,7 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to read private key %s: %w", keyPath, err)
 		}
 		if password == "" {
-			if password, err = promptPassword("Password to protect the .p12"); err != nil {
+			if password, err = ask.password("Password to protect the .p12", "--password"); err != nil {
 				return err
 			}
 		}
@@ -381,7 +399,7 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Fprintf(out, "Assembled .p12: %s (do not commit it)\n", p12Path)
 	} else if password == "" {
-		if password, err = promptPassword("Certificate password"); err != nil {
+		if password, err = ask.password("Certificate password", "--password"); err != nil {
 			return err
 		}
 	}
@@ -412,6 +430,19 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	}
 
 	names := config.SigningSecretNames(set)
+	if o.json {
+		res := signingManualResult{
+			Distribution: typ, SigningSet: set, BuildProfile: profileName, Replaced: replaced,
+			P12: p12Path, Profile: profilePath, Extensions: extensionPathByID,
+			Secrets: names.Names(), GitHubUpload: "ok",
+		}
+		if uploadErr != nil {
+			res.GitHubUpload = uploadErr.Error()
+			_ = printJSON(cmd, res)
+			return signingUploadFailed(cfg)
+		}
+		return printJSON(cmd, res)
+	}
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, signingUploadLine(cfg, names, uploadErr))
 	fmt.Fprintln(out)
@@ -425,6 +456,19 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 		return signingUploadFailed(cfg)
 	}
 	return nil
+}
+
+// signingManualResult is the JSON output of `signing setup --certificate`.
+type signingManualResult struct {
+	Distribution signing.Type      `json:"distribution"`
+	SigningSet   string            `json:"signing_set"`
+	BuildProfile string            `json:"build_profile"`
+	Replaced     string            `json:"replaced_distribution,omitempty"`
+	P12          string            `json:"p12"`
+	Profile      string            `json:"profile"`
+	Extensions   map[string]string `json:"extension_profiles,omitempty"`
+	Secrets      []string          `json:"secrets"`
+	GitHubUpload string            `json:"github_upload"` // "ok" or why it failed, as in automatic mode
 }
 
 // matchExtensionProfiles pairs every extension in ios.extensions with the

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/MobAI-App/ios-builder/internal/exitcode"
 )
 
 // Release is a repository release; drafts have no tag in git.
@@ -148,7 +150,7 @@ func (c *Client) MintAssetURL(ctx context.Context, owner, repo string, assetID i
 }
 
 // ErrGistScope is returned when the token cannot create gists.
-var ErrGistScope = errors.New("the saved GitHub login lacks the gist scope that builder ios distribute needs; run builder auth github again")
+var ErrGistScope = exitcode.With(exitcode.Auth, errors.New("the saved GitHub login lacks the gist scope that builder ios distribute needs; run builder auth github again"))
 
 type createGistRequest struct {
 	Description string                  `json:"description"`

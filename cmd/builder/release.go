@@ -9,6 +9,7 @@ import (
 
 	"github.com/MobAI-App/ios-builder/internal/build"
 	"github.com/MobAI-App/ios-builder/internal/config"
+	"github.com/MobAI-App/ios-builder/internal/exitcode"
 	"github.com/MobAI-App/ios-builder/internal/release"
 	"github.com/spf13/cobra"
 )
@@ -96,7 +97,7 @@ func runIOSRelease(cmd *cobra.Command, _ []string) error {
 // DeadlineExceeded as the App Store Connect wait and claims processing continues.
 func releaseError(res *release.Result, err error, timeout time.Duration) error {
 	if errors.Is(err, context.DeadlineExceeded) && (res == nil || res.IPAPath == "") {
-		return fmt.Errorf("the build did not finish within %s; raise --timeout (%v)", timeout, err)
+		return exitcode.With(exitcode.Timeout, fmt.Errorf("the build did not finish within %s; raise --timeout (%v)", timeout, err))
 	}
 	return err
 }

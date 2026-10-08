@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/MobAI-App/ios-builder/internal/exitcode"
 )
 
 const (
@@ -116,7 +118,7 @@ func (c *Client) PollForWorkflowStart(ctx context.Context, owner, repo, workflow
 
 	for {
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("timed out waiting for workflow to start")
+			return nil, exitcode.With(exitcode.Timeout, fmt.Errorf("timed out waiting for workflow to start"))
 		}
 
 		run, err := c.FindWorkflowRunByBuildID(ctx, owner, repo, workflowFile, buildID)
@@ -223,6 +225,9 @@ type RunFailedError struct {
 	Conclusion string
 	Failure    *RunFailure
 }
+
+// ExitCode makes a failed run exit with exitcode.BuildFailed.
+func (e *RunFailedError) ExitCode() int { return exitcode.BuildFailed }
 
 func (e *RunFailedError) Error() string {
 	var b strings.Builder
@@ -364,7 +369,7 @@ func (c *Client) PollForArtifact(ctx context.Context, owner, repo string, runID 
 
 	for {
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("timed out waiting for artifact %q", artifactName)
+			return nil, exitcode.With(exitcode.Timeout, fmt.Errorf("timed out waiting for artifact %q", artifactName))
 		}
 
 		// Check if artifact is available

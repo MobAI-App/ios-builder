@@ -8,6 +8,7 @@ import (
 
 	"github.com/MobAI-App/ios-builder/internal/build"
 	"github.com/MobAI-App/ios-builder/internal/config"
+	"github.com/MobAI-App/ios-builder/internal/exitcode"
 	"github.com/MobAI-App/ios-builder/internal/github"
 	"github.com/MobAI-App/ios-builder/internal/workflow"
 	"github.com/spf13/cobra"
@@ -97,6 +98,13 @@ func runProviderInit(cmd *cobra.Command) error {
 	if err := mgr.Save(cfg); err != nil {
 		return err
 	}
+	if newOutput(cmd).json {
+		defaultProvider, _ := cfg.ProviderName("")
+		if paths == nil {
+			paths = []string{}
+		}
+		return printJSON(cmd, map[string]any{"provider": name, "files": append(paths, "builder.json"), "default_provider": defaultProvider, "custom_workflows": customWorkflows})
+	}
 	if customWorkflows {
 		fmt.Println("Preserved custom workflow names and CI files. Merge any runner/workflow updates manually (see docs/providers.md).")
 	}
@@ -126,7 +134,7 @@ func init() {
 		name, _ := cmd.Flags().GetString("provider")
 		id, _ := cmd.Flags().GetString("run-id")
 		if id == "" {
-			return fmt.Errorf("--run-id is required")
+			return exitcode.Usagef("--run-id is required")
 		}
 		p, _, err := build.RemoteProvider(cfg, name)
 		if err != nil {
@@ -135,10 +143,14 @@ func init() {
 		if err := build.CancelRemote(cmd.Context(), p, id); err != nil {
 			return fmt.Errorf("cancellation could not be confirmed; check the provider dashboard: %w", err)
 		}
+		if newOutput(cmd).json {
+			return printJSON(cmd, map[string]any{"provider": p.Name(), "run_id": id, "stopped": true})
+		}
 		fmt.Println("Run has stopped.")
 		return nil
 	}}
 	cancelCmd.Flags().String("provider", "", "Provider holding the run (codemagic or bitrise)")
 	cancelCmd.Flags().String("run-id", "", "Run ID from the provider workflow URL")
+	cancelCmd.Flags().Bool("json", false, "Print the result as JSON")
 	iosCmd.AddCommand(cancelCmd)
 }

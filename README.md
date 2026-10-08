@@ -273,8 +273,75 @@ builder asc users             # Team members and whether they can test internall
 builder asc users invite dev@example.com --role DEVELOPER --first Dee --last Vee
 ```
 
-Every `release`/`upload`/`submit`/`distribute`/`asc` command takes `--json` for
-machine-readable output and never prompts, so agents and CI jobs can drive them.
+Every command takes `--json` for machine-readable output where it has a result,
+and none of them waits for input without a terminal; see
+[Using Builder from agents and CI](#using-builder-from-agents-and-ci).
+
+## Using Builder from agents and CI
+
+Builder is meant to be driven by coding agents and CI jobs as much as by
+people. Three rules hold for every command:
+
+- **No hidden prompts.** Builder only asks questions when stdin is a terminal.
+  `--no-input` (global), `BUILDER_NO_INPUT=1`, `CI=true` and `--json` turn
+  prompts off even in a terminal. A question then takes its default when
+  `--yes` is given, or the command stops at once with exit code 2 and an
+  error naming the flag that answers it, e.g.
+  `the project name ... is needed ...; pass --project or --yes for the default`.
+- **`--json` puts the result on stdout**, as one JSON object (long-running
+  commands: one object per line), and all progress on stderr.
+- **Exit codes say why it failed** (table below), so a script does not have to
+  parse messages.
+
+### Non-interactive setup
+
+```bash
+printenv GH_TOKEN | builder auth github --token-stdin   # classic token: repo, workflow, gist
+printenv CODEMAGIC_API_TOKEN | builder auth codemagic --token-stdin
+builder auth apple --issuer-id <id> --key-id <id> --key AuthKey_<id>.p8   # or ASC_* environment variables
+builder init --yes --json                                # detected values; no commit, no build
+builder init --project App --ios-path ios --commit --build=false
+builder signing setup --distribution store --yes --json
+```
+
+| Command | Questions and the flags that answer them |
+| --- | --- |
+| `auth github` | the login: `--token-stdin` (scopes checked: a token without `repo`, `workflow` and `gist` is refused with exit 3), or `--device-flow` to print the code and wait for approval in a browser |
+| `auth codemagic` / `bitrise` | `--token-stdin`, or `CODEMAGIC_API_TOKEN` / `BITRISE_API_TOKEN` |
+| `auth apple` | `--issuer-id`, `--key-id`, `--key` (or `ASC_*`) |
+| `init` | `--project`, `--ios-path`, `--flutter-version`, `--jdk-version`, `--commit`, `--build`; `--yes` takes the detected values and does **not** commit or build |
+| `signing setup` | `--yes` to create resources, `--bundle-id`, `--password` (generated with `--yes`); manual mode `--certificate`, `--profile`, `--key` |
+| `signing csr` / `p12` | `--name`, `--email`, `--yes` to replace an existing key; `--certificate`, `--key`, `--password` |
+| `dev flutter` / `rn` / `kmp` | `--device` (or `--yes` for the first), `--ipa` (default: newest in `dist/`), `--resign` with `--apple-id` and `BUILDER_APPLE_ID_PASSWORD`, `--bundle-id` |
+| `asc ... delete/remove/expire` | `--yes` |
+
+### JSON output
+
+| Command | stdout |
+| --- | --- |
+| `auth github --json` | `{"event":"authenticated","method":"token"\|"device_flow","login","scopes":[],"scopes_checked","missing_scopes":[]}`; with `--device-flow` a `{"event":"device_code","verification_uri","user_code","expires_in"}` line comes first |
+| `auth status --json` | `{"github":{"logged_in"},"codemagic":{...},"bitrise":{...},"apple":{"logged_in","source","key_id"}}` |
+| `init --json` | `{"project","repository","ios_path","framework","bundle_id","flutter_version","jdk_version","files":[],"committed","pushed","build":{...}}` |
+| `ios build --json` | `{"build_id","ipa","ipa_size","workflow_url","provider","profile","duration_seconds"}`; `--distribute` adds one object per install link, `--submit` prints the `ios release` result instead |
+| `ios share --json` | `{"build_id","provider","workflow_url","run_id","ready","submitted","cancel_command"}` |
+| `ios release` / `upload` / `submit` / `distribute`, `signing setup`, `asc *` | their result objects (on failure too, when there is a partial result) |
+| `dev flutter\|rn\|kmp --json` | one event per line while the session runs: `{"event":"device","device_id","device_name"}`, `{"event":"installed","bundle_id","resigned"}`, `{"event":"launched","bundle_id"}`, then `{"event":"vm_service","url","command"}` (Flutter) or `{"event":"metro","url"}` (React Native). flutter attach and Metro output goes to stderr |
+| `mobai ping\|install\|forward --json` | `{"ok":true}`, `{"device_id","bundle_id","installed":true}`, `{"device_id","device_port","host_port"}` |
+
+Errors are printed to stderr as `Error: <message>`; the exit code carries the
+category.
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success |
+| 1 | Any other failure |
+| 2 | Usage: unknown command or flag, wrong arguments, or an answer only a flag can give without a terminal |
+| 3 | Authentication: no login or API key, or GitHub / App Store Connect / the CI provider rejected it (including missing token scopes) |
+| 4 | The CI run finished without success (failed, cancelled, timed out on the provider) |
+| 5 | A wait ran out (`--timeout`, App Store Connect processing, the device-flow code) |
+| 130 | Interrupted (Ctrl-C or SIGTERM) |
 
 ## Configuration
 

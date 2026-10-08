@@ -8,6 +8,7 @@ import (
 
 	"github.com/MobAI-App/ios-builder/internal/config"
 	"github.com/MobAI-App/ios-builder/internal/dev"
+	"github.com/MobAI-App/ios-builder/internal/exitcode"
 	"github.com/MobAI-App/ios-builder/internal/mobai"
 	"github.com/spf13/cobra"
 )
@@ -31,7 +32,8 @@ func init() {
 	devReactNativeCmd.Flags().String("mobai-url", mobai.DefaultBaseURL, "MobAI API URL")
 	devReactNativeCmd.Flags().String("ipa", "", "Path to IPA (default: auto-detect from dist/)")
 	devReactNativeCmd.Flags().Bool("skip-install", false, "Skip app installation (app must already be installed)")
-	devReactNativeCmd.Flags().String("bundle-id", "", "Bundle ID (required with --skip-install)")
+	devReactNativeCmd.Flags().String("bundle-id", "", "Bundle ID (required with --skip-install; else used when MobAI does not report it)")
+	addDevAgentFlags(devReactNativeCmd)
 	devReactNativeCmd.Flags().Int("metro-port", 8081, "Metro bundler port")
 	devReactNativeCmd.Flags().Bool("logs", false, "Show app logs")
 }
@@ -54,14 +56,17 @@ func runDevReactNative(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	emit, restore := devEvents(cmd)
+	defer restore()
+
 	if skipInstall {
 		if bundleID == "" {
-			return fmt.Errorf("--bundle-id is required when using --skip-install")
+			return exitcode.Usagef("--bundle-id is required when using --skip-install")
 		}
 	} else {
 		if ipaPath == "" {
 			var err error
-			ipaPath, err = dev.FindIPA("dist")
+			ipaPath, err = dev.FindIPA("dist", interactive(cmd))
 			if err != nil {
 				return err
 			}
@@ -78,6 +83,7 @@ func runDevReactNative(cmd *cobra.Command, args []string) error {
 	handler := dev.NewReactNativeHandler(metroPort, showLogs, mobaiURL)
 	session := dev.NewSession(mobaiURL, deviceID, ipaPath, handler)
 	session.SetSkipInstall(skipInstall, bundleID)
+	configureDevSession(cmd, session, emit)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

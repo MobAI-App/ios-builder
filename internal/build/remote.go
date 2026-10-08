@@ -13,6 +13,7 @@ import (
 	"github.com/MobAI-App/ios-builder/internal/auth"
 	"github.com/MobAI-App/ios-builder/internal/ci"
 	"github.com/MobAI-App/ios-builder/internal/config"
+	"github.com/MobAI-App/ios-builder/internal/exitcode"
 	"github.com/MobAI-App/ios-builder/internal/snapshot"
 	"github.com/google/uuid"
 )
@@ -38,7 +39,7 @@ func RemoteProvider(cfg *config.Config, override string) (ci.Provider, config.CI
 	key := strings.ToUpper(name) + "_API_TOKEN"
 	token, err := auth.GetProviderToken(name)
 	if err != nil {
-		return nil, cfgCI, fmt.Errorf("not authenticated with %s; run builder auth %s or set %s", name, name, key)
+		return nil, cfgCI, exitcode.With(exitcode.Auth, fmt.Errorf("not authenticated with %s; run builder auth %s or set %s", name, name, key))
 	}
 	switch name {
 	case "codemagic":
@@ -175,7 +176,7 @@ func (c *Coordinator) buildRemote(ctx context.Context, opts *BuildOptions, s *co
 	}
 	terminal = true
 	if !status.Success {
-		return nil, fmt.Errorf("%s build ended: %s (logs: %s)", p.Name(), status.State, run.URL)
+		return nil, exitcode.With(exitcode.BuildFailed, fmt.Errorf("%s build ended: %s (logs: %s)", p.Name(), status.State, run.URL))
 	}
 	if lister, ok := p.(ci.ArtifactLister); ok {
 		status.Artifacts, err = lister.Artifacts(ctx, run)

@@ -14,6 +14,7 @@ import (
 	"github.com/MobAI-App/ios-builder/internal/asc"
 	"github.com/MobAI-App/ios-builder/internal/auth"
 	"github.com/MobAI-App/ios-builder/internal/distribute"
+	"github.com/MobAI-App/ios-builder/internal/exitcode"
 	"github.com/MobAI-App/ios-builder/internal/ipa"
 	"github.com/spf13/cobra"
 )
@@ -51,7 +52,7 @@ var getASCClient = func() (*asc.Client, error) {
 	creds, _, err := auth.GetAppleCredentials()
 	if err != nil {
 		if errors.Is(err, auth.ErrNotAuthenticated) {
-			return nil, fmt.Errorf("no App Store Connect API key configured. Run: builder auth apple (or set ASC_ISSUER_ID, ASC_KEY_ID and ASC_PRIVATE_KEY or ASC_KEY_PATH)")
+			return nil, exitcode.With(exitcode.Auth, fmt.Errorf("no App Store Connect API key configured. Run: builder auth apple (or set ASC_ISSUER_ID, ASC_KEY_ID and ASC_PRIVATE_KEY or ASC_KEY_PATH)"))
 		}
 		return nil, err
 	}
@@ -94,18 +95,24 @@ func newOutput(cmd *cobra.Command) output {
 	return output{log: cmd.OutOrStdout()}
 }
 
+// printJSON writes v to the command's stdout as indented JSON, the shape every
+// --json result uses.
+func printJSON(cmd *cobra.Command, v any) error {
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}
+
 // finish prints the result (JSON, or the human summary on success) and
 // returns err with a timeout translated into something actionable. A partial
 // result on failure is still printed as JSON so agents see how far it got.
 func finish[T any](o output, cmd *cobra.Command, result *T, err error, human func()) error {
 	if o.json && result != nil {
-		enc := json.NewEncoder(cmd.OutOrStdout())
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(result)
+		_ = printJSON(cmd, result)
 	}
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Errorf("timed out waiting for App Store Connect; processing continues server-side, check later with builder ios submit --testflight or raise --timeout")
+			return exitcode.With(exitcode.Timeout, fmt.Errorf("timed out waiting for App Store Connect; processing continues server-side, check later with builder ios submit --testflight or raise --timeout"))
 		}
 		return err
 	}

@@ -1,6 +1,10 @@
 package github
 
-import "time"
+import (
+	"time"
+
+	"github.com/MobAI-App/ios-builder/internal/exitcode"
+)
 
 // Repository represents a GitHub repository
 type Repository struct {
@@ -129,4 +133,12 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	return e.Message
+}
+
+// ExitCode makes a rejected token (401) exit with exitcode.Auth.
+func (e *APIError) ExitCode() int {
+	if e.Status == "401" {
+		return exitcode.Auth
+	}
+	return exitcode.Failure
 }

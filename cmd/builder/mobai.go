@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -57,6 +58,9 @@ func init() {
 
 	mobaiCmd.PersistentFlags().String("url", mobai.DefaultBaseURL, "MobAI API URL")
 	mobaiCmd.PersistentFlags().StringP("device", "d", "", "Device ID")
+	for _, c := range []*cobra.Command{mobaiPingCmd, mobaiInstallCmd, mobaiForwardCmd} {
+		c.Flags().Bool("json", false, "Print the result as JSON")
+	}
 }
 
 func getMobaiClient(cmd *cobra.Command) *mobai.Client {
@@ -111,6 +115,9 @@ func runMobaiPing(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot connect to MobAI: %w", err)
 	}
 
+	if newOutput(cmd).json {
+		return printJSON(cmd, map[string]any{"ok": true})
+	}
 	fmt.Printf("success\n")
 	return nil
 }
@@ -130,11 +137,14 @@ func runMobaiInstall(cmd *cobra.Command, args []string) error {
 	}
 
 	req := mobai.InstallAppRequest{Path: args[0]}
-	_, err = client.InstallApp(ctx, deviceID, req)
+	resp, err := client.InstallApp(ctx, deviceID, req)
 	if err != nil {
 		return fmt.Errorf("install failed: %w", err)
 	}
 
+	if newOutput(cmd).json {
+		return printJSON(cmd, map[string]any{"device_id": deviceID, "bundle_id": resp.Data.BundleID, "installed": true})
+	}
 	fmt.Println("installed")
 	return nil
 }
@@ -221,7 +231,7 @@ func runMobaiForward(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(os.Stderr, "WSL proxy listen error: %v\n", err)
 			} else {
 				fmt.Fprintf(os.Stderr, "WSL proxy: 127.0.0.1:%d -> %s:%d\n", hostPort, windowsHost, hostPort)
-				fmt.Printf("forwarded %d -> %d\n", resp.DevicePort, resp.HostPort)
+				printForward(cmd, deviceID, resp)
 				for {
 					conn, err := listener.Accept()
 					if err != nil {
@@ -234,7 +244,7 @@ func runMobaiForward(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	fmt.Printf("forwarded %d -> %d\n", resp.DevicePort, resp.HostPort)
+	printForward(cmd, deviceID, resp)
 
 	// Keep running to maintain the forward
 	select {}
@@ -285,4 +295,14 @@ func handleProxyConnection(clientConn net.Conn, remoteHost string, remotePort in
 	}()
 	// Wait for either direction to finish
 	<-done
+}
+
+// printForward reports a port forward, as one JSON line with --json (the
+// command keeps running to hold the forward).
+func printForward(cmd *cobra.Command, deviceID string, resp *mobai.PortForwardResponse) {
+	if newOutput(cmd).json {
+		_ = json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"device_id": deviceID, "device_port": resp.DevicePort, "host_port": resp.HostPort})
+		return
+	}
+	fmt.Printf("forwarded %d -> %d\n", resp.DevicePort, resp.HostPort)
 }
