@@ -43,6 +43,9 @@ go install ./cmd/builder
 ./builder ios build --profile store --submit                          # Short for: ios release (no groups)
 ./builder ios build --profile development --distribute  # Build, then print an over-the-air install link + QR code
 ./builder ios distribute [--ipa x.ipa] [--once] [--json]  # Same for an existing IPA; --cleanup removes leftovers
+./builder builds [--provider p] [--limit N] [--status running|failed|succeeded] [--json]  # Build history
+./builder builds show|logs|download|cancel <id>  # id: build ID, provider run ID or run URL; logs --failed --follow
+./builder ios cancel --provider p --run-id X     # deprecated alias of builds cancel X --provider p
 ./builder asc apps|builds|groups|testers|users                   # App Store Connect listings (--json)
 ./builder asc groups create <name> [--external]                  # also: groups delete, groups add-build
 ./builder asc testers add <email>... --group <name>              # also: testers remove, users invite
@@ -216,6 +219,7 @@ internal/
   ipa/               # Info.plist and embedded.mobileprovision reading from .ipa archives
   otainstall/        # ios distribute: over-the-air install links (manifest, QR, GitHub draft release + gist backend)
   build/             # Build coordination (snapshot + trigger + poll + download)
+  builds/            # builds: history over GitHub/Codemagic/Bitrise (Source: list, find, show, logs, download, cancel)
   signing/           # CSR generation, .p12 assembly, and Auto (portal-free provisioning on top of asc)
   snapshot/          # Working-tree snapshot as a throwaway commit on a remote ref
   workflow/          # Workflow template (embedded)
@@ -428,6 +432,21 @@ internal/
 - **QR Rendering**: `skip2/go-qrcode` at error-correction Low, Unicode half blocks (two module rows per
   line, 2-module quiet zone), light modules as `█` so it scans on a dark terminal (`--qr-invert` for light);
   `TestQRFitsATerminal` pins a representative link at 41 modules (version 6). Printed only on a TTY or `--qr`.
+- **Build History** (`internal/builds`): the providers are the source of truth, nothing is stored. A
+  `Source` per provider normalizes runs into `Build` (status queued/running/succeeded/failed/cancelled,
+  kind `ipa`/`simulator` by workflow). GitHub lists `ios-build.yml` + `ios-share.yml` runs and takes the
+  ID off the end of `display_title` (`iOS Build <id>` or `.../ios-build/<id>`); Codemagic/Bitrise list
+  the configured build/share workflows (`ci.History`) and read `BUILD_ID`/`BUILDER_PROFILE` from the
+  variables they report back, else the `<id>.ipa` artifact name. `inputs` sends `BUILDER_PROFILE` only
+  for a profile (the runner ignores it; `BUILDER_` is reserved). GitHub runs carry no inputs, so no profile.
+- **Build Refs**: `<id>` is a build ID (8 hex, searched in recent runs; an all-digit miss falls back to a
+  run ID), a run ID, or a URL whose host also picks the provider (`ProviderFromURL`). `builds cancel`
+  with a bare Codemagic/Bitrise run ID skips the lookup and calls `build.CancelRemote` directly, which
+  keeps `ios cancel --run-id` (now a deprecated alias) exactly as before.
+- **Build Logs**: a `LogStream` prints what is new per `Read`; `--follow` loops `builds.Follow`. GitHub
+  serves a job log (`/actions/jobs/{id}/logs`, 302 to storage) only once the job ends, Codemagic per
+  step (`buildActions[].logUrl`, token only to the API host), Bitrise as chunks by position, else the
+  archived raw URL. `builds download` reuses `Coordinator.DownloadArtifact` / `build.DownloadRemote`.
 - **Signing Sets As A Library**: `signing.Setup` and `signing.EnsureSecrets`
   (internal/signing/sets.go) hold the non-interactive core of `signing setup`
   and on-demand provisioning; cmd/builder keeps the prompts, the plan and the
