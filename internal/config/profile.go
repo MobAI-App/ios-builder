@@ -24,6 +24,9 @@ type BuildSettings struct {
 	// Distribution is the profile's distribution, canonical (internal is
 	// ad-hoc); empty for unsigned builds and the legacy path.
 	Distribution string
+	// Runner is the GitHub runs-on: the profile's runner, else the top-level
+	// one; empty means the workflow's rendered default.
+	Runner Runner
 }
 
 // reservedEnv names the variables the runners, the shell and the CI services
@@ -81,6 +84,10 @@ func (c *Config) ResolveProfile(name string) (BuildSettings, error) {
 		Scheme:        c.IOS.Scheme,
 		Signing:       c.IOS.Signing,
 		Provider:      c.Provider,
+		Runner:        c.Runner,
+	}
+	if err := c.Runner.Validate(); err != nil {
+		return s, err
 	}
 	source := "profile"
 	if name == "" {
@@ -108,6 +115,9 @@ func (c *Config) ResolveProfile(name string) (BuildSettings, error) {
 			return s, fmt.Errorf("profile %q: env name %q is reserved for the runner", name, k)
 		}
 	}
+	if err := p.Runner.Validate(); err != nil {
+		return s, fmt.Errorf("profile %q: %w", name, err)
+	}
 	s.Profile = name
 	s.Distribution = distribution
 	s.Signing = distribution != ""
@@ -128,6 +138,9 @@ func (c *Config) ResolveProfile(name string) (BuildSettings, error) {
 	if len(p.Env) > 0 {
 		s.Env = p.Env
 	}
+	if len(p.Runner) > 0 {
+		s.Runner = p.Runner
+	}
 	return s, nil
 }
 
@@ -142,11 +155,14 @@ func (s *BuildSettings) EnvJSON() string {
 	return string(data)
 }
 
-// ProfileInput encodes name, env and distribution as the single `profile`
-// dispatch input, keeping the workflow under GitHub's limit of ten inputs. It
-// is empty when no profile is selected, so older workflow files still work.
+// ProfileInput encodes name, env, distribution and runner as the single
+// `profile` dispatch input, keeping the workflow under GitHub's limit of ten
+// inputs; the workflow's runs-on reads the runner from it. It is empty when no
+// profile is selected and no runner is configured, so older workflow files
+// still work. A runner without a profile goes with an empty name, which the
+// workflow treats as no profile.
 func (s *BuildSettings) ProfileInput() string {
-	if s.Profile == "" {
+	if s.Profile == "" && len(s.Runner) == 0 {
 		return ""
 	}
 	env := s.Env
@@ -157,6 +173,7 @@ func (s *BuildSettings) ProfileInput() string {
 		Name         string            `json:"name"`
 		Env          map[string]string `json:"env"`
 		Distribution string            `json:"distribution"`
-	}{s.Profile, env, s.Distribution})
+		Runner       Runner            `json:"runner,omitempty"`
+	}{s.Profile, env, s.Distribution, s.Runner})
 	return string(data)
 }

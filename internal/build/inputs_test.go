@@ -112,6 +112,37 @@ func TestGitHubInputsMapping(t *testing.T) {
 	}
 }
 
+// The runner reaches runs-on through the profile input: a profile's runner
+// wins over the top-level one, and a top-level runner goes even without a
+// profile, under an empty name the workflow reads as no profile.
+func TestRunnerTravelsInProfileInput(t *testing.T) {
+	cfg := profiledConfig()
+	cfg.Runner = config.Runner{"self-hosted", "macOS"}
+	cfg.Profiles["office"] = config.Profile{Runner: config.Runner{"macos-15"}}
+	c := NewCoordinatorWithOutput(cfg, nil, io.Discard)
+	for profile, want := range map[string]struct{ name, runner string }{
+		"":        {"", `["self-hosted","macOS"]`},
+		"preview": {"preview", `["self-hosted","macOS"]`},
+		"office":  {"office", `"macos-15"`},
+	} {
+		s, _, err := c.settings(profile, "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := c.buildInputs("abcdef12", "ref", s, "")
+		var in struct {
+			Name   string          `json:"name"`
+			Runner json.RawMessage `json:"runner"`
+		}
+		if err := json.Unmarshal([]byte(got["profile"]), &in); err != nil {
+			t.Fatalf("%q: profile input %q: %v", profile, got["profile"], err)
+		}
+		if in.Name != want.name || string(in.Runner) != want.runner {
+			t.Errorf("%q: profile input %s", profile, got["profile"])
+		}
+	}
+}
+
 func TestTriggerErrorExplainsOldWorkflow(t *testing.T) {
 	rejected := errors.New(`failed to trigger workflow (status 422): {"message":"Unexpected inputs provided: [\"profile\"]"}`)
 	err := triggerError(rejected, map[string]string{"profile": "{}"}, WorkflowFile)
@@ -157,8 +188,8 @@ func TestSettingsPrinted(t *testing.T) {
 	var out bytes.Buffer
 	p := NewProgress(&out)
 	p.Start("abcdef12")
-	p.Settings(&config.BuildSettings{Profile: "preview", Configuration: "Release", Signing: true, Env: map[string]string{"B": "2", "A": "1"}, Distribution: "ad-hoc"}, "github")
-	for _, want := range []string{"Profile:       preview", "Configuration: Release", "Scheme:        (auto-detected)", "Signing:       signed (set AD_HOC)", "Provider:      github", "Env:           A, B", "Distribution:  ad-hoc"} {
+	p.Settings(&config.BuildSettings{Profile: "preview", Configuration: "Release", Signing: true, Env: map[string]string{"B": "2", "A": "1"}, Distribution: "ad-hoc"}, "github", "self-hosted,macOS")
+	for _, want := range []string{"Profile:       preview", "Configuration: Release", "Scheme:        (auto-detected)", "Signing:       signed (set AD_HOC)", "Provider:      github", "Runner:        self-hosted,macOS", "Env:           A, B", "Distribution:  ad-hoc"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q in:\n%s", want, out.String())
 		}
@@ -170,12 +201,12 @@ func TestSettingsPrinted(t *testing.T) {
 	// Signed without a distribution is the legacy path with the unsuffixed
 	// secrets; --unsigned leaves a distribution build unsigned.
 	out.Reset()
-	p.Settings(&config.BuildSettings{Signing: true}, "github")
+	p.Settings(&config.BuildSettings{Signing: true}, "github", "")
 	if !strings.Contains(out.String(), "Signing:       signed (unsuffixed IOS_* secrets)") {
 		t.Errorf("legacy path not printed:\n%s", out.String())
 	}
 	out.Reset()
-	p.Settings(&config.BuildSettings{Distribution: "store"}, "github")
+	p.Settings(&config.BuildSettings{Distribution: "store"}, "github", "")
 	if !strings.Contains(out.String(), "Signing:       unsigned") || strings.Contains(out.String(), "set STORE") {
 		t.Errorf("unsigned build printed a signing set:\n%s", out.String())
 	}

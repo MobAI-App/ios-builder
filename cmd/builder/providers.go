@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/MobAI-App/ios-builder/internal/build"
 	"github.com/MobAI-App/ios-builder/internal/config"
@@ -68,6 +69,9 @@ func runProviderInit(cmd *cobra.Command) error {
 		ciCfg = cfg.Bitrise
 	}
 	ciCfg.AppID, ciCfg.Branch = appID, branch
+	if err := applyProviderMachine(cmd, name, &ciCfg); err != nil {
+		return err
+	}
 	if ciCfg.BuildWorkflow == "" {
 		ciCfg.BuildWorkflow = "ios-build"
 	}
@@ -89,7 +93,7 @@ func runProviderInit(cmd *cobra.Command) error {
 	var paths []string
 	customWorkflows := ciCfg.BuildWorkflow != "ios-build" || ciCfg.ShareWorkflow != "ios-share"
 	if !customWorkflows {
-		paths, err = workflow.WriteProviderFiles(".", name)
+		paths, err = workflow.WriteProviderFiles(".", name, &ciCfg)
 		if err != nil {
 			return err
 		}
@@ -109,11 +113,51 @@ func runProviderInit(cmd *cobra.Command) error {
 	if name == "codemagic" {
 		fmt.Println("Create an environment group named builder (add BUILDER=1 for unsigned builds); put signing/MobAI secrets there.")
 	}
-	if name == "bitrise" {
-		fmt.Println("Use bitrise.yml from the repository and select a macOS Xcode stack in the app settings. Put signing/MobAI secrets in the app Secrets tab.")
+	if name == "bitrise" && ciCfg.Stack == "" {
+		fmt.Println("Use bitrise.yml from the repository and select a macOS Xcode stack in the app settings (or pass --stack). Put signing/MobAI secrets in the app Secrets tab.")
+	} else if name == "bitrise" {
+		fmt.Println("Use bitrise.yml from the repository. Put signing/MobAI secrets in the app Secrets tab.")
 	}
 	fmt.Println("Then: builder ios build --provider " + name)
 	fmt.Println("App creation, repository connection, and token guide: https://github.com/MobAI-App/ios-builder/blob/main/docs/provider-setup.md")
+	return nil
+}
+
+// applyProviderMachine stores --runner as the Codemagic instance_type or the
+// Bitrise machine_type_id, and --stack as the Bitrise stack. Values Builder
+// does not know are kept with a warning; flags left out keep builder.json.
+func applyProviderMachine(cmd *cobra.Command, provider string, ci *config.CIConfig) error {
+	runner, _ := cmd.Flags().GetString("runner")
+	stack, _ := cmd.Flags().GetString("stack")
+	if strings.Contains(runner, ",") {
+		return fmt.Errorf("--runner for %s is one machine type, not a list of labels", provider)
+	}
+	if stack != "" && provider != "bitrise" {
+		return fmt.Errorf("--stack applies to Bitrise only; Codemagic selects Xcode with environment.xcode")
+	}
+	field := "instance_type"
+	if provider == "bitrise" {
+		field = "machine_type_id"
+	}
+	for _, f := range []struct{ field, value string }{{field, runner}, {"stack", stack}} {
+		warning, err := config.CheckMachine(provider, f.field, f.value)
+		if err != nil {
+			return err
+		}
+		if warning != "" {
+			fmt.Println("Warning:", warning)
+		}
+	}
+	if runner != "" {
+		if provider == "bitrise" {
+			ci.MachineTypeID = runner
+		} else {
+			ci.InstanceType = runner
+		}
+	}
+	if stack != "" {
+		ci.Stack = stack
+	}
 	return nil
 }
 

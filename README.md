@@ -125,6 +125,78 @@ runner script `.builder/ci/runner.sh`. Commit them to the configured branch
 and connect the same repository to each provider before building. See
 [provider setup, signing, simulator sessions, and free allowances](docs/providers.md).
 
+The machine is `mac_mini_m2` on Codemagic and `g2.mac.medium` on Bitrise
+unless you pick another with `--runner` (and, on Bitrise, a stack with `--stack`):
+
+```bash
+builder init --provider codemagic --app-id YOUR_APP_ID --branch main --runner mac_mini_m4
+builder init --provider bitrise --app-id YOUR_APP_SLUG --branch main --runner g2.mac.large --stack osx-xcode-16.2.x
+```
+
+They are saved as `codemagic.instance_type`, `bitrise.machine_type_id` and
+`bitrise.stack` in `builder.json` and rendered into the YAML. A machine type
+Builder does not know is used as given, with a warning. Larger machines are
+paid on both services.
+
+## Self-hosted runners
+
+GitHub builds run on `macos-latest` by default. `init --runner` picks another
+GitHub-hosted image or your own Mac:
+
+```bash
+builder init --runner macos-15                  # a pinned hosted image
+builder init --runner self-hosted               # any of your self-hosted runners
+builder init --runner self-hosted,macOS,ARM64   # a runner carrying all of these labels
+```
+
+The value is saved in `builder.json` as `"runner": "macos-15"` or
+`"runner": ["self-hosted", "macOS", "ARM64"]`, and a [profile](#build-profiles)
+can override it with its own `runner`. `init` renders the top-level runner into
+`.github/workflows/ios-build.yml` and `ios-share.yml`; commit and push them to
+the default branch as usual. `ios build` prints the runner it dispatches to.
+
+How the runner is chosen:
+
+- `ios build` sends the profile's runner, else the top-level one, inside the
+  `profile` dispatch input, and the workflow's `runs-on` reads it from there.
+  Changing `runner` in `builder.json` therefore takes effect on the next
+  dispatch without regenerating the workflow.
+- A [tag-triggered build](#triggering-from-git-only) and `ios share` have no
+  profile input: they run on the runner `init` rendered. Run `builder init`
+  again after changing the top-level `runner`.
+- Codemagic and Bitrise ignore `runner`; see
+  [Additional macOS Providers](#additional-macos-providers).
+
+A self-hosted Mac keeps its state between jobs, so the workflow:
+
+- does not switch Xcode: `setup-xcode` (which needs sudo) runs only on
+  GitHub-hosted runners, and a self-hosted one uses the Xcode selected with
+  `sudo xcode-select -s` (or `DEVELOPER_DIR` in the runner's `.env`), failing
+  early if there is none;
+- creates the signing keychain in the job's temp directory, puts it in front
+  of the existing search list instead of replacing it, and in the always-run
+  cleanup restores the list, deletes the keychain and removes every
+  provisioning profile it installed;
+- clears the previous run's IPA, archive and export from `build/`;
+- runs `brew install` only for a tool that is missing (XcodeGen, CocoaPods).
+
+Runner requirements:
+
+| Needed for | Install |
+|------------|---------|
+| Every build | macOS with Xcode (and its iOS platform) selected, command line tools, `git`, `jq`, Homebrew |
+| CocoaPods projects (React Native, Expo, Flutter plugins) | `pod` on `PATH`, else the job runs `brew install cocoapods` |
+| React Native / Expo | nothing: `actions/setup-node` installs Node into the runner's tool cache |
+| Flutter | nothing: `subosito/flutter-action` installs the SDK into the tool cache |
+| Kotlin Multiplatform | nothing: `actions/setup-java` installs the JDK |
+| XcodeGen projects | `xcodegen`, else `brew install xcodegen` |
+| `ios share` | an iOS simulator runtime for the selected Xcode |
+
+The runner user needs a login session for `security` and the keychain, so run
+the runner as a LaunchAgent of a logged-in user (the `svc.sh install` default)
+rather than as a LaunchDaemon. GitHub advises against self-hosted runners on
+public repositories, where workflows from forks' pull requests could reach them.
+
 ## Supported Frameworks
 
 | Framework | iOS Path | Auto-detected |
@@ -207,6 +279,7 @@ builder auth apple            # Save an App Store Connect API key
 builder auth status           # Show which providers you are signed in to
 builder auth logout [name]    # Remove stored credentials (github, codemagic, bitrise, apple)
 builder init                  # Set up workflows in current repo
+builder init --runner self-hosted,macOS  # ...running on your own Mac (or macos-15, ...)
 builder update                # Update builder to the latest release
 
 # Building (builds the working tree, including uncommitted changes)
@@ -288,6 +361,7 @@ machine-readable output and never prompts, so agents and CI jobs can drive them.
     "owner": "username",
     "repo": "my-ios-app"
   },
+  "runner": "macos-latest",
   "ios": {
     "path": "ios",
     "scheme": "",
@@ -353,6 +427,7 @@ builder ios build --profile preview
 | `scheme` | Overrides `ios.scheme` |
 | `provider` | Overrides the top-level `provider` (`github`, `codemagic`, `bitrise`) |
 | `env` | String map exported as environment variables on the runner before dependencies are installed and the app is built, so `pod install`, `npm install`, `flutter pub get`, Gradle and xcodebuild all see them |
+| `runner` | GitHub only: overrides the top-level [`runner`](#self-hosted-runners) for builds with this profile, e.g. `"macos-15"` or `["self-hosted", "macOS", "ARM64"]` |
 
 How a build's settings are resolved:
 

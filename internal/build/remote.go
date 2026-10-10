@@ -42,9 +42,11 @@ func RemoteProvider(cfg *config.Config, override string) (ci.Provider, config.CI
 	}
 	switch name {
 	case "codemagic":
-		return ci.NewCodemagic(cfgCI, token), cfgCI, nil
+		p := ci.NewCodemagic(&cfgCI, token)
+		return p, cfgCI, nil
 	case "bitrise":
-		return ci.NewBitrise(cfgCI, token), cfgCI, nil
+		p := ci.NewBitrise(&cfgCI, token)
+		return p, cfgCI, nil
 	default:
 		return nil, cfgCI, fmt.Errorf("%s is not an external CI provider", name)
 	}
@@ -133,7 +135,7 @@ func (c *Coordinator) buildRemote(ctx context.Context, opts *BuildOptions, s *co
 	started := time.Now()
 	buildID := uuid.New().String()[:8]
 	c.progress.Start(buildID)
-	c.progress.Settings(s, p.Name())
+	c.progress.Settings(s, p.Name(), c.config.RunnerName(p.Name(), s))
 	ref, sha, err := c.pushSnapshot(ctx, opts.Remote, buildID)
 	if err != nil {
 		return nil, err

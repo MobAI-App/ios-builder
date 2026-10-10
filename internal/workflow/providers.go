@@ -5,11 +5,24 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+
+	"github.com/MobAI-App/ios-builder/internal/config"
 )
 
-// ProviderFiles returns files to commit to the provider's configured branch.
-func ProviderFiles(provider string) (map[string][]byte, error) {
+// The machine lines of the templates. Group 1 is the indent and group 2 the
+// line ending's \r, if any, so a CRLF checkout renders and stays CRLF.
+var (
+	codemagicInstanceRe = regexp.MustCompile(`(?m)^([ \t]*)instance_type: ` + regexp.QuoteMeta(config.DefaultCodemagicInstance) + `(\r?)$`)
+	bitriseMachineRe    = regexp.MustCompile(`(?m)^([ \t]*)machine_type_id: ` + regexp.QuoteMeta(config.DefaultBitriseMachine) + `(\r?)$`)
+)
+
+// ProviderFiles returns files to commit to the provider's configured branch,
+// with the machine from ci: Codemagic instance_type, Bitrise machine_type_id
+// and stack (empty keeps the template's default; no stack leaves it to the
+// Bitrise app settings).
+func ProviderFiles(provider string, ci *config.CIConfig) (map[string][]byte, error) {
 	name := ""
 	switch provider {
 	case "codemagic":
@@ -23,6 +36,14 @@ func ProviderFiles(provider string) (map[string][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	for _, f := range []struct{ field, value string }{
+		{"instance_type", ci.InstanceType}, {"machine_type_id", ci.MachineTypeID}, {"stack", ci.Stack},
+	} {
+		if _, err := config.CheckMachine(provider, f.field, f.value); err != nil {
+			return nil, err
+		}
+	}
+	yaml = renderMachine(provider, yaml, ci)
 	script, err := GetTemplate("runner.sh")
 	if err != nil {
 		return nil, err
@@ -30,15 +51,36 @@ func ProviderFiles(provider string) (map[string][]byte, error) {
 	return map[string][]byte{name: yaml, ".builder/ci/runner.sh": script}, nil
 }
 
+// renderMachine writes ci's machine settings into a provider template.
+func renderMachine(provider string, yaml []byte, ci *config.CIConfig) []byte {
+	switch provider {
+	case "codemagic":
+		if ci.InstanceType != "" {
+			yaml = codemagicInstanceRe.ReplaceAll(yaml, []byte("${1}instance_type: "+ci.InstanceType+"${2}"))
+		}
+	case "bitrise":
+		machine := ci.MachineTypeID
+		if machine == "" {
+			machine = config.DefaultBitriseMachine
+		}
+		repl := "${1}machine_type_id: " + machine + "${2}"
+		if ci.Stack != "" {
+			repl += "\n${1}stack: " + ci.Stack + "${2}"
+		}
+		yaml = bitriseMachineRe.ReplaceAll(yaml, []byte(repl))
+	}
+	return yaml
+}
+
 // WriteProviderFiles refuses to replace unrelated CI files and checks all
 // destinations before writing any file. Existing Builder-generated files update.
-func WriteProviderFiles(dir, provider string) ([]string, error) {
+func WriteProviderFiles(dir, provider string, ci *config.CIConfig) ([]string, error) {
 	root, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
 	}
 	dir = root
-	files, err := ProviderFiles(provider)
+	files, err := ProviderFiles(provider, ci)
 	if err != nil {
 		return nil, err
 	}
