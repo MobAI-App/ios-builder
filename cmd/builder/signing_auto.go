@@ -180,10 +180,6 @@ func setupDistribution(cfg *config.Config, profileName, flag string) (signing.Ty
 // its tests call them.
 type secretStore = signing.SecretStore
 
-func uploadSigningSet(ctx context.Context, store secretStore, storeErr error, cfg *config.Config, log io.Writer, set string, p12 []byte, password string, profile []byte, extensions map[string][]byte) error {
-	return signing.UploadSet(ctx, store, storeErr, cfg, log, set, p12, password, profile, extensions)
-}
-
 func uploadSigningSecrets(ctx context.Context, gh secretStore, cfg *config.Config, log io.Writer, set string, p12 []byte, password string, profile []byte, extensions map[string][]byte) error {
 	return signing.UploadSecrets(ctx, gh, cfg, log, set, p12, password, profile, extensions)
 }
