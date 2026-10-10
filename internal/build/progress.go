@@ -99,6 +99,9 @@ func (p *Progress) Settings(s *config.BuildSettings, provider string) {
 		keys := slices.Sorted(maps.Keys(s.Env))
 		fmt.Fprintf(p.writer, "   Env:           %s\n", strings.Join(keys, ", "))
 	}
+	if len(s.Secrets) > 0 {
+		fmt.Fprintf(p.writer, "   Secrets:       %s\n", strings.Join(s.Secrets, ", "))
+	}
 	if s.Distribution != "" {
 		fmt.Fprintf(p.writer, "   Distribution:  %s\n", s.Distribution)
 	}

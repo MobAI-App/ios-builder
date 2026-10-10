@@ -78,3 +78,38 @@ func (c *Client) CreateOrUpdateSecret(ctx context.Context, owner, repo, name, en
 
 	return nil
 }
+
+// SetSecret encrypts value with the repository's public key (a libsodium
+// sealed box) and stores it as the Actions secret name.
+func (c *Client) SetSecret(ctx context.Context, owner, repo, name, value string) error {
+	key, err := c.GetPublicKey(ctx, owner, repo)
+	if err != nil {
+		return err
+	}
+	encrypted, err := EncryptSecret(key.Key, value)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt %s: %w", name, err)
+	}
+	if err := c.CreateOrUpdateSecret(ctx, owner, repo, name, encrypted, key.KeyID); err != nil {
+		return fmt.Errorf("failed to store %s: %w", name, err)
+	}
+	return nil
+}
+
+// DeleteSecret removes an Actions secret; false when the repository had none
+// by that name.
+func (c *Client) DeleteSecret(ctx context.Context, owner, repo, name string) (bool, error) {
+	resp, err := c.request(ctx, "DELETE", fmt.Sprintf("/repos/%s/%s/actions/secrets/%s", owner, repo, name), nil)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusNoContent, http.StatusOK:
+		return true, nil
+	case http.StatusNotFound:
+		return false, nil
+	default:
+		return false, fmt.Errorf("failed to delete secret %s: status %d", name, resp.StatusCode)
+	}
+}

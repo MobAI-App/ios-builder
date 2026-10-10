@@ -53,7 +53,7 @@ on:
       # One input for the profile fields that are not inputs of their own, so
       # the workflow stays under the ten-input limit of workflow_dispatch.
       profile:
-        description: 'Selected builder.json profile as JSON: {"name": "...", "env": {...}, "distribution": "..."}'
+        description: 'Selected builder.json profile as JSON: {"name": "...", "env": {...}, "distribution": "...", "secrets": ["NAME", ...]}'
         required: false
         type: string
         default: '{}'
@@ -102,6 +102,9 @@ jobs:
           IN_JDK_VERSION: ${{ inputs.jdk_version }}
           IN_PROFILE: ${{ inputs.profile }}
           IN_BUILD_NUMBER: ${{ inputs.build_number }}
+          # Every secret of the repository, for this step only: it exports
+          # just the names builder.json lists (see below).
+          BUILDER_SECRETS_JSON: ${{ toJSON(secrets) }}
         run: |
           set -e
           PROFILE=""
@@ -142,7 +145,9 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             PROFILE_JSON="$IN_PROFILE"
           elif [ -f builder.json ]; then
-            PROFILE_JSON=$(jq -c --arg p "$PROFILE" '{name: $p, env: (.profiles[$p].env // {}), distribution: (.profiles[$p].distribution // "")}' builder.json)
+            # The top-level env and secrets apply to every build; the profile's
+            # env wins per key, and its secrets add to the list.
+            PROFILE_JSON=$(jq -c --arg p "$PROFILE" '{name: $p, env: ((.env // {}) + (.profiles[$p].env // {})), distribution: (.profiles[$p].distribution // ""), secrets: (((.secrets // []) + (.profiles[$p].secrets // [])) | unique)}' builder.json)
           fi
           [ -n "${PROFILE_JSON:-}" ] || PROFILE_JSON='{}'
           PROFILE=$(jq -r '.name // ""' <<< "$PROFILE_JSON")
@@ -190,6 +195,56 @@ jobs:
             } >> "$GITHUB_ENV"
             echo "env: $name"
           done < <(jq -r '.env // {} | to_entries[] | "\(.key | @base64) \(.value | tostring | @base64)"' <<< "$PROFILE_JSON")
+
+          # Secrets: builder.json lists only names (`builder secret set` adds
+          # them); the values are this repository's Actions secrets, which a
+          # workflow can only reach by name or all at once through
+          # toJSON(secrets). Only the listed names are exported, each value
+          # masked line by line before it is written. A profile's build takes
+          # NAME__<PROFILE> when that exists (the profile name upper-cased,
+          # other characters as _), else NAME, and exports it as NAME.
+          if [ "$(jq -r '.secrets // [] | type' <<< "$PROFILE_JSON")" != "array" ]; then
+            echo "::error::the profile's secrets must be a JSON array of secret names"; exit 1
+          fi
+          SECRET_SUFFIX=$(printf '%s' "$PROFILE" | LC_ALL=C tr '[:lower:]' '[:upper:]' | LC_ALL=C tr -c 'A-Z0-9' '_')
+          SECRETS_JSON="${BUILDER_SECRETS_JSON:-}"
+          [ -n "$SECRETS_JSON" ] || SECRETS_JSON='{}'
+          MISSING_SECRETS=""
+          while IFS= read -r key; do
+            name=$(printf '%s' "$key" | base64 --decode)
+            if ! [[ "$name" =~ ^[A-Z_][A-Z0-9_]*$ ]] || [[ "$name" == *__* ]]; then
+              echo "::error::secret name \"$name\" must be upper case letters, digits and single underscores"; exit 1
+            fi
+            if [ "$(jq -r --arg n "$name" '.env // {} | has($n)' <<< "$PROFILE_JSON")" = "true" ]; then
+              echo "::error::$name is both a plain env value and a secret in builder.json; remove one"; exit 1
+            fi
+            found=$(jq -r --arg a "${name}__${SECRET_SUFFIX}" --arg b "$name" --arg s "$SECRET_SUFFIX" \
+              'if $s != "" and has($a) then "\($a) \(.[$a] | @base64)" elif has($b) then "\($b) \(.[$b] | @base64)" else "" end' \
+              <<< "$SECRETS_JSON")
+            if [ -z "$found" ]; then
+              MISSING_SECRETS="$MISSING_SECRETS $name"
+              continue
+            fi
+            source_name="${found%% *}"
+            encoded="${found#* }"
+            while IFS= read -r line; do
+              if [ -n "$line" ]; then echo "::add-mask::$line"; fi
+            done < <(printf '%s' "$encoded" | base64 --decode; echo)
+            delim="BUILDER_SECRET_${RANDOM}${RANDOM}${RANDOM}"
+            {
+              echo "$name<<$delim"
+              printf '%s' "$encoded" | base64 --decode
+              echo
+              echo "$delim"
+            } >> "$GITHUB_ENV"
+            echo "secret: $name (from $source_name)"
+          done < <(jq -r '.secrets // [] | .[] | tostring | @base64' <<< "$PROFILE_JSON")
+          if [ -n "$MISSING_SECRETS" ]; then
+            for name in $MISSING_SECRETS; do
+              echo "::error::secret $name is listed in builder.json but not set in this repository's Actions secrets${SECRET_SUFFIX:+ (as $name or ${name}__$SECRET_SUFFIX)}; run: builder secret set $name${PROFILE:+ --profile $PROFILE}"
+            done
+            exit 1
+          fi
 
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1

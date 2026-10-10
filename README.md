@@ -215,6 +215,16 @@ builder ios build --unsigned  # Build without code signing (if signing is config
 builder ios build --provider codemagic  # Build on another provider (also: bitrise)
 builder ios build --profile production  # Build with a profile from builder.json
 
+# Build environment and secrets (see "Environment and secrets" below)
+builder env set API_URL https://api.example.com          # Plain value for every build
+builder env set API_URL https://staging.example.com --profile preview
+builder env unset API_URL [--profile preview]
+builder env list [--profile preview] [--json]
+builder secret set SENTRY_TOKEN                          # Hidden prompt; stored on the CI provider
+printf %s "$TOKEN" | builder secret set SENTRY_TOKEN --profile production --value-stdin
+builder secret unset SENTRY_TOKEN [--profile production]
+builder secret list [--json]                             # Names and where they are stored, never values
+
 # Simulator (free, needs a MOBAI_API_KEY secret)
 builder ios share             # Try the build on a simulator in the MobAI app
 builder ios share --duration 1h  # Keep it available longer while unused
@@ -352,7 +362,8 @@ builder ios build --profile preview
 | `configuration` | Overrides the derived configuration: `Debug` for `development`, `Release` for every other distribution, `ios.configuration` for unsigned profiles |
 | `scheme` | Overrides `ios.scheme` |
 | `provider` | Overrides the top-level `provider` (`github`, `codemagic`, `bitrise`) |
-| `env` | String map exported as environment variables on the runner before dependencies are installed and the app is built, so `pod install`, `npm install`, `flutter pub get`, Gradle and xcodebuild all see them |
+| `env` | String map exported as environment variables on the runner before dependencies are installed and the app is built, so `pod install`, `npm install`, `flutter pub get`, Gradle and xcodebuild all see them. Overrides the top-level `env` key by key |
+| `secrets` | Names of provider-held secrets this profile's builds also expose (see [Environment and secrets](#environment-and-secrets)) |
 
 How a build's settings are resolved:
 
@@ -370,19 +381,71 @@ How a build's settings are resolved:
 
 **`env` values are build-time configuration, not secrets.** They are stored in
 `builder.json`, sent to the CI provider as plain workflow inputs, and visible in
-the run's inputs and logs. Keep tokens and passwords in the provider's secrets
-(`gh secret set` on GitHub, or the [Codemagic / Bitrise secrets
-guide](docs/provider-secrets.md)); the build reads those as environment
-variables too. Names the runner owns are rejected: its own parameters (`SCHEME`,
+the run's inputs and logs. Keep tokens and passwords in secrets (next section).
+Names the runner owns are rejected: its own parameters (`SCHEME`,
 `CONFIGURATION`, `USE_SIGNING`, `BUILD_ENV`, ...), the signing secrets, `PATH`,
 `HOME`, `DEVELOPER_DIR`, and the `GITHUB_`, `RUNNER_`, `CM_`, `BITRISE_`, `BUILDER_` prefixes.
+
+### Environment and secrets
+
+Plain values go in `builder.json`: a top-level `env` every build gets, and a
+profile's `env` on top of it, key by key. `builder env set|unset|list` edits
+them with the same name checks a build applies.
+
+Secret values never touch `builder.json` or Builder's servers (there are none):
+`builder secret set NAME` reads the value from a hidden prompt (or stdin with
+`--value-stdin`; never an argument, never printed), stores it on the CI
+provider, and adds only the **name** to `"secrets"`:
+
+| Provider | Where the value goes |
+|----------|----------------------|
+| GitHub | A repository Actions secret, sealed with the repository's public key |
+| Codemagic | A secure variable in the app's `builder` variable group (the one the generated `codemagic.yaml` imports; created if missing) |
+| Bitrise | A protected app secret, with "replace variables in inputs" and pull-request exposure off |
+
+The provider is `--provider`, else the profile's `provider`, else the top-level
+`provider`, else GitHub. Each build exports the names it lists as environment
+variables before dependencies install, and fails by name when one has no value.
+
+```json
+{
+  "env": { "API_URL": "https://api.example.com" },
+  "secrets": ["SENTRY_TOKEN"],
+  "profiles": {
+    "production": { "distribution": "store", "secrets": ["STRIPE_KEY"] }
+  }
+}
+```
+
+**Per-profile values** use a name suffix. `builder secret set SENTRY_TOKEN
+--profile production` stores the value as `SENTRY_TOKEN__PRODUCTION` (the
+profile name upper-cased, other characters as `_`) and lists `SENTRY_TOKEN`
+under that profile. A build with the profile takes `NAME__<PROFILE>` when the
+provider has it, else `NAME`, and exports it as `NAME` either way, so the app
+reads one name. This works the same on all three providers; GitHub
+Environments are not used.
+
+Secret names are upper case letters, digits and single underscores (GitHub
+stores names upper case, and `__` separates the profile suffix), and the
+reserved names above apply, so a secret cannot shadow `IOS_CERTIFICATE_*`,
+`MOBAI_API_KEY` or the runner's own variables. A name cannot be both a plain
+`env` value and a secret.
+
+On GitHub the `Resolve parameters` step receives `${{ toJSON(secrets) }}` (the
+only way a workflow can read secrets whose names are not written in it),
+exports just the listed names, and registers every line of each value with
+`::add-mask::` first. `builder secret list` shows each listed name, where it is
+stored and whether the provider has it. Secrets apply to `ios build`, not to
+`ios share`.
 
 Selecting a profile, with `--profile` or `defaultProfile`, needs the workflow
 file from this version of Builder, which declares a `profile` input; an older
 committed workflow rejects the dispatch. Run `builder init` again to refresh
 `.github/workflows/ios-build.yml` (or `builder init --provider ...` for
 `runner.sh`) in a project set up earlier, then commit and push it to the
-default branch.
+default branch. The same goes for a top-level `env` or any `secrets`: an older
+workflow ignores the secret list, so `ios build` refuses to dispatch while the
+local `.github/workflows/ios-build.yml` predates it.
 
 ### MobAI Configuration
 

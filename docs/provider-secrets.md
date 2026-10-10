@@ -17,6 +17,15 @@ for the two new providers; use the steps below even if GitHub signing/sharing
 already works. Existing GitHub secret values cannot be downloaded for copying to
 another service.
 
+**Your app's own secrets** (an API token the build needs, say) do not need any
+of the dashboard steps below: `builder secret set SENTRY_TOKEN --provider
+codemagic` (or `bitrise`) stores the value through the provider's API, a secure
+variable in the `builder` group on Codemagic and a protected secret on Bitrise,
+and lists the name in `builder.json`; the build exports it and fails by name if
+it is missing. See [Environment and secrets](../README.md#environment-and-secrets).
+The signing secrets and `MOBAI_API_KEY` are reserved names that `secret set`
+refuses; add those as described here.
+
 ## 1. Prepare your signing files
 
 A repository holds one signing set per distribution (`development`, `ad-hoc`
@@ -180,9 +189,9 @@ builder ios build --profile development --provider codemagic
 builder ios build --profile development --provider bitrise
 ```
 
-Codemagic and Bitrise have no secrets API, so `ios build` cannot check or
-provision the set the way it does on GitHub; a missing variable fails in the
-runner's signing step by name.
+`ios build` does not check or provision the signing set on Codemagic and
+Bitrise the way it does on GitHub; a missing variable fails in the runner's
+signing step by name.
 
 A successful run should archive, export, and download an IPA. Install it on a
 device included in the development profile to verify signing and provisioning.

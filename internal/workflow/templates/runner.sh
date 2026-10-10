@@ -30,6 +30,29 @@ export_build_env() {
   done < <(jq -r 'to_entries[] | "\(.key | @base64) \(.value | tostring | @base64)"' <<< "$BUILD_ENV")
 }
 
+# The secrets builder.json lists (BUILDER_SECRETS, names only) are the app's
+# own secure variables, already in the environment. A profile's build takes
+# NAME__<BUILDER_SECRET_SUFFIX> when the provider has it and exports it as
+# NAME; a listed name with no value fails here, by name, before the build.
+export_build_secrets() {
+  [ -n "${BUILDER_SECRETS:-}" ] || return 0
+  local suffix="${BUILDER_SECRET_SUFFIX:-}" name stored alt missing=""
+  if [ -n "$suffix" ] && ! [[ "$suffix" =~ ^[A-Z0-9_]+$ ]]; then fail "Invalid BUILDER_SECRET_SUFFIX: $suffix"; fi
+  for name in $BUILDER_SECRETS; do
+    if ! [[ "$name" =~ ^[A-Z_][A-Z0-9_]*$ ]] || [[ "$name" == *__* ]]; then fail "Invalid secret name in BUILDER_SECRETS: $name"; fi
+    if [ -n "$BUILD_ENV" ] && [ "$(jq -r --arg n "$name" 'has($n)' <<< "$BUILD_ENV")" = true ]; then
+      fail "$name is both a plain env value and a secret in builder.json; remove one"
+    fi
+    stored="$name"
+    alt="${name}__${suffix}"
+    if [ -n "$suffix" ] && [ -n "${!alt:-}" ]; then stored="$alt"; fi
+    if [ -z "${!stored:-}" ]; then missing="$missing $name"; continue; fi
+    if [ "$stored" != "$name" ]; then export "$name=${!stored}"; fi
+    echo "secret: $name (from $stored)"
+  done
+  [ -z "$missing" ] || fail "Secrets listed in builder.json but not set on this app:$missing. Run builder secret set <NAME>${suffix:+ --profile <profile>} --provider <codemagic|bitrise> for each."
+}
+
 snapshot_checkout() {
   case "${SNAPSHOT_REF:-}" in
     refs/ios-builder/jobs/*) ;;
@@ -211,6 +234,7 @@ prepare() {
   echo "Project type: $project_type"
   if ! command -v jq >/dev/null; then brew install jq; fi
   export_build_env
+  export_build_secrets
 
   # Match the GitHub workflows' committed xcconfig-template convention.
   find . -path ./DerivedData -prune -o -type f \
