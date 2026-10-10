@@ -12,16 +12,22 @@ const (
 )
 
 type (
-	Client       = github.Client
-	Repository   = github.Repository
-	WorkflowRun  = github.WorkflowRun
-	Job          = github.Job
-	JobStep      = github.JobStep
-	Artifact     = github.Artifact
-	PublicKey    = github.PublicKey
-	APIError     = github.APIError
-	ProgressFunc = github.ProgressFunc
+	Client         = github.Client
+	Repository     = github.Repository
+	WorkflowRun    = github.WorkflowRun
+	Job            = github.Job
+	JobStep        = github.JobStep
+	Artifact       = github.Artifact
+	PublicKey      = github.PublicKey
+	APIError       = github.APIError
+	ProgressFunc   = github.ProgressFunc
+	FileContent    = github.FileContent
+	PutFileRequest = github.PutFileRequest
+	FileCommit     = github.FileCommit
 )
+
+// ErrFileNotFound is Client.GetFile's answer for a path the branch does not have.
+var ErrFileNotFound = github.ErrFileNotFound
 
 // NewClient creates a GitHub API client authenticated with token.
 func NewClient(token string) *Client {

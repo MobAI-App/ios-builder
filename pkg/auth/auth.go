@@ -13,12 +13,29 @@ import (
 // ErrNotAuthenticated indicates no stored authentication token was found.
 var ErrNotAuthenticated = auth.ErrNotAuthenticated
 
-type Token = auth.Token
+type (
+	Token      = auth.Token
+	DeviceCode = auth.DeviceCode
+)
 
 // Login performs GitHub OAuth Device Code flow authentication, printing the
 // verification URL and code to stdout, and stores the resulting token.
 func Login(ctx context.Context) (*Token, error) {
 	return auth.Login(ctx)
+}
+
+// RequestDeviceCode and PollForToken are Login's two halves for a program
+// with its own UI: show code.UserCode and code.VerificationURI, then poll.
+// The token comes back unstored; keep it wherever the program keeps secrets
+// and hand it to github.NewClient.
+func RequestDeviceCode(ctx context.Context) (*DeviceCode, error) {
+	return auth.RequestDeviceCode(ctx)
+}
+
+// PollForToken waits until the user has authorized code, or it expires or
+// ctx ends.
+func PollForToken(ctx context.Context, code *DeviceCode) (*Token, error) {
+	return auth.PollForToken(ctx, code)
 }
 
 // GetToken retrieves the stored GitHub token from the OS keychain or file storage.

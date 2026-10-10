@@ -29,6 +29,8 @@ type (
 	Commands      = signing.Commands
 	SetupOptions  = signing.SetupOptions
 	SetupResult   = signing.SetupResult
+	ManualOptions = signing.ManualOptions
+	ManualResult  = signing.ManualResult
 	EnsureOptions = signing.EnsureOptions
 )
 
@@ -60,6 +62,33 @@ func Auto(ctx context.Context, client *asc.Client, opts *AutoOptions) (*AutoResu
 // prompts and summary.
 func Setup(ctx context.Context, client *asc.Client, store SecretStore, storeErr error, cfg *config.Config, opts *SetupOptions) (*SetupResult, error) {
 	return signing.Setup(ctx, client, store, storeErr, cfg, opts)
+}
+
+// SetupManual uploads a signing set the caller already has (a .p12 and the
+// profiles) and records the profile in builder.json: `builder signing setup
+// --certificate --profile` without its prompts.
+func SetupManual(ctx context.Context, store SecretStore, storeErr error, cfg *config.Config, opts *ManualOptions) (*ManualResult, error) {
+	return signing.SetupManual(ctx, store, storeErr, cfg, opts)
+}
+
+// ManualType is the distribution a .mobileprovision is for; a non-empty
+// distribution that disagrees with it is an error.
+func ManualType(profileData []byte, distribution string) (Type, error) {
+	return signing.ManualType(profileData, distribution)
+}
+
+// MatchExtensionProfiles pairs every extension bundle ID with the key of the
+// profile (name to contents) whose app id covers it, for
+// ManualOptions.ExtensionProfiles.
+func MatchExtensionProfiles(extensions []string, files map[string][]byte, typ Type) (map[string]string, error) {
+	return signing.MatchExtensionProfiles(extensions, files, typ)
+}
+
+// BuildP12 combines a PEM private key with the certificate Apple issued for
+// it (DER or PEM) into a password-protected PKCS#12, the file Keychain
+// Access exports and ManualOptions.P12 takes.
+func BuildP12(keyPEM, certData []byte, password string) ([]byte, error) {
+	return signing.BuildP12(keyPEM, certData, password)
 }
 
 // EnsureSecrets provisions a missing or partial signing set before a build

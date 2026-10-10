@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/MobAI-App/ios-builder/internal/config"
@@ -391,22 +389,21 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 		ctx = context.Background()
 	}
 	fmt.Fprintln(out)
-	uploadErr := uploadSigningSet(ctx, store, storeErr, cfg, out, set, certData, password, profileData, extensionProfiles)
+	res, err := signing.SetupManual(ctx, store, storeErr, cfg, &signing.ManualOptions{
+		Type: typ, ProfileName: profileName, P12: certData, Password: password, Profile: profileData, ExtensionProfiles: extensionProfiles, Log: out,
+	})
+	var uploadErr error
+	if res != nil {
+		uploadErr = res.UploadError
+	}
 	if uploadErr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", uploadErr)
 	}
-
-	// The profile is written only when its secrets reached the repository:
-	// builder.json must not claim a signing set the repository does not have.
-	replaced := ""
-	if uploadErr == nil {
-		replaced = writeSigningProfile(cfg, profileName, typ)
+	if err != nil {
+		return err
 	}
-	if err := config.NewManager().Save(cfg); err != nil {
-		return fmt.Errorf("failed to update config: %w", err)
-	}
-	if uploadErr == nil {
-		fmt.Fprintln(out, profileWritten(profileName, typ, replaced))
+	if res.ProfileWritten {
+		fmt.Fprintln(out, profileWritten(profileName, typ, res.ReplacedDistribution))
 	} else {
 		fmt.Fprintln(out, profileNotWritten(profileName))
 	}
@@ -427,72 +424,18 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// The manual-mode helpers live in internal/signing so a program embedding
+// Builder can take a user's files the same way; these names are what this
+// package and its tests call them.
+
 // matchExtensionProfiles pairs every extension in ios.extensions with the
 // path of the --extension-profile (path → contents) whose app id covers it.
-// Each must be of the app profile's type; an extension without a profile, or
-// a profile for no listed extension, is an error naming it.
 func matchExtensionProfiles(extensions []string, files map[string][]byte, typ signing.Type) (map[string]string, error) {
-	appIDs := make(map[string]string, len(files))
-	for _, path := range slices.Sorted(maps.Keys(files)) {
-		fileType, err := signing.ProfileType(files[path])
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
-		}
-		if fileType != typ {
-			return nil, fmt.Errorf("%s is a %s profile, but the app profile is %s; every extension profile must be of the same type", path, fileType, typ)
-		}
-		if appIDs[path], err = signing.ProfileBundleID(files[path]); err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
-		}
-	}
-	// The longest app id is the most specific, so an exact profile wins over
-	// a wildcard one covering the same extension.
-	paths := slices.SortedFunc(maps.Keys(appIDs), func(a, b string) int {
-		return len(appIDs[b]) - len(appIDs[a])
-	})
-	profiles := make(map[string]string, len(extensions))
-	var problems []string
-	for _, path := range paths {
-		covered := false
-		for _, id := range extensions {
-			if signing.Covers(appIDs[path], id) {
-				covered = true
-				if _, ok := profiles[id]; !ok {
-					profiles[id] = path
-				}
-			}
-		}
-		if !covered {
-			problems = append(problems, fmt.Sprintf("%s covers %s, which is not in ios.extensions", path, appIDs[path]))
-		}
-	}
-	for _, id := range extensions {
-		if _, ok := profiles[id]; !ok {
-			problems = append(problems, fmt.Sprintf("extension %s has no profile; pass --extension-profile <mobileprovision> for it", id))
-		}
-	}
-	if len(problems) > 0 {
-		return nil, fmt.Errorf("extension profiles do not match ios.extensions in builder.json:\n  %s", strings.Join(problems, "\n  "))
-	}
-	return profiles, nil
+	return signing.MatchExtensionProfiles(extensions, files, typ)
 }
 
 // manualSigningType is what the .mobileprovision says it is. A --distribution
 // that disagrees is an error, since the runner refuses such a pair.
 func manualSigningType(profileData []byte, distributionFlag string) (signing.Type, error) {
-	typ, err := signing.ProfileType(profileData)
-	if err != nil {
-		return "", err
-	}
-	if distributionFlag == "" {
-		return typ, nil
-	}
-	want, err := signing.ParseType(distributionFlag)
-	if err != nil {
-		return "", err
-	}
-	if want != typ {
-		return "", fmt.Errorf("the profile is a %s profile, but --distribution %s was given; builds with distribution %s would refuse it", typ, want, want)
-	}
-	return typ, nil
+	return signing.ManualType(profileData, distributionFlag)
 }
