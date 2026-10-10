@@ -120,6 +120,30 @@ type ArtifactsResponse struct {
 	Artifacts  []Artifact `json:"artifacts"`
 }
 
+// FileContent is one file read from a repository: its bytes and the blob SHA
+// that PutFile needs to update it.
+type FileContent struct {
+	Path    string `json:"path"`
+	SHA     string `json:"sha"`
+	Content []byte `json:"-"`
+}
+
+// PutFileRequest is one file to create or update with a commit.
+type PutFileRequest struct {
+	Message string
+	Content []byte
+	// Branch is the branch to commit on; empty means the default branch.
+	Branch string
+	// SHA is the blob being replaced, required to update an existing file.
+	SHA string
+}
+
+// FileCommit is the commit PutFile made.
+type FileCommit struct {
+	SHA     string `json:"sha"`
+	HTMLURL string `json:"html_url"`
+}
+
 // APIError represents an error response from the GitHub API
 type APIError struct {
 	Message          string `json:"message"`

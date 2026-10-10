@@ -75,6 +75,22 @@ type SetupOptions struct {
 	OutDirAsGiven string
 	// Log receives progress lines; nil discards them.
 	Log io.Writer
+	// SaveConfig persists cfg with the profile written; nil writes
+	// builder.json in the working directory, as the CLI does. A program with
+	// no checkout (one that commits builder.json through the GitHub API, say)
+	// supplies its own.
+	SaveConfig func(*config.Config) error
+}
+
+// saveConfig is SaveConfig, or builder.json in the working directory.
+func saveConfig(save func(*config.Config) error, cfg *config.Config) error {
+	if save == nil {
+		save = config.NewManager().Save
+	}
+	if err := save(cfg); err != nil {
+		return fmt.Errorf("failed to update config: %w", err)
+	}
+	return nil
 }
 
 // SetupResult is what Setup reports. A failed upload is not an error: the
@@ -150,8 +166,8 @@ func Setup(ctx context.Context, client *asc.Client, store SecretStore, storeErr 
 	if cfg.IOS.BundleID == "" {
 		cfg.IOS.BundleID = opts.BundleID
 	}
-	if err := config.NewManager().Save(cfg); err != nil {
-		return res, fmt.Errorf("failed to update config: %w", err)
+	if err := saveConfig(opts.SaveConfig, cfg); err != nil {
+		return res, err
 	}
 	return res, nil
 }

@@ -47,7 +47,7 @@ type DeviceCode struct {
 // Login performs GitHub OAuth Device Code flow authentication.
 // It displays a URL and code for the user to authorize, then stores the token in the keychain.
 func Login(ctx context.Context) (*Token, error) {
-	code, err := requestDeviceCode(ctx)
+	code, err := RequestDeviceCode(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +58,7 @@ func Login(ctx context.Context) (*Token, error) {
 	fmt.Println()
 	fmt.Println("Waiting for authorization...")
 
-	token, err := pollForToken(ctx, code)
+	token, err := PollForToken(ctx, code)
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +196,10 @@ func deleteTokenFile() error {
 	return nil
 }
 
-func requestDeviceCode(ctx context.Context) (*DeviceCode, error) {
+// RequestDeviceCode starts the device flow: the code and URL the user has to
+// visit. Login prints them; a program with its own UI shows them itself and
+// then calls PollForToken.
+func RequestDeviceCode(ctx context.Context) (*DeviceCode, error) {
 	data := url.Values{
 		"client_id": {clientID},
 		"scope":     {"repo workflow gist"},
@@ -231,7 +234,9 @@ func requestDeviceCode(ctx context.Context) (*DeviceCode, error) {
 	return &code, nil
 }
 
-func pollForToken(ctx context.Context, code *DeviceCode) (*Token, error) {
+// PollForToken waits until the user has authorized the device code, or it
+// expires or ctx ends. The token is returned, not stored.
+func PollForToken(ctx context.Context, code *DeviceCode) (*Token, error) {
 	interval := time.Duration(code.Interval) * time.Second
 	if interval == 0 {
 		interval = 5 * time.Second
