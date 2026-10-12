@@ -41,6 +41,8 @@ go install ./cmd/builder
 ./builder ios release --profile store --group <name> --notes <text>  # Build with the next build number, upload, wait, TestFlight
 ./builder ios release --profile store --app-store --release after-approval  # Same, then App Review
 ./builder ios build --profile store --submit                          # Short for: ios release (no groups)
+./builder ios metadata pull [--screenshots] [--clean]                  # App Store listing → metadata/<locale>/*.txt (fastlane layout)
+./builder ios metadata push --dry-run|--yes [--version X.Y] [--screenshots [--replace-screenshots]]  # push what differs
 ./builder ios build --profile development --distribute  # Build, then print an over-the-air install link + QR code
 ./builder ios distribute [--ipa x.ipa] [--once] [--json]  # Same for an existing IPA; --cleanup removes leftovers
 ./builder asc apps|builds|groups|testers|users                   # App Store Connect listings (--json)
@@ -182,6 +184,21 @@ builder ios release ─────► Preflight: API key; --profile/defaultProf
                                 ▼
                           distribute.Upload (wait) → SubmitTestFlight | SubmitAppStore
 
+builder ios metadata ────► LoadLocal + Validate (lengths, URLs, categories) and LoadScreenshots
+                            (display type from pixel size or a <DISPLAY_TYPE>/ subfolder) before any request
+                                │
+                                ▼
+                          resolveTarget: editable appStoreVersion (or --version, created on push) +
+                            editable appInfo (include=primaryCategory,secondaryCategory)
+                                │
+                                ▼
+                          pull: appInfoLocalizations / appStoreVersionLocalizations → metadata/<locale>/*.txt;
+                            --screenshots: appScreenshotSets → appScreenshots → imageAsset templateUrl download
+                          push: diff → "Will ..." plan → --yes: [POST appStoreVersions → replan] →
+                            POST/PATCH appInfoLocalizations → POST/PATCH appStoreVersionLocalizations →
+                            PATCH appInfos relationships → POST appScreenshotSets → DELETE (replace) →
+                            POST appScreenshots → PUT chunks → PATCH uploaded + MD5 → poll assetDeliveryState
+
 builder ios distribute ──► otainstall.Inspect: Info.plist + embedded.mobileprovision
                             (unsigned / App Store profile → error naming the alternative)
                                 │
@@ -213,6 +230,7 @@ internal/
   asc/               # App Store Connect API client (JWT, JSON:API, apps, builds, uploads, TestFlight,
                      #   beta groups, beta testers, team users/invitations, review)
   distribute/        # Upload / TestFlight / App Store / tester flows on top of asc
+  metadata/          # ios metadata pull/push: fastlane-layout files ↔ version/app-info localizations, categories, screenshots
   ipa/               # Info.plist and embedded.mobileprovision reading from .ipa archives
   otainstall/        # ios distribute: over-the-air install links (manifest, QR, GitHub draft release + gist backend)
   build/             # Build coordination (snapshot + trigger + poll + download)
@@ -402,7 +420,7 @@ internal/
   with the longest covering entry or fails naming the ids to add; `write_export_options` exports them
 - **Extension Points**: `ios release` composes `distribute.Upload` and
   `distribute.SubmitTestFlight`. `pkg/asc`, `pkg/distribute`, `pkg/release`,
-  `pkg/signing` and `pkg/ipa` alias the internal packages so another program
+  `pkg/signing`, `pkg/ipa` and `pkg/metadata` alias the internal packages so another program
   (mobai-dev) can drive the same flows; `release.Builder` is the one-method
   interface a foreign build backend implements.
 - **OTA Install, Not OTA Updates** (`internal/otainstall`): `ios distribute` serves a whole signed IPA
@@ -428,6 +446,19 @@ internal/
 - **QR Rendering**: `skip2/go-qrcode` at error-correction Low, Unicode half blocks (two module rows per
   line, 2-module quiet zone), light modules as `█` so it scans on a dark terminal (`--qr-invert` for light);
   `TestQRFitsATerminal` pins a representative link at 41 modules (version 6). Printed only on a TTY or `--qr`.
+- **App Store Metadata** (`internal/metadata`): fastlane deliver layout (`metadata/<locale>/<field>.txt`,
+  `{primary,secondary}_category.txt`, `screenshots/<locale>/[<DISPLAY_TYPE>/]`); `Fields` is the one table of
+  file → attribute → resource → limit. `NewPlan` validates everything locally before the first request, then
+  diffs; `Apply` writes app info locales, version locales, categories, screenshots in that order. Text is
+  compared after CRLF → LF and TrimSpace on both sides. A field without a file is untouched; an empty file clears.
+- **Metadata Version Targeting**: no `--version` = the `Editable()` version (pull falls back to the newest);
+  `--version` that does not exist is created by push, which then re-resolves and recomputes the plan, since
+  App Store Connect copies the previous version's localizations (and opens a new editable appInfo) on create.
+  App-info changes on a non-editable appInfo fail at plan time.
+- **Screenshot Diff**: by `sourceFileChecksum` (MD5 hex) per locale + display type. Default appends the files a
+  set lacks (refusing past 10); `--replace-screenshots` deletes and re-uploads a set whose ordered checksums
+  differ. Pull names files `NN_<name>` (an existing `NN_` prefix replaced) under the display-type subfolder, so
+  a pulled tree pushes back as an empty plan. Pixel sizes two types share go to the newer type.
 - **Signing Sets As A Library**: `signing.Setup` and `signing.EnsureSecrets`
   (internal/signing/sets.go) hold the non-interactive core of `signing setup`
   and on-demand provisioning; cmd/builder keeps the prompts, the plan and the

@@ -42,6 +42,20 @@ type appStoreVersionAttributes struct {
 	CreatedDate     *time.Time `json:"createdDate,omitempty"`
 }
 
+// Editable reports whether the version's metadata can be changed: it is being
+// prepared, or came back from review.
+func (v *AppStoreVersion) Editable() bool {
+	state := v.State
+	if state == "" {
+		state = v.AppStoreState
+	}
+	switch state {
+	case "PREPARE_FOR_SUBMISSION", "DEVELOPER_REJECTED", "REJECTED", "METADATA_REJECTED", "INVALID_BINARY":
+		return true
+	}
+	return false
+}
+
 func toAppStoreVersion(r Resource[appStoreVersionAttributes]) AppStoreVersion {
 	v := AppStoreVersion{
 		ID:            r.ID,
