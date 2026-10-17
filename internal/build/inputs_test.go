@@ -144,7 +144,7 @@ func TestRemoteInputsMapping(t *testing.T) {
 
 	s, _, _ = c.settings("preview", "", false)
 	got = c.inputs("abcdef12", "ref", "sha", s)
-	if got["USE_SIGNING"] != "true" || got["SCHEME"] != "AppPreview" || got["CONFIGURATION"] != "Release" || got["DISTRIBUTION"] != "ad-hoc" {
+	if got["USE_SIGNING"] != "true" || got["SCHEME"] != "AppPreview" || got["CONFIGURATION"] != "Release" || got["DISTRIBUTION"] != "ad-hoc" || got["BUILDER_PROFILE"] != "preview" {
 		t.Fatalf("profile mapping: %v", got)
 	}
 	var env map[string]string

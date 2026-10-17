@@ -28,6 +28,9 @@ type WorkflowRun struct {
 	HTMLURL    string    `json:"html_url"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
+	// DisplayTitle is the run-name ("iOS Build <build-id>").
+	DisplayTitle string    `json:"display_title"`
+	RunStartedAt time.Time `json:"run_started_at"`
 }
 
 // WorkflowRunsResponse is the response from listing workflow runs

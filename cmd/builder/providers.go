@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/MobAI-App/ios-builder/internal/build"
 	"github.com/MobAI-App/ios-builder/internal/config"
 	"github.com/MobAI-App/ios-builder/internal/github"
 	"github.com/MobAI-App/ios-builder/internal/workflow"
@@ -118,27 +117,18 @@ func runProviderInit(cmd *cobra.Command) error {
 }
 
 func init() {
-	cancelCmd := &cobra.Command{Use: "cancel", Short: "Cancel a submitted Codemagic or Bitrise run", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		cfg, err := loadConfig()
-		if err != nil {
-			return err
-		}
-		name, _ := cmd.Flags().GetString("provider")
-		id, _ := cmd.Flags().GetString("run-id")
-		if id == "" {
-			return fmt.Errorf("--run-id is required")
-		}
-		p, _, err := build.RemoteProvider(cfg, name)
-		if err != nil {
-			return err
-		}
-		if err := build.CancelRemote(cmd.Context(), p, id); err != nil {
-			return fmt.Errorf("cancellation could not be confirmed; check the provider dashboard: %w", err)
-		}
-		fmt.Println("Run has stopped.")
-		return nil
-	}}
-	cancelCmd.Flags().String("provider", "", "Provider holding the run (codemagic or bitrise)")
+	// Kept for scripts written before `builds cancel`, which also takes a
+	// Builder build ID or run URL and covers GitHub.
+	cancelCmd := &cobra.Command{Use: "cancel", Short: "Cancel a submitted run (use builds cancel)", Args: cobra.NoArgs,
+		Deprecated: "use `builder builds cancel <id> [--provider name]`",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			id, _ := cmd.Flags().GetString("run-id")
+			if id == "" {
+				return fmt.Errorf("--run-id is required")
+			}
+			return cancelBuild(cmd, id)
+		}}
+	cancelCmd.Flags().String("provider", "", "Provider holding the run (github, codemagic or bitrise)")
 	cancelCmd.Flags().String("run-id", "", "Run ID from the provider workflow URL")
 	iosCmd.AddCommand(cancelCmd)
 }

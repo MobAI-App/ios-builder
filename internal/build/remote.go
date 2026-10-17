@@ -88,6 +88,11 @@ func (c *Coordinator) inputs(buildID, ref, sha string, s *config.BuildSettings) 
 	if s.Distribution != "" {
 		v["DISTRIBUTION"] = s.Distribution
 	}
+	// Read back by `builder builds`, which finds the profile in the variables
+	// the provider reports; the runner ignores it.
+	if s.Profile != "" {
+		v["BUILDER_PROFILE"] = s.Profile
+	}
 	return v
 }
 
