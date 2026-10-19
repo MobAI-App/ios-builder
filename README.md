@@ -323,6 +323,7 @@ machine-readable output and never prompts, so agents and CI jobs can drive them.
 | `ios.extensions` | Bundle identifiers of the app's extension targets (widgets, share/notification extensions, watch apps, app clips), each signed with its own profile | filled by `init` and `signing setup` from the Xcode project; list them by hand for a managed Expo project |
 | `ios.configuration` | Xcode build configuration. **Builds are `Debug` unless you set `Release`**; Debug is faster and is what the dev commands expect | `Debug` |
 | `ios.signing` | Legacy: sign builds that select no profile, with the unsuffixed `IOS_CERTIFICATE`, `IOS_CERTIFICATE_PASSWORD` and `IOS_PROVISIONING_PROFILE` secrets. Profiles ignore it; use `distribution` there | `false` |
+| `cache.ccache` | React Native and Expo: compile native code through ccache and keep its cache between runs (see [Build Caching](#build-caching)) | `false` |
 
 ### Build Profiles
 
@@ -1055,6 +1056,57 @@ app that is already installed.
 
 **App launches then immediately exits**
 - Launch with `builder dev kmp --logs` to see the device output
+
+## Build Caching
+
+Every provider keeps the slow parts of a build between runs. What is cached,
+and what the cache is keyed on:
+
+| Cache | GitHub Actions (`ios-build`, `ios-share`) | Bitrise | Codemagic |
+|-------|-------------------------------------------|---------|-----------|
+| DerivedData | per run, newest restored (device and simulator kept apart) | per build, newest restored (device and simulator kept apart) | by path |
+| Swift packages | `Package.resolved` of the workspace/project | `Package.resolved` | by path |
+| CocoaPods (`Pods`, `~/.cocoapods/repos`) | `Podfile.lock` | `Podfile.lock` | — |
+| `node_modules` | lockfiles + package manager | `package.json` + lockfiles | — |
+| `~/.pub-cache` (Flutter) | `pubspec.lock` | `pubspec.lock` | by path |
+| Flutter SDK | flutter-action | — | — |
+| Gradle (KMP) | setup-gradle | Gradle files | `~/.gradle/caches` by path |
+| ccache (opt-in) | per run, newest restored | per build, newest restored | by path |
+
+A key that misses falls back to the newest cache of the same kind, so a changed
+lockfile still starts warm. An exact `node_modules` hit skips the install.
+
+**Swift packages** are cloned into `~/.ios-builder/SourcePackages` on every
+provider (`xcodebuild -clonedSourcePackagesDirPath`), not into
+`DerivedData/SourcePackages`, so they get a key of their own. On GitHub there
+is no cache without a committed `Package.resolved` (in
+`*.xcworkspace/xcshareddata/swiftpm/` or
+`*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/`). `flutter build ios`
+resolves its own packages and does not use this directory.
+
+**ccache** is off by default. It is worth it for React Native and Expo, whose
+native code (React Native itself and every native module) is compiled again on
+every run: a fresh checkout gives every file a new modification time, so a
+restored DerivedData does not spare that work, while ccache matches on file
+contents. Turn it on in `builder.json`:
+
+```json
+{
+  "cache": { "ccache": true }
+}
+```
+
+The runner then installs ccache, sets `USE_CCACHE=1` before `pod install` and
+keeps `~/.ccache` (2 GB at most) between runs. Whether clang actually goes
+through it is the Podfile's decision: React Native's `react_native_post_install`
+reads `USE_CCACHE`, while Expo's generated Podfile reads `apple.ccacheEnabled`
+from `ios/Podfile.properties.json` instead, so an Expo project sets that too.
+It is opt-in because a Podfile that does neither never uses it, installing
+ccache costs time on every run, and a compiler cache is one more thing to rule
+out when a build misbehaves. Native, Flutter and KMP builds ignore the switch.
+
+An older generated `bitrise.yml` has no cache steps; run
+`builder init --provider bitrise` again to regenerate it.
 
 ## Build Limits
 

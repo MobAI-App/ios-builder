@@ -25,6 +25,17 @@ type Config struct {
 	// runs have no flags, so it is also the only way they can select a profile.
 	DefaultProfile string             `json:"defaultProfile,omitempty"`
 	Profiles       map[string]Profile `json:"profiles,omitempty"`
+	// Cache holds opt-in build caches. The runners read it from builder.json
+	// in the snapshot; the CLI only keeps it when it rewrites the file.
+	Cache *CacheConfig `json:"cache,omitempty"`
+}
+
+// CacheConfig switches on build caches that are off by default.
+type CacheConfig struct {
+	// CCache installs ccache and keeps its directory between runs for React
+	// Native and Expo builds; the project's Podfile decides whether clang
+	// actually goes through it (USE_CCACHE=1 for React Native's hook).
+	CCache bool `json:"ccache,omitempty"`
 }
 
 // SigningConfig is where the signing material lives on this machine.

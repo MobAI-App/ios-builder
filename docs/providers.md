@@ -143,7 +143,11 @@ To change it, edit `provider`, or pass `--set-default` when configuring a provid
 Native, Flutter, React Native/Expo, and KMP use the same framework settings as
 GitHub builds. A pinned `flutter.version` installs that SDK; `kmp.jdkVersion`
 selects the major JDK version. Provider caches and setup costs differ, so the
-same build may consume different minutes on each provider.
+same build may consume different minutes on each provider; the
+[caching table](../README.md#build-caching) lists what each one keeps.
+Bitrise restores its caches in steps between the snapshot checkout and the
+build, so the generated `bitrise.yml` checks out the snapshot in a step of its
+own.
 
 ### Signing
 
