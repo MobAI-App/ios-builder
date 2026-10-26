@@ -25,7 +25,7 @@ type CustomDevice = hotreload.CustomDevice
 
 // WriteCustomDevice turns on Flutter's custom devices and writes d as the
 // mobai-ios device to Flutter's custom_devices.json, replacing what is there.
-func WriteCustomDevice(d CustomDevice) error {
+func WriteCustomDevice(d *CustomDevice) error {
 	return hotreload.WriteCustomDevice(d)
 }
 

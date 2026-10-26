@@ -221,7 +221,7 @@ func EnsureCustomDevice(mobaiURL string) error {
 		return fmt.Errorf("get executable path: %w", err)
 	}
 
-	return hotreload.WriteCustomDevice(hotreload.CustomDevice{
+	return hotreload.WriteCustomDevice(&hotreload.CustomDevice{
 		Ping:                    []string{execPath, "mobai", "--url", mobaiURL, "ping"},
 		PingSuccessRegex:        "success",
 		Install:                 []string{execPath, "mobai", "--url", mobaiURL, "install", "${localPath}"},

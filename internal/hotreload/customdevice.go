@@ -31,7 +31,7 @@ type CustomDevice struct {
 
 // WriteCustomDevice turns on Flutter's custom devices and writes d as the
 // mobai-ios device to Flutter's custom_devices.json.
-func WriteCustomDevice(d CustomDevice) error {
+func WriteCustomDevice(d *CustomDevice) error {
 	if err := exec.Command("flutter", "config", "--enable-custom-devices").Run(); err != nil {
 		return fmt.Errorf("failed to enable custom devices - run 'flutter config --enable-custom-devices' manually first: %w", err)
 	}
