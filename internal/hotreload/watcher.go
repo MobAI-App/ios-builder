@@ -1,4 +1,9 @@
-package dev
+// Package hotreload holds the pieces of hot reload through MobAI that need no
+// terminal: the MobAI iOS custom device Flutter attaches through, the Dart VM
+// service URL a debug build prints, the file watcher that triggers reloads,
+// and pointing a React Native debug build at Metro. The dev commands build on
+// it, and pkg/dev exposes it to other programs.
+package hotreload
 
 import (
 	"context"
@@ -31,8 +36,8 @@ func isWindowsMountedPath(path string) bool {
 	return strings.HasPrefix(absPath, "/mnt/")
 }
 
-// needsPolling determines if polling should be used instead of inotify.
-func needsPolling(dirs []string) bool {
+// NeedsPolling determines if polling should be used instead of inotify.
+func NeedsPolling(dirs []string) bool {
 	if !isWSL2() {
 		return false
 	}
@@ -42,6 +47,21 @@ func needsPolling(dirs []string) bool {
 		}
 	}
 	return false
+}
+
+// Watcher watches files and calls OnChange, until Stop.
+type Watcher interface {
+	Start(ctx context.Context) error
+	Stop()
+}
+
+// NewWatcher returns the watcher that works for cfg's directories: a polling
+// one for Windows files under WSL2, where change events do not arrive.
+func NewWatcher(cfg *FileWatcherConfig) (Watcher, error) {
+	if NeedsPolling(cfg.Dirs) {
+		return NewPollingWatcher(cfg), nil
+	}
+	return NewFileWatcher(cfg)
 }
 
 // FileWatcherConfig holds configuration for the file watcher.

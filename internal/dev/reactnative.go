@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MobAI-App/ios-builder/internal/hotreload"
 	"github.com/MobAI-App/ios-builder/internal/mobai"
 )
 
@@ -63,7 +64,7 @@ func (h *ReactNativeHandler) Setup(ctx context.Context) error {
 
 // Attach monitors app output for React Native development.
 func (h *ReactNativeHandler) Attach(ctx context.Context, deviceID string, debugOutput <-chan mobai.DebugOutput) error {
-	ip := getLocalIP()
+	ip := hotreload.LocalIP()
 
 	fmt.Println()
 	fmt.Printf("Metro bundler: http://%s:%d\n", ip, h.metroPort)
@@ -105,14 +106,12 @@ func (h *ReactNativeHandler) Attach(ctx context.Context, deviceID string, debugO
 // DebugConfig returns launch arguments to configure Metro connection.
 // React Native reads RCT_jsLocation from NSUserDefaults, which can be set via launch arguments.
 func (h *ReactNativeHandler) DebugConfig() *mobai.DebugConfig {
-	ip := getLocalIP()
+	ip := hotreload.LocalIP()
 
 	fmt.Printf("Detected host IP: %s\n", ip)
 
-	jsLocation := fmt.Sprintf("%s:%d", ip, h.metroPort)
-
 	return &mobai.DebugConfig{
-		Arguments: []string{"-RCT_jsLocation", jsLocation},
+		Arguments: hotreload.MetroLaunchArguments(ip, h.metroPort),
 	}
 }
 
@@ -192,32 +191,4 @@ func getWorkingDir() string {
 		return "."
 	}
 	return wd
-}
-
-func getLocalIP() string {
-	if isWSL() {
-		cmd := exec.Command("powershell.exe", "-NoProfile", "-Command",
-			`Get-NetIPAddress -AddressFamily IPv4 | Where-Object { ($_.IPAddress -notlike "169.*") -and ($_.IPAddress -notlike "127.*") -and ($_.IPAddress -notlike "172.*") } | Select-Object -First 1 -ExpandProperty IPAddress`)
-		output, err := cmd.Output()
-		if err != nil {
-			return "localhost"
-		}
-		ip := strings.TrimSpace(string(output))
-		if ip == "" {
-			return "localhost"
-		}
-		return ip
-	}
-
-	conn, err := net.Dial("udp", "8.8.8.8:80")
-	if err != nil {
-		return "localhost"
-	}
-	defer func() { _ = conn.Close() }()
-
-	localAddr, ok := conn.LocalAddr().(*net.UDPAddr)
-	if !ok {
-		return "localhost"
-	}
-	return localAddr.IP.String()
 }

@@ -3,18 +3,15 @@ package dev
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"regexp"
-	"runtime"
 	"strings"
 	"time"
 
 	"github.com/MobAI-App/ios-builder/internal/config"
+	"github.com/MobAI-App/ios-builder/internal/hotreload"
 	"github.com/MobAI-App/ios-builder/internal/mobai"
 )
 
@@ -82,7 +79,6 @@ func (h *FlutterHandler) Stop() {
 }
 
 func (h *FlutterHandler) findDebugURL(ctx context.Context, debugOutput <-chan mobai.DebugOutput) (string, <-chan mobai.DebugOutput, error) {
-	re := regexp.MustCompile(`(?:Observatory|Dart VM service)[^h]*(http://[^\s]+)`)
 	timeout := time.After(30 * time.Second)
 
 	for {
@@ -98,9 +94,9 @@ func (h *FlutterHandler) findDebugURL(ctx context.Context, debugOutput <-chan mo
 			if output.Type == "error" {
 				return "", nil, fmt.Errorf("debug error: %s", output.Message)
 			}
-			if m := re.FindStringSubmatch(output.Data); len(m) >= 2 {
-				fmt.Printf("Found debug service: %s\n", m[1])
-				return m[1], debugOutput, nil
+			if u := hotreload.VMServiceURL(output.Data); u != "" {
+				fmt.Printf("Found debug service: %s\n", u)
+				return u, debugOutput, nil
 			}
 		}
 	}
@@ -186,7 +182,7 @@ func (h *FlutterHandler) startFileWatcher(ctx context.Context) {
 	watchCtx, cancel := context.WithCancel(ctx)
 	h.cancelWatch = cancel
 
-	cfg := FileWatcherConfig{
+	cfg := hotreload.FileWatcherConfig{
 		Dirs:     h.watchConfig.Dirs,
 		Patterns: h.watchConfig.Patterns,
 		Ignore:   h.watchConfig.Ignore,
@@ -197,11 +193,11 @@ func (h *FlutterHandler) startFileWatcher(ctx context.Context) {
 		},
 	}
 
-	if needsPolling(cfg.Dirs) {
+	if hotreload.NeedsPolling(cfg.Dirs) {
 		fmt.Println("\n[builder] WSL2 detected, using polling watcher for Windows filesystem")
-		h.watcher = NewPollingWatcher(&cfg)
+		h.watcher = hotreload.NewPollingWatcher(&cfg)
 	} else {
-		w, err := NewFileWatcher(&cfg)
+		w, err := hotreload.NewFileWatcher(&cfg)
 		if err != nil {
 			fmt.Printf("\n[builder] Warning: failed to start file watcher: %v\n", err)
 			return
@@ -220,66 +216,18 @@ func (h *FlutterHandler) startFileWatcher(ctx context.Context) {
 
 // EnsureCustomDevice ensures Flutter custom_devices.json has mobai-ios configured.
 func EnsureCustomDevice(mobaiURL string) error {
-	if err := exec.Command("flutter", "config", "--enable-custom-devices").Run(); err != nil {
-		return fmt.Errorf("failed to enable custom devices - run 'flutter config --enable-custom-devices' manually first: %w", err)
-	}
-
-	var configPath string
-	if runtime.GOOS == "windows" {
-		appData := os.Getenv("APPDATA")
-		if appData == "" {
-			return fmt.Errorf("APPDATA environment variable not set")
-		}
-		configPath = filepath.Join(appData, ".flutter_custom_devices.json")
-	} else {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("get home dir: %w", err)
-		}
-		flutterDir := filepath.Join(homeDir, ".config", "flutter")
-		if err := os.MkdirAll(flutterDir, 0755); err != nil {
-			return fmt.Errorf("create flutter config dir: %w", err)
-		}
-		configPath = filepath.Join(flutterDir, "custom_devices.json")
-	}
-
 	execPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("get executable path: %w", err)
 	}
 
-	pingCmd := []string{execPath, "mobai", "--url", mobaiURL, "ping"}
-	installCmd := []string{execPath, "mobai", "--url", mobaiURL, "install", "${localPath}"}
-	runDebugCmd := []string{execPath, "mobai", "--url", mobaiURL, "run-debug", "${appName}"}
-	forwardCmd := []string{execPath, "mobai", "--url", mobaiURL, "forward", "${devicePort}", "${hostPort}"}
-
-	config := map[string]any{
-		"custom-devices": []any{
-			map[string]any{
-				"id":                      "mobai-ios",
-				"label":                   "MobAI iOS Device",
-				"sdkNameAndVersion":       "iOS (via MobAI)",
-				"platform":                nil,
-				"enabled":                 true,
-				"ping":                    pingCmd,
-				"pingSuccessRegex":        "success",
-				"install":                 installCmd,
-				"uninstall":               []string{"echo", "uninstall not supported"},
-				"runDebug":                runDebugCmd,
-				"forwardPort":             forwardCmd,
-				"forwardPortSuccessRegex": "forwarded",
-			},
-		},
-	}
-
-	output, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-
-	if err := os.WriteFile(configPath, output, 0644); err != nil {
-		return fmt.Errorf("write config: %w", err)
-	}
-
-	return nil
+	return hotreload.WriteCustomDevice(hotreload.CustomDevice{
+		Ping:                    []string{execPath, "mobai", "--url", mobaiURL, "ping"},
+		PingSuccessRegex:        "success",
+		Install:                 []string{execPath, "mobai", "--url", mobaiURL, "install", "${localPath}"},
+		Uninstall:               []string{"echo", "uninstall not supported"},
+		RunDebug:                []string{execPath, "mobai", "--url", mobaiURL, "run-debug", "${appName}"},
+		ForwardPort:             []string{execPath, "mobai", "--url", mobaiURL, "forward", "${devicePort}", "${hostPort}"},
+		ForwardPortSuccessRegex: "forwarded",
+	})
 }
