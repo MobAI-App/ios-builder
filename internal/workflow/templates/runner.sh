@@ -667,6 +667,13 @@ build_simulator() {
   fi
   sim_udid=$(mobai-ci sim boot --cache "$ci_dir/sim-cache" --device-type 'iPhone 16 Pro' --runtime latest | tail -1)
   test -n "$sim_udid"
+  build_app
+  printf '%s\n' "$app_path" > "$ci_dir/app-path"
+  printf '%s\n' "$sim_udid" > "$ci_dir/sim-udid"
+}
+
+# Builds the app for the simulator sim_udid names and sets app_path.
+build_app() {
   if [ "$project_type" = flutter ]; then
     cd "$BUILDER_WORKSPACE"
     flutter build ios --simulator --debug
@@ -679,8 +686,6 @@ build_simulator() {
     app_path=$(xcodebuild "${args[@]}" -showBuildSettings -json | jq -r 'map(.buildSettings) | map(select(.PRODUCT_TYPE == "com.apple.product-type.application" and (.TARGET_BUILD_DIR | contains("-iphonesimulator")))) | map(.TARGET_BUILD_DIR + "/" + .FULL_PRODUCT_NAME) | first // empty')
   fi
   test -d "$app_path"
-  printf '%s\n' "$app_path" > "$ci_dir/app-path"
-  printf '%s\n' "$sim_udid" > "$ci_dir/sim-udid"
 }
 
 case "$mode" in
@@ -693,9 +698,27 @@ case "$mode" in
     ;;
   share)
     export PATH="$ci_dir/bin:$PATH"
+    # The MobAI app may rebuild newer snapshots of the code with this script's
+    # rebuild mode. A mobai-ci from before rebuilds refuses the flags.
+    rebuild=()
+    export BUILDER_WORKSPACE="${BUILDER_WORKSPACE:-$(pwd)}"
+    if mobai-ci share -help 2>&1 | grep -q -- '-rebuild'; then
+      self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+      rebuild=(--dir "$BUILDER_WORKSPACE" --rebuild "bash $(printf '%q' "$self") rebuild")
+    fi
     exec mobai-ci share --device "$(cat "$ci_dir/sim-udid")" --app "$(cat "$ci_dir/app-path")" \
       --duration "${DURATION:-30m}" --label "${BUILDER_REPOSITORY:-Builder} · $BUILD_ID" \
-      --wait-device 4m --startup-timeout 5m
+      "${rebuild[@]}" --wait-device 4m --startup-timeout 5m
+    ;;
+  rebuild)
+    # Run by mobai-ci share on newer code: the build logs to stderr and the
+    # app's path is the one line on stdout.
+    exec 3>&1 1>&2
+    export BUILDER_WORKSPACE="${BUILDER_WORKSPACE:-$(pwd)}"
+    sim_udid=$(cat "$ci_dir/sim-udid")
+    prepare
+    build_app
+    echo "$app_path" >&3
     ;;
   *) echo "Unknown runner mode: $mode" >&2; exit 1 ;;
 esac

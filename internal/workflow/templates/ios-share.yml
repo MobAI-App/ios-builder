@@ -538,6 +538,10 @@ jobs:
         if: steps.detect.outputs.type == 'kmp'
         uses: gradle/actions/setup-gradle@v6
 
+      # The build is written to a script first and run from there, so the
+      # sharing step can hand the same build to mobai-ci: the MobAI app then
+      # rebuilds newer code on this simulator exactly as this step built it.
+      # The script logs to stderr and prints only the app's path on stdout.
       - name: Build for the simulator
         id: build
         env:
@@ -546,6 +550,13 @@ jobs:
           PROJECT_TYPE: ${{ steps.detect.outputs.type }}
         run: |
           set -e
+          BUILD_SCRIPT="$RUNNER_TEMP/mobai-build.sh"
+          {
+            echo 'set -e'
+            printf 'IOS_PATH=%q SCHEME=%q PROJECT_TYPE=%q\n' "$IOS_PATH" "$SCHEME" "$PROJECT_TYPE"
+            cat <<'MOBAI_BUILD'
+          exec 3>&1 1>&2
+          cd "$GITHUB_WORKSPACE"
 
           if [ "$PROJECT_TYPE" = "flutter" ]; then
             # Flutter drives xcodebuild itself and puts the bundle in a known
@@ -651,7 +662,13 @@ jobs:
             exit 1
           fi
           echo "Built $APP_PATH"
+          case "$APP_PATH" in /*) ;; *) APP_PATH="$GITHUB_WORKSPACE/$APP_PATH" ;; esac
+          echo "$APP_PATH" >&3
+          MOBAI_BUILD
+          } > "$BUILD_SCRIPT"
+          APP_PATH=$(bash "$BUILD_SCRIPT")
           echo "app_path=$APP_PATH" >> $GITHUB_OUTPUT
+          echo "build_script=$BUILD_SCRIPT" >> $GITHUB_OUTPUT
 
       # Flutter builds through its own tree, so DerivedData can be absent and a
       # save would fail on a path that never existed.
@@ -673,16 +690,24 @@ jobs:
 
       # Installs the build on the simulator and publishes it to the MobAI app.
       # The step (and the job) stay running until the simulator is released
-      # there or goes unused.
+      # there or goes unused. The MobAI app may rebuild newer snapshots of the
+      # code with the same build, and run hot reload sessions, in this
+      # checkout.
       - name: Share the simulator
         env:
           MOBAI_API_KEY: ${{ secrets.MOBAI_API_KEY }}
         run: |
+          # A mobai-ci from before rebuilds refuses flags it does not know.
+          REBUILD=()
+          if mobai-ci share -help 2>&1 | grep -q -- '-rebuild'; then
+            REBUILD=(--dir "$GITHUB_WORKSPACE" --rebuild "bash ${{ steps.build.outputs.build_script }}")
+          fi
           mobai-ci share \
             --device "$MOBAI_SIM_UDID" \
             --app "${{ steps.build.outputs.app_path }}" \
             --duration "${{ steps.params.outputs.duration }}" \
             --label "${{ github.repository }} · ${{ steps.params.outputs.build_id }}" \
+            "${REBUILD[@]}" \
             --wait-device 4m --startup-timeout 5m
 
       # The tag exists only to start this run, so it leaves with it. Deleting
